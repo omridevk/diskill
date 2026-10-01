@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  clean-disk:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: plugins/clean-disk/cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93"
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --locked
+      - name: shellcheck run.sh
+        run: |
+          command -v shellcheck >/dev/null || brew install shellcheck
+          shellcheck ../skills/clean-disk/scripts/run.sh
+      - name: manifests are valid JSON
+        working-directory: .
+        run: |
+          jq empty .claude-plugin/marketplace.json
+          jq empty plugins/clean-disk/.claude-plugin/plugin.json
