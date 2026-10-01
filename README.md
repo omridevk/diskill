@@ -30,7 +30,13 @@ Safety:
   - no ignored files except known build output
 - The branch and all its commits always stay.
 
-Requirements: macOS, `python3`, `git`.
+Requirements: macOS and `git`. Rust only if building from source.
+
+The skill runs a single `clean-disk` binary through `scripts/run.sh`. On first use it downloads
+the release built for the installed plugin version from
+[GitHub releases](https://github.com/omridevk/diskill/releases), checks its sha256, and caches it
+in the plugin data folder. If no release exists for that version, it builds the bundled source
+with `cargo build --release --locked` instead (needs [Rust](https://rustup.rs)).
 
 ## Install
 
@@ -54,14 +60,29 @@ Update with `claude plugin update clean-disk@diskill`.
 
 ## Development
 
+The CLI source lives in `plugins/clean-disk/cli` (Rust 1.93, edition 2024).
+
 ```bash
+cd plugins/clean-disk/cli
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+cargo run --release -- scan        # read-only; writes a run dir under ~/.cache/clean-disk
+cd -
+shellcheck plugins/clean-disk/skills/clean-disk/scripts/run.sh
 claude plugin validate --strict .
 claude plugin validate --strict ./plugins/clean-disk
-bash plugins/clean-disk/skills/clean-disk/scripts/test_worktrees.sh
 ```
 
-Bump `version` in `plugins/clean-disk/.claude-plugin/plugin.json` on every release. Installed copies
-only update when that string changes.
+The tests build every fixture in a temp folder. Deletion is only ever exercised there.
+
+## Releasing
+
+1. Bump `version` in `plugins/clean-disk/.claude-plugin/plugin.json` (and in `cli/Cargo.toml`).
+   Installed copies only update when that string changes, and `run.sh` fetches the binary for it.
+2. Tag with `claude plugin tag ./plugins/clean-disk` (creates `clean-disk--v<version>`) and push the tag.
+3. The `release` workflow checks the tag matches `plugin.json`, builds an arm64 + x86_64 universal
+   binary, and publishes `clean-disk-macos-universal.tar.gz` with its `.sha256`.
 
 ## License
 

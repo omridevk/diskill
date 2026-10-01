@@ -1,7 +1,7 @@
 use clean_disk::scan::parse_docker_bytes;
 
 #[test]
-fn docker_reclaimable_parses_like_the_python_regex() {
+fn docker_reclaimable_parsing() {
     let cases = [
         ("1.2GB (40%)", (1.2f64 * 1073741824.0) as u64),
         ("512MB", 512 * 1048576),
