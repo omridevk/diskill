@@ -133,6 +133,7 @@ fn clean_end_to_end_on_fixture() {
         selection_item("rm", &p(&not_in_scan)),
         selection_item("rm", "/etc/hosts"),
         selection_item("worktree", &p(&repo)),
+        selection_item("rm", &p(&repo)),
         r#"{"action": "cmd", "cmd_id": "rm-rf-everything", "bytes": 1}"#.to_string(),
     ]
     .join(",");
@@ -157,7 +158,7 @@ fn clean_end_to_end_on_fixture() {
         stdout.contains("queued  : 3 items (12288 bytes)"),
         "{stdout}"
     );
-    assert!(stdout.contains("rejected: 3"), "{stdout}");
+    assert!(stdout.contains("rejected: 4"), "{stdout}");
     assert!(stdout.contains("pid     : "), "{stdout}");
     assert!(
         stdout.contains(&format!("log     : {}", p(&run.join("clean.log")))),
@@ -171,6 +172,10 @@ fn clean_end_to_end_on_fixture() {
     );
     assert!(
         rejected.contains("protected path\t/etc/hosts\n"),
+        "{rejected}"
+    );
+    assert!(
+        rejected.contains(&format!("action does not match scan\t{}\n", p(&repo))),
         "{rejected}"
     );
     assert!(

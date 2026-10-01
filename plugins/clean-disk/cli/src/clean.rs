@@ -153,9 +153,18 @@ pub fn queue(run_dir: &str) -> io::Result<i32> {
             }
             continue;
         }
-        let needle = format!("\t{value}\t");
-        if !scan_lines.iter().any(|l| l.contains(&needle)) {
+        let scan_actions: Vec<&str> = scan_lines
+            .iter()
+            .map(|l| l.split('\t').collect::<Vec<_>>())
+            .filter(|cols| cols.len() == 13 && cols[8] == value)
+            .map(|cols| cols[5])
+            .collect();
+        if scan_actions.is_empty() {
             rejected.push_str(&format!("not in scan\t{value}\n"));
+            continue;
+        }
+        if !scan_actions.contains(&action) {
+            rejected.push_str(&format!("action does not match scan\t{value}\n"));
             continue;
         }
         if !is_allowed(value, &home, tmp_base.as_deref()) {
