@@ -282,7 +282,7 @@ describe('live page', () => {
     await expect.element(screen.getByRole('button', {name: /^Docker/})).toBeVisible()
     send(done)
     await expect.element(screen.getByText('Scan complete')).toBeVisible()
-    await expect.element(screen.getByText('5.5s')).toBeVisible()
+    await expect.element(screen.getByText('9.5s')).toBeVisible()
     await screen.getByRole('button', {name: 'Approve and delete'}).click()
     await expect.element(screen.getByRole('button', {name: 'Undo'})).toHaveStyle(SHOWN)
     await userEvent.keyboard('{Escape}')

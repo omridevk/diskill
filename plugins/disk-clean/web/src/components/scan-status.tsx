@@ -30,6 +30,7 @@ export function ScanStatus({scan}: {scan: Scan}) {
   const status = statusOf(scan)
   const clock = useScanClock(scan.elapsed, status === 'working')
   const phase = phaseOf(scan)
+  const phaseStart = scan.walked && status === 'working' ? scan.walkedAt : 0
   return (
     <LatticeLoader
       key={phase}
@@ -37,7 +38,7 @@ export function ScanStatus({scan}: {scan: Scan}) {
       doneLabel="Scan complete"
       errorLabel="Scan failed"
       status={status}
-      elapsed={(clock - (scan.walked ? scan.walkedAt : 0)) / 1000}
+      elapsed={(clock - phaseStart) / 1000}
       fontSize={13}
       cellSize={4}
       className="text-muted-foreground"
