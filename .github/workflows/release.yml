@@ -1,0 +1,53 @@
+name: release
+
+on:
+  push:
+    tags: ["clean-disk--v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  clean-disk:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag matches plugin.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#clean-disk--v}"
+          plugin_version=$(jq -r .version plugins/clean-disk/.claude-plugin/plugin.json)
+          if [ "$tag_version" != "$plugin_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match plugin.json version $plugin_version"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.93"
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: build both architectures
+        working-directory: plugins/clean-disk/cli
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+      - name: package universal binary
+        run: |
+          target=plugins/clean-disk/cli/target
+          mkdir -p dist
+          lipo -create -output dist/clean-disk \
+            "$target/aarch64-apple-darwin/release/clean-disk" \
+            "$target/x86_64-apple-darwin/release/clean-disk"
+          chmod 755 dist/clean-disk
+          lipo -info dist/clean-disk
+          tar -czf dist/clean-disk-macos-universal.tar.gz -C dist clean-disk
+          cd dist
+          shasum -a 256 clean-disk-macos-universal.tar.gz > clean-disk-macos-universal.tar.gz.sha256
+          cat clean-disk-macos-universal.tar.gz.sha256
+      - name: create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/clean-disk-macos-universal.tar.gz \
+            dist/clean-disk-macos-universal.tar.gz.sha256 \
+            --title "clean-disk v${GITHUB_REF_NAME#clean-disk--v}" \
+            --generate-notes
