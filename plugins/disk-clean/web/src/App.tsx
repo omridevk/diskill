@@ -1,23 +1,20 @@
 import {HardDrive} from 'lucide-react'
-import {useEffect, useMemo, useState, type ReactNode} from 'react'
+import {useMemo, useState, type ReactNode} from 'react'
 import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs'
 import {decide, preview} from '@/lib/api'
 import {formatBytes, type Loaded} from '@/lib/data'
 import {useScan} from '@/lib/live'
-import {useReducedMotion, useShownOnMount} from '@/lib/motion'
-import type {Scan} from '@/lib/scan'
+import {useShownOnMount} from '@/lib/motion'
 import {useSelection, type Selection} from '@/lib/selection'
 import {ActionBar} from './components/action-bar'
 import {Cleanup} from './components/cleanup'
 import {Insights} from './components/insights'
 import {PreviewDialog, type Plan} from './components/preview-dialog'
-import {ScanHero} from './components/scan-hero'
+import {ScanCounter, useScanHero} from './components/scan-hero'
 import {ScanStatus} from './components/scan-status'
 import {SkeletonReveal} from './components/skeleton-reveal'
 import {Storage} from './components/storage'
 import {Summary} from './components/summary'
-
-const GATHER_MS = 3000
 
 interface Outcome {
   title: string
@@ -47,19 +44,6 @@ function Finished({title, body, approved}: Outcome) {
       </div>
     </div>
   )
-}
-
-function useHandedOver(scan: Scan) {
-  const reduced = useReducedMotion()
-  const ready = scan.walked || scan.error !== ''
-  const delay = scan.error || reduced ? 0 : GATHER_MS
-  const [handedOver, setHandedOver] = useState(ready)
-  useEffect(() => {
-    if (!ready || handedOver) return
-    const timer = setTimeout(() => setHandedOver(true), delay)
-    return () => clearTimeout(timer)
-  }, [ready, handedOver, delay])
-  return handedOver
 }
 
 function Problem({text}: {text: string}) {
@@ -107,8 +91,8 @@ export function App({loaded}: {loaded: Loaded}) {
   const live = loaded.live === true
   const scan = useScan(loaded)
   const {data} = scan
-  const handedOver = useHandedOver(scan)
   const selection = useSelection(data.categories)
+  const hero = useScanHero(live, scan, selection.exactBytes)
   const {plan, dialog, setDialog, previewing, done, error, openPreview, approve, cancel} = useDecisions(loaded.token, selection)
   const cleanable = useMemo(
     () => new Set(data.categories.flatMap(c => c.items.filter(i => !i.report).map(i => i.path))),
@@ -138,8 +122,10 @@ export function App({loaded}: {loaded: Loaded}) {
       <Summary
         data={data}
         selection={selection}
+        bytes={hero.bytes}
+        overlay={hero.overlay}
+        counter={live && <ScanCounter scan={scan} />}
         status={live && <ScanStatus scan={scan} />}
-        hero={live && !handedOver ? <ScanHero scan={scan} /> : undefined}
         scanning={live && !settled}
       />
       <Problem text={scan.error && `The scan failed: ${scan.error}. Nothing can be approved`} />

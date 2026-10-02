@@ -270,6 +270,8 @@ describe('live page', () => {
     await screen.getByRole('tab', {name: 'Storage'}).click()
     await expect.element(screen.getByText(/^Where your/)).not.toBeInTheDocument()
     send(walked)
+    await expect.element(screen.getByLabelText('3.8 GB')).toBeInTheDocument()
+    await expect.element(screen.getByText('4 items selected · 3.8 GB')).toBeVisible()
     await expect.element(screen.getByText('Where your 500 GB went')).toBeVisible()
     await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
     await screen.getByRole('tab', {name: 'Cleanup'}).click()

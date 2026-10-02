@@ -20,14 +20,18 @@ function LoadingBackdrop() {
 export function Summary({
   data,
   selection,
+  bytes,
+  overlay,
+  counter,
   status,
-  hero,
   scanning,
 }: {
   data: ScanData
   selection: Selection
+  bytes: number
+  overlay: ReactNode
+  counter: ReactNode
   status: ReactNode
-  hero: ReactNode
   scanning: boolean
 }) {
   const sections = new Set(
@@ -40,17 +44,19 @@ export function Summary({
       <DiskDonut used={data.used} selected={selection.exactBytes} free={data.free} size={132} />
       <div className="flex grow flex-col gap-2">
         <div className="text-xs text-muted-foreground">Selected to free</div>
-        {hero ?? (
-          <div className="text-5xl leading-none font-bold tracking-tighter tabular-nums">
-            <SpinningBytes bytes={selection.exactBytes} />
+        <div className="relative h-12 text-5xl leading-none font-bold tracking-tighter tabular-nums">
+          <div className={overlay ? 'invisible' : undefined}>
+            <SpinningBytes bytes={bytes} />
           </div>
-        )}
+          {overlay}
+        </div>
+        {counter}
         <div className="text-[13px] text-muted-foreground">
           {selection.selected.length} items in {sections} sections · free space goes from{' '}
           <b className="font-medium text-foreground">{formatBytes(data.free)}</b> to{' '}
           <b className="font-medium text-foreground">{formatBytes(freeAfter)}</b> of {formatBytes(data.total)}
         </div>
-        {status}
+        {status && <div className="flex h-5 items-center">{status}</div>}
       </div>
       <div className="flex flex-col gap-2 self-end text-xs text-muted-foreground">
         <Legend color={DISK_COLORS.used} label="Used" />
