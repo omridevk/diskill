@@ -1,6 +1,6 @@
 mod common;
 
-use clean_disk::worktrees;
+use disk_clean::worktrees;
 use std::process::Command;
 
 #[test]

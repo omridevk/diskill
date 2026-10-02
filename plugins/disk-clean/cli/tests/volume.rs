@@ -3,8 +3,8 @@ use std::process::Command;
 
 #[test]
 fn volume_stats_match_df() {
-    let mount = clean_disk::util::data_mount();
-    let stats = clean_disk::util::volume_stats(&mount).unwrap();
+    let mount = disk_clean::util::data_mount();
+    let stats = disk_clean::util::volume_stats(&mount).unwrap();
     let out = Command::new("df").arg("-k").arg(&mount).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
     let cols: Vec<u64> = text

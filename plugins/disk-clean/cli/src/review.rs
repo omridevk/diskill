@@ -463,8 +463,8 @@ pub fn run(run_dir: &str) -> io::Result<i32> {
     });
 
     eprintln!("review UI: {url}");
-    if std::env::var("CLEAN_DISK_NO_BROWSER").is_ok_and(|v| v == "1") {
-        eprintln!("CLEAN_DISK_NO_BROWSER=1, not opening a browser");
+    if std::env::var("DISK_CLEAN_NO_BROWSER").is_ok_and(|v| v == "1") {
+        eprintln!("DISK_CLEAN_NO_BROWSER=1, not opening a browser");
     } else {
         let _ = std::process::Command::new("open").arg(&url).status();
     }

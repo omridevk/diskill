@@ -3,17 +3,6 @@
 version = 4
 
 [[package]]
-name = "clean-disk"
-version = "0.2.0"
-dependencies = [
- "jwalk",
- "libc",
- "rayon",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "crossbeam"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -68,6 +57,17 @@ name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
+
+[[package]]
+name = "disk-clean"
+version = "0.3.0"
+dependencies = [
+ "jwalk",
+ "libc",
+ "rayon",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "either"

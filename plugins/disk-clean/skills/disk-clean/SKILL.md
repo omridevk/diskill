@@ -1,13 +1,13 @@
 ---
-name: clean-disk
-description: Find reclaimable disk space on this Mac, show a browser UI listing exactly what will be deleted, and run the approved deletion in the background. Use when the user asks to clean up disk space, free space, find what is eating the disk, or invokes /clean-disk.
+name: disk-clean
+description: Find reclaimable disk space on this Mac, show a browser UI listing exactly what will be deleted, and run the approved deletion in the background. Use when the user asks to clean up disk space, free space, find what is eating the disk, or invokes /disk-clean.
 ---
 
-# Clean Disk
+# Disk Clean
 
 Three stages, run in order. Never skip the review stage — nothing is deleted without an explicit approval in the UI.
 
-All three stages go through one launcher. It runs the `clean-disk` binary for this plugin version,
+All three stages go through one launcher. It runs the `disk-clean` binary for this plugin version,
 fetching it on first use (the published release, checksum-verified, or a `cargo build` from the
 bundled source when no release exists). The first run may print a download or build line on stderr.
 
@@ -24,11 +24,11 @@ running alongside it. Writes three files into `$RUN_DIR`:
 (volume totals and snapshot count).
 Report the total found and move straight on to stage 2.
 
-Tunable via environment variables: `CLEAN_DISK_MIN_BYTES` (default 10 MB floor per item),
-`CLEAN_DISK_STALE_DAYS` (default 90), `CLEAN_DISK_BIGFILE_BYTES` (default 1 GB),
-`CLEAN_DISK_OLD_DOWNLOAD_DAYS` (default 180), `CLEAN_DISK_MAP_DEPTH` (default 5),
-`CLEAN_DISK_MAP_MIN_BYTES` (default 200 MB), `CLEAN_DISK_NM_DEPTH` (default 9),
-`CLEAN_DISK_NM_MIN_BYTES` (default 5 MB), `CLEAN_DISK_SKIP_MAP=1` to skip the storage map
+Tunable via environment variables: `DISK_CLEAN_MIN_BYTES` (default 10 MB floor per item),
+`DISK_CLEAN_STALE_DAYS` (default 90), `DISK_CLEAN_BIGFILE_BYTES` (default 1 GB),
+`DISK_CLEAN_OLD_DOWNLOAD_DAYS` (default 180), `DISK_CLEAN_MAP_DEPTH` (default 5),
+`DISK_CLEAN_MAP_MIN_BYTES` (default 200 MB), `DISK_CLEAN_NM_DEPTH` (default 9),
+`DISK_CLEAN_NM_MIN_BYTES` (default 5 MB), `DISK_CLEAN_SKIP_MAP=1` to skip the storage map
 and walk only the home and temp folders instead of the whole volume.
 
 ## Stage 2 — Review UI
@@ -123,14 +123,14 @@ apparent size), and `~/Downloads` entries older than 180 days. They are shown wi
 checkboxes so the user can act on them manually.
 
 **Git worktrees**. Finds every repo under `$HOME` (6 levels deep,
-`CLEAN_DISK_REPO_DEPTH`) and every worktree it has registered, wherever that worktree lives
+`DISK_CLEAN_REPO_DEPTH`) and every worktree it has registered, wherever that worktree lives
 (including `/private/tmp` scratchpads). A worktree is offered for removal only when ALL of these hold:
 clean `git status` including untracked files, not locked, no process has its cwd inside, no
 merge/rebase/cherry-pick/revert/bisect in progress, no submodules, no worktree-only refs, on a
 named branch (or a detached HEAD some ref contains), no commit in its HEAD reflog that no
 branch/tag/remote/stash holds, and every git-ignored file is known build output (`node_modules`,
 `dist`, `.turbo`, caches, ...). Anything else, such as `.env`, `.idea` or plan folders, keeps it. Idle for
-`CLEAN_DISK_WORKTREE_IDLE_DAYS` (default 2) means preselected. Everything else is listed report-only
+`DISK_CLEAN_WORKTREE_IDLE_DAYS` (default 2) means preselected. Everything else is listed report-only
 with the reason. Removal re-runs every check per worktree, then calls `git worktree remove` without
 `--force`, so git itself refuses anything dirty. Only the folder goes. The branch and all commits
 stay, and `git worktree add <path> <branch>` restores it. The safety tests live in the plugin's
@@ -153,6 +153,6 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
 
 ## Re-running
 
-Each run gets its own directory under `~/.cache/clean-disk/`. Old run directories are kept for
+Each run gets its own directory under `~/.cache/disk-clean/`. Old run directories are kept for
 audit and are safe to delete. To re-open the UI for a completed scan without rescanning, run
 stage 2 again with the same `$RUN_DIR`.

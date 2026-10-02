@@ -1,6 +1,6 @@
 mod common;
 
-use clean_disk::walk;
+use disk_clean::walk;
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;

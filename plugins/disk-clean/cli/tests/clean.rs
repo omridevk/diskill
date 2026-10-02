@@ -1,6 +1,6 @@
 mod common;
 
-use clean_disk::clean::is_allowed;
+use disk_clean::clean::is_allowed;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -143,7 +143,7 @@ fn clean_end_to_end_on_fixture() {
     )
     .unwrap();
 
-    let dry = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
+    let dry = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["clean", "--dry-run", &p(&run)])
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
@@ -174,7 +174,7 @@ fn clean_end_to_end_on_fixture() {
     assert!(doomed.exists() && doomed_file.exists());
     assert!(!run.join("rm-list").exists() && !run.join("status").exists());
 
-    let out = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
+    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["clean", &p(&run)])
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
@@ -251,7 +251,7 @@ fn clean_rejects_everything() {
         r#"{"items": [{"path": "/etc/hosts"}]}"#,
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
+    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["clean", &run.to_string_lossy()])
         .output()
         .unwrap();
@@ -279,7 +279,7 @@ fn dry_run_quotes_paths_and_lists_fixed_commands() {
         format!(r#"{{"items": [{items}]}}"#),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
+    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["clean", "--dry-run", &run.to_string_lossy()])
         .output()
         .unwrap();

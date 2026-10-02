@@ -46,9 +46,9 @@ fn review_serves_page_and_writes_selection() {
     )
     .unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["review", &run.to_string_lossy()])
-        .env("CLEAN_DISK_NO_BROWSER", "1")
+        .env("DISK_CLEAN_NO_BROWSER", "1")
         .env("HOME", "/h")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -197,9 +197,9 @@ fn review_exits_3_when_nothing_found() {
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
     fs::write(run.join("scan.tsv"), "").unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
+    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["review", &run.to_string_lossy()])
-        .env("CLEAN_DISK_NO_BROWSER", "1")
+        .env("DISK_CLEAN_NO_BROWSER", "1")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));

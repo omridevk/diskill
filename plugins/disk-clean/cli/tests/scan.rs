@@ -1,4 +1,4 @@
-use clean_disk::scan::parse_docker_bytes;
+use disk_clean::scan::parse_docker_bytes;
 
 #[test]
 fn docker_reclaimable_parsing() {

@@ -1,7 +1,7 @@
-use clean_disk::{clean, review, scan};
+use disk_clean::{clean, review, scan};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: clean-disk scan [RUN_DIR] | review RUN_DIR | clean [--dry-run] RUN_DIR";
+const USAGE: &str = "usage: disk-clean scan [RUN_DIR] | review RUN_DIR | clean [--dry-run] RUN_DIR";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -11,7 +11,7 @@ fn main() -> ExitCode {
         Some("review") => match arg(1) {
             Some(dir) => review::run(&dir),
             None => {
-                eprintln!("usage: clean-disk review <run_dir>");
+                eprintln!("usage: disk-clean review <run_dir>");
                 Ok(2)
             }
         },
@@ -30,7 +30,7 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
-            eprintln!("clean-disk: {e}");
+            eprintln!("disk-clean: {e}");
             ExitCode::from(1)
         }
     }

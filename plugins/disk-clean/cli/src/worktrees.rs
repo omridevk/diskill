@@ -58,11 +58,11 @@ pub struct Info {
 }
 
 pub fn repo_depth() -> usize {
-    util::env_num("CLEAN_DISK_REPO_DEPTH", 6)
+    util::env_num("DISK_CLEAN_REPO_DEPTH", 6)
 }
 
 fn idle_days() -> f64 {
-    util::env_num("CLEAN_DISK_WORKTREE_IDLE_DAYS", 2.0)
+    util::env_num("DISK_CLEAN_WORKTREE_IDLE_DAYS", 2.0)
 }
 
 pub fn git(cwd: &Path, args: &[&str]) -> (i32, String, String) {

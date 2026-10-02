@@ -9,11 +9,11 @@ permissions:
   contents: read
 
 jobs:
-  clean-disk:
+  disk-clean:
     runs-on: macos-latest
     defaults:
       run:
-        working-directory: plugins/clean-disk/cli
+        working-directory: plugins/disk-clean/cli
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -26,9 +26,9 @@ jobs:
       - name: shellcheck run.sh
         run: |
           command -v shellcheck >/dev/null || brew install shellcheck
-          shellcheck ../skills/clean-disk/scripts/run.sh
+          shellcheck ../skills/disk-clean/scripts/run.sh
       - name: manifests are valid JSON
         working-directory: .
         run: |
           jq empty .claude-plugin/marketplace.json
-          jq empty plugins/clean-disk/.claude-plugin/plugin.json
+          jq empty plugins/disk-clean/.claude-plugin/plugin.json

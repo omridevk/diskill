@@ -21,7 +21,7 @@ pub fn temp_dir(tag: &str) -> TempDir {
         .output()
         .unwrap();
     let base = String::from_utf8(out.stdout).unwrap().trim().to_string();
-    let dir = PathBuf::from(base).join(format!("clean-disk-{tag}-{}-{nanos}", std::process::id()));
+    let dir = PathBuf::from(base).join(format!("disk-clean-{tag}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     TempDir(std::fs::canonicalize(&dir).unwrap())
 }

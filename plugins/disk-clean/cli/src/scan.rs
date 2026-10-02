@@ -25,16 +25,16 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Config {
         Config {
-            min_bytes: util::env_num("CLEAN_DISK_MIN_BYTES", 10_485_760),
-            stale_days: util::env_num("CLEAN_DISK_STALE_DAYS", 90),
-            bigfile_bytes: util::env_num("CLEAN_DISK_BIGFILE_BYTES", 1_073_741_824),
-            old_download_days: util::env_num("CLEAN_DISK_OLD_DOWNLOAD_DAYS", 180),
-            max_report_items: util::env_num("CLEAN_DISK_MAX_REPORT_ITEMS", 40),
-            map_min_bytes: util::env_num("CLEAN_DISK_MAP_MIN_BYTES", 209_715_200),
-            map_depth: util::env_num("CLEAN_DISK_MAP_DEPTH", 5),
-            nm_depth: util::env_num("CLEAN_DISK_NM_DEPTH", 9),
-            nm_min_bytes: util::env_num("CLEAN_DISK_NM_MIN_BYTES", 5_242_880),
-            skip_map: std::env::var("CLEAN_DISK_SKIP_MAP").is_ok_and(|v| v == "1"),
+            min_bytes: util::env_num("DISK_CLEAN_MIN_BYTES", 10_485_760),
+            stale_days: util::env_num("DISK_CLEAN_STALE_DAYS", 90),
+            bigfile_bytes: util::env_num("DISK_CLEAN_BIGFILE_BYTES", 1_073_741_824),
+            old_download_days: util::env_num("DISK_CLEAN_OLD_DOWNLOAD_DAYS", 180),
+            max_report_items: util::env_num("DISK_CLEAN_MAX_REPORT_ITEMS", 40),
+            map_min_bytes: util::env_num("DISK_CLEAN_MAP_MIN_BYTES", 209_715_200),
+            map_depth: util::env_num("DISK_CLEAN_MAP_DEPTH", 5),
+            nm_depth: util::env_num("DISK_CLEAN_NM_DEPTH", 9),
+            nm_min_bytes: util::env_num("DISK_CLEAN_NM_MIN_BYTES", 5_242_880),
+            skip_map: std::env::var("DISK_CLEAN_SKIP_MAP").is_ok_and(|v| v == "1"),
         }
     }
 }
@@ -342,7 +342,7 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
     let run_dir = match run_dir.filter(|d| !d.is_empty()) {
         Some(d) => PathBuf::from(d),
         None => PathBuf::from(format!(
-            "{home}/.cache/clean-disk/run-{}",
+            "{home}/.cache/disk-clean/run-{}",
             util::local_time(c"%Y%m%d-%H%M%S")
         )),
     };

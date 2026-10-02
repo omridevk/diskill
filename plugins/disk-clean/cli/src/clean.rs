@@ -275,7 +275,7 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     let dir = Path::new(run_dir);
     if run_dir.is_empty() || !dir.join("selection.json").is_file() {
         eprintln!(
-            "usage: clean-disk clean [--dry-run] <run_dir>  (run_dir must contain selection.json)"
+            "usage: disk-clean clean [--dry-run] <run_dir>  (run_dir must contain selection.json)"
         );
         return Ok(2);
     }
@@ -403,7 +403,7 @@ fn run_logged(label: &str, program: &str, args: &[&str]) {
 
 pub fn worker(run_dir: &str) -> io::Result<i32> {
     let dir = Path::new(run_dir);
-    let parallel = util::env_num("CLEAN_DISK_PARALLEL", 4usize).max(1);
+    let parallel = util::env_num("DISK_CLEAN_PARALLEL", 4usize).max(1);
     println!("started {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
 
     let rm_list: Vec<String> = util::read_lines(&dir.join("rm-list"))
