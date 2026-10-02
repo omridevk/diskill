@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -66,30 +66,9 @@ impl Plan {
             .map(|p| shell_line("rm", &["-rf", "--", p]))
             .collect();
         let mut repos: Vec<String> = Vec::new();
-        let real = worktrees::real_cwds(&worktrees::process_cwds());
-        let chunk = self.worktrees.len().div_ceil(8).max(1);
-        let checks: Vec<Result<PathBuf, String>> = std::thread::scope(|s| {
-            let handles: Vec<_> = self
-                .worktrees
-                .chunks(chunk)
-                .map(|paths| {
-                    let real = &real;
-                    s.spawn(move || {
-                        paths
-                            .iter()
-                            .map(|p| worktrees::removable(p, real))
-                            .collect::<Vec<_>>()
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .flat_map(|h| h.join().expect("worktree check thread panicked"))
-                .collect()
-        });
-        for (path, check) in self.worktrees.iter().zip(checks) {
-            match check {
-                Ok(repo) => {
+        for path in &self.worktrees {
+            match worktrees::owning_repo(Path::new(path)) {
+                Some(repo) => {
                     let repo = repo.to_string_lossy().into_owned();
                     out.push(shell_line(
                         "git",
@@ -99,7 +78,10 @@ impl Plan {
                         repos.push(repo);
                     }
                 }
-                Err(reason) => out.push(format!("# kept, {reason}: {}", shell_quote(path))),
+                None => out.push(format!(
+                    "# kept, not a registered worktree: {}",
+                    shell_quote(path)
+                )),
             }
         }
         out.extend(

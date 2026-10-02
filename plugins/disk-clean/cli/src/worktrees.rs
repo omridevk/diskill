@@ -537,6 +537,16 @@ fn common_repo(path: &Path) -> Option<PathBuf> {
     )
 }
 
+pub fn owning_repo(path: &Path) -> Option<PathBuf> {
+    let link = std::fs::read_to_string(path.join(".git")).ok()?;
+    let gitdir = path.join(link.strip_prefix("gitdir:")?.trim());
+    let worktrees = gitdir.parent()?;
+    if worktrees.file_name()? != "worktrees" {
+        return None;
+    }
+    Some(worktrees.parent()?.parent()?.to_path_buf())
+}
+
 pub fn removable(path_s: &str, real: &[String]) -> Result<PathBuf, String> {
     let path = Path::new(path_s);
     let repo = if path.is_dir() {

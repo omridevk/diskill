@@ -290,3 +290,44 @@ fn dry_run_quotes_paths_and_lists_fixed_commands() {
     assert!(plan.contains("\ndocker system prune -f\n"), "{plan}");
     assert!(odd.exists());
 }
+
+#[test]
+fn dry_run_names_the_owning_repo_of_a_linked_worktree() {
+    let t = common::temp_dir("clean-dry-wt");
+    let root = &t.0;
+    let run = root.join("run");
+    fs::create_dir_all(&run).unwrap();
+    common::sh(
+        root,
+        "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q ../wt",
+    );
+    let repo = fs::canonicalize(root.join("repo")).unwrap();
+    let wt = root.join("wt");
+    let wt_s = wt.to_string_lossy().into_owned();
+    fs::write(
+        run.join("scan.tsv"),
+        scan_row("worktrees", "worktree", &wt_s),
+    )
+    .unwrap();
+    fs::write(
+        run.join("selection.json"),
+        format!(r#"{{"items": [{}]}}"#, selection_item("worktree", &wt_s)),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        .args(["clean", "--dry-run", &run.to_string_lossy()])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    let plan = String::from_utf8_lossy(&out.stdout);
+    let repo_s = repo.to_string_lossy();
+    assert!(
+        plan.contains(&format!("\ngit -C {repo_s} worktree remove {wt_s}\n")),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("\ngit -C {repo_s} worktree prune\n")),
+        "{plan}"
+    );
+    assert!(wt.exists());
+}

@@ -53,7 +53,8 @@ The page has two tabs:
 - **Preview commands** (footer button) — a dry run. Shows the exact shell commands Approve would run
   for the current selection (`rm -rf -- '<path>'`, `git -C <repo> worktree remove <path>`, the fixed
   commands), plus anything the safety checks reject. Nothing runs; the list is built by the same
-  validation code `clean` uses, with worktrees re-checked live.
+  validation code `clean` uses. Worktree safety checks are not repeated here; `clean` re-runs them
+  right before each removal.
 - **Storage map** — read-only, DaisyDisk-style. A three-ring **sunburst** of the home directory:
   hover to highlight a branch and inspect it, click a segment to zoom into it, click the hub or a
   breadcrumb to go back up. Segments the Cleanup tab can act on are outlined with a white dashed
