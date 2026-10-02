@@ -98,6 +98,7 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(data["total"], 100000);
     assert_eq!(data["tree"]["name"], "~");
     assert_eq!(data["tree"]["children"][1]["rest"], true);
+    assert_eq!(data["insights"], Value::Null);
     let token_line = page
         .lines()
         .find(|l| l.starts_with("const TOKEN = "))

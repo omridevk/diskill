@@ -1,3 +1,4 @@
+use crate::insights;
 use crate::util::{self, tilde};
 use crate::walk::{self, Plan, Walk};
 use crate::worktrees;
@@ -317,6 +318,7 @@ fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
         exact,
         parents,
         repo_tx: None,
+        days: insights::midnights(now),
     }
 }
 
@@ -354,8 +356,9 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
     let mut plan = plan(&cfg, &home, now, tmp_base.as_deref());
     let (repo_tx, repo_rx) = std::sync::mpsc::channel();
     plan.repo_tx = Some(repo_tx);
+    let days = plan.days.clone();
     let started = std::time::Instant::now();
-    let (walked, probes, checked) = std::thread::scope(|s| {
+    let (mut walked, probes, checked) = std::thread::scope(|s| {
         let brew = s.spawn(probe_brew);
         let docker = s.spawn(probe_docker);
         let sims = s.spawn(|| probe_sims(&home));
@@ -377,6 +380,7 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
         );
         (walked, probes, checked)
     });
+    let insights = insights::to_json(std::mem::take(&mut walked.insights), &days, now, &home);
     let ctx = Ctx {
         home: home.clone(),
         now,
@@ -436,6 +440,7 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
             probes.snapshots
         ),
     )?;
+    fs::write(run_dir.join("insights.json"), insights.to_string())?;
     fs::write(
         run_dir.join("free-before"),
         format!("{}\n", util::free_bytes()),

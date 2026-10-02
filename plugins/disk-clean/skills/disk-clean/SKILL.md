@@ -19,9 +19,10 @@ echo "$RUN_DIR"
 ```
 
 One to three minutes: a single parallel walk of the data volume, with the git worktree checks
-running alongside it. Writes three files into `$RUN_DIR`:
+running alongside it. Writes four files into `$RUN_DIR`:
 `scan.tsv` (cleanable items), `map.tsv` (full home-directory size tree), `disk.tsv`
-(volume totals and snapshot count).
+(volume totals and snapshot count), `insights.json` (home files by modified day, age per
+folder, kind, and the largest files).
 Report the total found and move straight on to stage 2.
 
 Tunable via environment variables: `DISK_CLEAN_MIN_BYTES` (default 10 MB floor per item),
