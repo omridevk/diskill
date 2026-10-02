@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn request(port: u16, raw: String) -> (u16, String) {
@@ -218,4 +219,222 @@ fn render_keeps_hostile_paths_inside_the_data_script() {
 
 fn clean_disk_render(data: &Value) -> String {
     disk_clean::review::render(data, "tok")
+}
+
+fn events(port: u16, token: &str, until: &str) -> Vec<(String, Value)> {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(s, "GET /events?token={token} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut reader = BufReader::new(s);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+    let mut out = Vec::new();
+    let mut name = String::new();
+    loop {
+        line.clear();
+        assert!(reader.read_line(&mut line).unwrap() > 0, "stream ended");
+        let line = line.trim_end();
+        if let Some(n) = line.strip_prefix("event: ") {
+            name = n.to_string();
+        } else if let Some(d) = line.strip_prefix("data: ") {
+            out.push((name.clone(), serde_json::from_str(d).unwrap()));
+            if name == until {
+                return out;
+            }
+        }
+    }
+}
+
+fn post_to(port: u16, route: &str, body: &str) -> u16 {
+    let raw = format!(
+        "POST {route} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    request(port, raw).0
+}
+
+#[test]
+fn review_without_run_dir_streams_the_scan() {
+    let t = common::temp_dir("live");
+    let home = t.0.join("home");
+    let bin = t.0.join("bin");
+    let gate = t.0.join("gate");
+    fs::create_dir_all(home.join("Library/Caches/app")).unwrap();
+    fs::write(home.join("Library/Caches/app/blob"), vec![7u8; 64 * 1024]).unwrap();
+    fs::create_dir_all(home.join("code")).unwrap();
+    common::sh(
+        &home.join("code"),
+        "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q -b wt ../wt main",
+    );
+    fs::create_dir_all(&bin).unwrap();
+    let docker = bin.join("docker");
+    fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
+            gate.display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&docker)
+        .status()
+        .unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        .arg("review")
+        .env("HOME", &home)
+        .env("PATH", path)
+        .env("DISK_CLEAN_SKIP_MAP", "1")
+        .env("DISK_CLEAN_NO_BROWSER", "1")
+        .env("DISK_CLEAN_MIN_BYTES", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let url = loop {
+        let mut line = String::new();
+        assert!(stderr.read_line(&mut line).unwrap() > 0, "no url line");
+        if let Some(url) = line.trim().strip_prefix("review UI: ") {
+            break url.to_string();
+        }
+    };
+    std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+    let port: u16 = url
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let (status, page) = request(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_string());
+    assert_eq!(status, 200);
+    let json = page
+        .split_once(r#"<script id="disk-clean-data" type="application/json">"#)
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(json, _)| json)
+        .expect("data script");
+    assert_eq!(
+        serde_json::from_str::<Value>(json).unwrap(),
+        serde_json::json!({"live": true})
+    );
+    let token = page
+        .split_once(r#"<meta name="disk-clean-token" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(token, _)| token.to_string())
+        .expect("token meta");
+    assert_eq!(
+        request(
+            port,
+            "GET /events?token=wrong HTTP/1.1\r\nHost: x\r\n\r\n".to_string()
+        )
+        .0,
+        403
+    );
+
+    let mut first = events(port, &token, "walked");
+    assert_eq!(
+        post_to(
+            port,
+            "/preview",
+            &format!(r#"{{"token": "{token}", "items": []}}"#)
+        ),
+        409
+    );
+    assert_eq!(
+        post_to(
+            port,
+            "/decide",
+            &format!(r#"{{"token": "{token}", "decision": "approve", "items": []}}"#)
+        ),
+        409
+    );
+    fs::write(&gate, "").unwrap();
+    let rest = events(port, &token, "done");
+    let replay_of_first = rest[..first.len()].to_vec();
+    assert_eq!(
+        replay_of_first, first,
+        "a new connection replays from the start"
+    );
+    first = rest;
+
+    let names: Vec<&str> = first.iter().map(|(n, _)| n.as_str()).collect();
+    let walked = names.iter().position(|n| *n == "walked").unwrap();
+    assert_eq!(names[0], "disk");
+    assert_eq!(names.last(), Some(&"done"));
+    assert_eq!(names.iter().filter(|n| **n == "walked").count(), 1);
+    assert!(
+        names[1..walked]
+            .iter()
+            .all(|n| *n == "item" || *n == "progress"),
+        "{names:?}"
+    );
+    assert!(
+        names[walked + 1..names.len() - 1]
+            .iter()
+            .all(|n| *n == "item")
+    );
+    let mut last = 0;
+    for (name, data) in &first {
+        let ms = data["elapsed_ms"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{name} lacks elapsed_ms"));
+        assert!(ms >= last, "{name} went back in time");
+        last = ms;
+    }
+    assert!(first[walked].1["worktrees"].as_u64().unwrap() <= 1);
+    let item = |path: &Path| {
+        first
+            .iter()
+            .position(|(n, d)| n == "item" && d["item"]["path"] == path.to_str().unwrap())
+            .unwrap_or_else(|| panic!("no item for {}", path.display()))
+    };
+    let cache = home.join("Library/Caches/app");
+    let first_progress = names
+        .iter()
+        .position(|n| *n == "progress")
+        .unwrap_or(walked);
+    assert!(
+        item(&cache) < first_progress,
+        "fixed locations come before the walk"
+    );
+    item(&home.join("code/wt"));
+    assert_eq!(first[item(&cache)].1["category"]["id"], "caches");
+    assert_eq!(first[item(&cache)].1["item"]["preselect"], true);
+
+    let second = events(port, &token, "done");
+    assert_eq!(second, first, "a reconnect replays every event");
+
+    assert_eq!(
+        post_to(
+            port,
+            "/preview",
+            &format!(r#"{{"token": "{token}", "items": []}}"#)
+        ),
+        200
+    );
+    let approve = format!(
+        r#"{{"token": "{token}", "decision": "approve", "items": [{{"path": "{}", "category": "caches"}}]}}"#,
+        cache.display()
+    );
+    assert_eq!(post_to(port, "/decide", &approve), 200);
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    let run = Path::new(lines[0]);
+    assert!(run.starts_with(home.join(".cache/disk-clean")), "{stdout}");
+    assert!(run.join("scan.tsv").is_file() && run.join("disk.tsv").is_file());
+    assert_eq!(Path::new(lines[1]), run.join("selection.json"));
+    let sel = fs::read_to_string(run.join("selection.json")).unwrap();
+    assert!(sel.contains(cache.to_str().unwrap()));
 }

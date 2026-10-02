@@ -12,8 +12,9 @@ deleted, and deletes only what you approve.
 - **Scan**: caches, logs, package-manager caches, Xcode data, every `node_modules`, stale build
   output, temp folders, Docker, app code-signing clones, and git worktrees with no leftover work.
   It also builds a storage map of the whole disk, so you can see the space it can't reclaim.
-- **Review**: a browser page with search, filters, per-section quick-select and a sunburst storage
-  map. Nothing is deleted until you click Approve.
+- **Review**: a browser page that opens as soon as the scan starts and fills in while it runs, with
+  search, filters, per-section quick-select and a sunburst storage map. Nothing is deleted until
+  you click Approve.
 - **Delete**: runs in the background and logs free space before and after.
 
 Safety:

@@ -5,25 +5,32 @@ description: Find reclaimable disk space on this Mac, show a browser UI listing 
 
 # Disk Clean
 
-Three stages, run in order. Never skip the review stage — nothing is deleted without an explicit approval in the UI.
+Scan and review (stages 1 and 2) run as one command, then stage 3 deletes. Never skip the review — nothing is deleted without an explicit approval in the UI.
 
-All three stages go through one launcher. It runs the `disk-clean` binary for this plugin version,
+Every stage goes through one launcher. It runs the `disk-clean` binary for this plugin version,
 fetching it on first use (the published release, checksum-verified, or a `cargo build` from the
 bundled source when no release exists). The first run may print a download or build line on stderr.
 
-## Stage 1 — Scan
+## Stages 1 and 2 — Scan and review
+
+Run this **in the background** (`run_in_background: true`) and tell the user to switch to the
+browser tab that opens: the page is the progress UI, so the terminal will look idle.
 
 ```bash
-RUN_DIR=$(bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" scan)
-echo "$RUN_DIR"
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" review
 ```
 
-One to three minutes: a single parallel walk of the data volume, with the git worktree checks
-running alongside it. Writes four files into `$RUN_DIR`:
-`scan.tsv` (cleanable items), `map.tsv` (full home-directory size tree), `disk.tsv`
-(volume totals and snapshot count), `insights.json` (home files by modified day, age per
-folder, kind, and the largest files).
-Report the total found and move straight on to stage 2.
+It creates a run directory under `~/.cache/disk-clean/`, opens a local page in the default browser
+right away, and scans in the background while the page fills in: a live counter during the walk
+(one to three minutes, a single parallel walk of the data volume), then the cleanup list, storage
+map and insights, then the git worktree checks and Docker/Homebrew/simulator probes. Preview and
+Approve unlock when the scan is done. The command **blocks** until the user clicks Approve or
+Cancel. When it exits, the **first line of stdout is `RUN_DIR`**; on approval a second line is the
+path of `$RUN_DIR/selection.json`. Read `RUN_DIR` from the background task's output before stage 3.
+
+The run directory holds `scan.tsv` (cleanable items), `map.tsv` (size tree), `disk.tsv` (volume
+totals and snapshot count), `insights.json` (home files by modified day, age per folder, kind, and
+the largest files), and on approval `selection.json`.
 
 Tunable via environment variables: `DISK_CLEAN_MIN_BYTES` (default 10 MB floor per item),
 `DISK_CLEAN_STALE_DAYS` (default 90), `DISK_CLEAN_BIGFILE_BYTES` (default 1 GB),
@@ -31,15 +38,6 @@ Tunable via environment variables: `DISK_CLEAN_MIN_BYTES` (default 10 MB floor p
 `DISK_CLEAN_MAP_MIN_BYTES` (default 200 MB), `DISK_CLEAN_NM_DEPTH` (default 9),
 `DISK_CLEAN_NM_MIN_BYTES` (default 5 MB), `DISK_CLEAN_SKIP_MAP=1` to skip the storage map
 and walk only the home and temp folders instead of the whole volume.
-
-## Stage 2 — Review UI
-
-```bash
-bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" review "$RUN_DIR"
-```
-
-Opens a local page in the default browser and **blocks** until the user clicks Approve or Cancel.
-Tell the user to switch to the browser tab before running it — the terminal will look idle.
 
 The page has two tabs:
 
@@ -156,5 +154,6 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
 ## Re-running
 
 Each run gets its own directory under `~/.cache/disk-clean/`. Old run directories are kept for
-audit and are safe to delete. To re-open the UI for a completed scan without rescanning, run
-stage 2 again with the same `$RUN_DIR`.
+audit and are safe to delete. To re-open the UI for a completed scan without rescanning, pass the
+run directory: `review "$RUN_DIR"` (it starts in the finished state and prints only the
+`selection.json` path on approval). `scan [RUN_DIR]` still runs the scan alone, without a page.

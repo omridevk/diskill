@@ -1,16 +1,21 @@
 use crate::clean;
+use crate::scan::{self, Sink};
 use crate::util;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
-use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 const PAGE: &str = include_str!("../assets/page.html");
 const TIMEOUT: Duration = Duration::from_secs(1800);
+const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+const HEARTBEAT: Duration = Duration::from_secs(15);
+const NOTHING_FOUND: &str = "nothing-found";
 
 #[derive(Serialize, Clone)]
 pub struct Item {
@@ -46,38 +51,58 @@ pub struct Node {
     pub rest: bool,
 }
 
+pub fn parse_row(f: &[&str]) -> Option<(Value, Item)> {
+    let [
+        id,
+        title,
+        desc,
+        risk,
+        pre,
+        action,
+        cmd_id,
+        label,
+        path,
+        bytes,
+        note,
+        age,
+        accuracy,
+    ] = f
+    else {
+        return None;
+    };
+    let bytes = bytes.trim().parse::<i64>().ok()?;
+    let item = Item {
+        path: path.to_string(),
+        label: label.to_string(),
+        bytes,
+        action: action.to_string(),
+        cmd_id: cmd_id.to_string(),
+        note: note.to_string(),
+        age: if !age.is_empty() && age.bytes().all(|b| b.is_ascii_digit()) {
+            age.parse().ok()
+        } else {
+            None
+        },
+        accuracy: if accuracy.is_empty() {
+            "exact".to_string()
+        } else {
+            accuracy.to_string()
+        },
+        preselect: *pre == "1" && *risk != "report",
+        report: *risk == "report",
+    };
+    Some((
+        json!({"id": id, "title": title, "desc": desc, "risk": risk}),
+        item,
+    ))
+}
+
 pub fn load_scan(run_dir: &Path) -> Vec<Category> {
     let mut cats: Vec<Category> = Vec::new();
     for line in util::read_lines(&run_dir.join("scan.tsv")) {
-        if line.is_empty() {
-            continue;
-        }
         let f: Vec<&str> = line.split('\t').collect();
-        if f.len() != 13 {
+        let Some((_, item)) = parse_row(&f) else {
             continue;
-        }
-        let Ok(bytes) = f[9].trim().parse::<i64>() else {
-            continue;
-        };
-        let item = Item {
-            path: f[8].to_string(),
-            label: f[7].to_string(),
-            bytes,
-            action: f[5].to_string(),
-            cmd_id: f[6].to_string(),
-            note: f[10].to_string(),
-            age: if !f[11].is_empty() && f[11].bytes().all(|b| b.is_ascii_digit()) {
-                f[11].parse().ok()
-            } else {
-                None
-            },
-            accuracy: if f[12].is_empty() {
-                "exact".to_string()
-            } else {
-                f[12].to_string()
-            },
-            preselect: f[4] == "1" && f[3] != "report",
-            report: f[3] == "report",
         };
         match cats.iter_mut().find(|c| c.id == f[0]) {
             Some(c) => c.items.push(item),
@@ -249,13 +274,91 @@ fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) {
     let _ = stream.write_all(body);
 }
 
-fn handle(
-    stream: TcpStream,
-    html: &str,
-    token: &str,
-    done: &mpsc::Sender<Value>,
-    preview: &dyn Fn(&[Value]) -> Value,
-) {
+struct Finished {
+    categories: Vec<Category>,
+    scan_lines: Vec<String>,
+}
+
+pub struct Live {
+    dir: PathBuf,
+    events: Mutex<Vec<String>>,
+    changed: Condvar,
+    finished: OnceLock<Finished>,
+    last_progress: Mutex<Option<Instant>>,
+    cancel: Arc<AtomicBool>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Live {
+    fn new(dir: &Path) -> Live {
+        Live {
+            dir: dir.to_path_buf(),
+            events: Mutex::new(Vec::new()),
+            changed: Condvar::new(),
+            finished: OnceLock::new(),
+            last_progress: Mutex::new(None),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl Sink for Live {
+    fn emit(&self, event: &str, data: Value) {
+        if event == "progress" {
+            let mut last = lock(&self.last_progress);
+            if last.is_some_and(|t| t.elapsed() < PROGRESS_EVERY) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        if event == "done" {
+            let _ = self.finished.set(Finished {
+                categories: load_scan(&self.dir),
+                scan_lines: util::read_lines(&self.dir.join("scan.tsv")),
+            });
+        }
+        lock(&self.events).push(format!("event: {event}\ndata: {data}\n\n"));
+        self.changed.notify_all();
+    }
+}
+
+fn stream_events(out: &mut TcpStream, live: &Live) {
+    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n";
+    if out.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    let mut sent = 0;
+    loop {
+        let batch = {
+            let events = lock(&live.events);
+            let (events, _) = live
+                .changed
+                .wait_timeout_while(events, HEARTBEAT, |e| e.len() == sent)
+                .unwrap_or_else(PoisonError::into_inner);
+            let batch = events[sent..].concat();
+            sent = events.len();
+            batch
+        };
+        let chunk = if batch.is_empty() { ":\n\n" } else { &batch };
+        if out.write_all(chunk.as_bytes()).is_err() {
+            return;
+        }
+    }
+}
+
+fn query_token(target: &str) -> &str {
+    target
+        .split_once('?')
+        .map_or("", |(_, q)| q)
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("token="))
+        .unwrap_or("")
+}
+
+fn handle(stream: TcpStream, html: &str, token: &str, decided: &mpsc::Sender<Value>, live: &Live) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let Ok(mut write) = stream.try_clone() else {
         return;
@@ -295,6 +398,12 @@ fn handle(
                     "text/html; charset=utf-8",
                     html.as_bytes(),
                 );
+            } else if route == "/events" {
+                if constant_eq(query_token(target).as_bytes(), token.as_bytes()) {
+                    stream_events(&mut write, live);
+                } else {
+                    respond(&mut write, "403 Forbidden", "text/plain", b"forbidden");
+                }
             } else {
                 respond(&mut write, "404 Not Found", "text/plain", b"not found");
             }
@@ -329,18 +438,31 @@ fn handle(
                 respond(&mut write, "403 Forbidden", "text/plain", b"forbidden");
                 return;
             }
-            if target == "/preview" {
+            let approve = payload.get("decision").and_then(Value::as_str) == Some("approve");
+            let finished = live.finished.get();
+            if finished.is_none() && (target == "/preview" || approve) {
+                respond(&mut write, "409 Conflict", "text/plain", b"scan not done");
+                return;
+            }
+            if let (Some(f), "/preview") = (finished, target) {
                 let items = payload
                     .get("items")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                let body = preview(&items).to_string();
+                let body = preview(&f.categories, &f.scan_lines, &items).to_string();
                 respond(&mut write, "200 OK", "application/json", body.as_bytes());
                 return;
             }
+            if !approve {
+                live.cancel.store(true, Ordering::Relaxed);
+            }
             respond(&mut write, "200 OK", "application/json", b"{}");
-            let _ = done.send(payload);
+            let _ = decided.send(if approve {
+                payload
+            } else {
+                json!({"decision": "cancel"})
+            });
         }
         _ => respond(
             &mut write,
@@ -411,12 +533,20 @@ pub fn preview(categories: &[Category], scan_lines: &[String], items: &[Value]) 
     })
 }
 
-pub fn run(run_dir: &str) -> io::Result<i32> {
-    let dir = Path::new(run_dir);
+fn reclaimable(categories: &[Category]) -> i64 {
+    categories
+        .iter()
+        .filter(|c| c.risk != "report")
+        .flat_map(|c| &c.items)
+        .filter(|i| i.accuracy == "exact")
+        .map(|i| i.bytes)
+        .sum()
+}
+
+fn finished_run(dir: &Path) -> Option<(Value, Live)> {
     let categories = load_scan(dir);
     if categories.is_empty() {
-        eprintln!("nothing to clean");
-        return Ok(3);
+        return None;
     }
     let (free, total) = disk_stats();
     let (free, total) = (free as i64, total as i64);
@@ -429,74 +559,151 @@ pub fn run(run_dir: &str) -> io::Result<i32> {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or(Value::Null);
-    let reclaimable: i64 = categories
-        .iter()
-        .filter(|c| c.risk != "report")
-        .flat_map(|c| &c.items)
-        .filter(|i| i.accuracy == "exact")
-        .map(|i| i.bytes)
-        .sum();
+    let reclaimable = reclaimable(&categories);
+    let live = Live::new(dir);
+    let at_zero = |mut data: Value| {
+        data["elapsed_ms"] = json!(0);
+        data
+    };
+    let snapshots = fact("snapshots").unwrap_or(0);
+    let home_bytes = fact("home").unwrap_or(0);
+    live.emit(
+        "disk",
+        at_zero(json!({"total": fact("total").unwrap_or(total), "used": used, "free": free, "snapshots": snapshots})),
+    );
+    for c in &categories {
+        let category = json!({"id": c.id, "title": c.title, "desc": c.desc, "risk": c.risk});
+        for item in &c.items {
+            live.emit("item", at_zero(json!({"category": category, "item": item})));
+        }
+    }
+    live.emit(
+        "walked",
+        at_zero(json!({"home": home_bytes, "tree": tree, "insights": insights, "worktrees": 0})),
+    );
+    live.emit("done", at_zero(json!({"reclaimable": reclaimable})));
     let data = json!({
         "categories": categories,
         "reclaimable": reclaimable,
         "free": free,
         "total": fact("total").unwrap_or(total),
         "used": used,
-        "home": fact("home").unwrap_or(0),
-        "snapshots": fact("snapshots").unwrap_or(0),
+        "home": home_bytes,
+        "snapshots": snapshots,
         "tree": tree,
         "insights": insights,
     });
-    let token = token();
-    let html = render(&data, &token);
+    Some((data, live))
+}
 
+fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<()> {
+    let token = token();
+    let html = render(data, &token);
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
-    let (tx, rx) = mpsc::channel::<Value>();
-    let categories = Arc::new(categories);
-    let scan_lines = Arc::new(util::read_lines(&dir.join("scan.tsv")));
-    let shared = Arc::clone(&categories);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let (html, token, tx) = (html.clone(), token.clone(), tx.clone());
-            let (categories, scan_lines) = (Arc::clone(&shared), Arc::clone(&scan_lines));
-            std::thread::spawn(move || {
-                handle(stream, &html, &token, &tx, &|items| {
-                    preview(&categories, &scan_lines, items)
-                })
-            });
+            let (html, token, tx, live) =
+                (html.clone(), token.clone(), tx.clone(), Arc::clone(&live));
+            std::thread::spawn(move || handle(stream, &html, &token, &tx, &live));
         }
     });
-
     eprintln!("review UI: {url}");
     if std::env::var("DISK_CLEAN_NO_BROWSER").is_ok_and(|v| v == "1") {
         eprintln!("DISK_CLEAN_NO_BROWSER=1, not opening a browser");
     } else {
         let _ = std::process::Command::new("open").arg(&url).status();
     }
+    Ok(())
+}
 
+fn decide(rx: &mpsc::Receiver<Value>, live: &Live) -> io::Result<(i32, Option<PathBuf>)> {
     let Ok(payload) = rx.recv_timeout(TIMEOUT) else {
         eprintln!("timed out waiting for approval");
-        return Ok(4);
+        return Ok((4, None));
     };
-    if payload.get("decision").and_then(Value::as_str) != Some("approve") {
-        eprintln!("cancelled in the UI");
-        return Ok(5);
+    match payload.get("decision").and_then(Value::as_str) {
+        Some("approve") => {}
+        Some(NOTHING_FOUND) => {
+            eprintln!("nothing to clean");
+            return Ok((3, None));
+        }
+        _ => {
+            eprintln!("cancelled in the UI");
+            return Ok((5, None));
+        }
     }
     let items = payload
         .get("items")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let Some(selection) = selection(&categories, &items) else {
+    let Some(selection) = live
+        .finished
+        .get()
+        .and_then(|f| selection(&f.categories, &items))
+    else {
         eprintln!("no deletable items were selected");
-        return Ok(5);
+        return Ok((5, None));
     };
-    let out = dir.join("selection.json");
+    let out = live.dir.join("selection.json");
     std::fs::write(
         &out,
         serde_json::to_string_pretty(&selection).map_err(io::Error::other)?,
     )?;
-    println!("{}", out.display());
-    Ok(0)
+    Ok((0, Some(out)))
+}
+
+fn live_scan() -> io::Result<i32> {
+    let dir = scan::new_run_dir(None)?;
+    let live = Arc::new(Live::new(&dir));
+    let (tx, rx) = mpsc::channel();
+    serve(&json!({"live": true}), Arc::clone(&live), tx.clone())?;
+    let scanning = Arc::clone(&live);
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        match scan::scan(&scanning.dir, &*scanning, Arc::clone(&scanning.cancel)) {
+            Ok(()) => {
+                if scanning
+                    .finished
+                    .get()
+                    .is_some_and(|f| f.categories.is_empty())
+                {
+                    let _ = tx.send(json!({"decision": NOTHING_FOUND}));
+                }
+            }
+            Err(e) if e.kind() != io::ErrorKind::Interrupted => {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                scanning.emit(
+                    "error",
+                    json!({"message": e.to_string(), "elapsed_ms": elapsed_ms}),
+                );
+            }
+            Err(_) => {}
+        }
+    });
+    let (code, selection) = decide(&rx, &live)?;
+    println!("{}", dir.display());
+    if let Some(path) = selection {
+        println!("{}", path.display());
+    }
+    Ok(code)
+}
+
+pub fn run(run_dir: Option<String>) -> io::Result<i32> {
+    let Some(dir) = run_dir else {
+        return live_scan();
+    };
+    let Some((data, live)) = finished_run(Path::new(&dir)) else {
+        eprintln!("nothing to clean");
+        return Ok(3);
+    };
+    let live = Arc::new(live);
+    let (tx, rx) = mpsc::channel();
+    serve(&data, Arc::clone(&live), tx)?;
+    let (code, selection) = decide(&rx, &live)?;
+    if let Some(path) = selection {
+        println!("{}", path.display());
+    }
+    Ok(code)
 }
