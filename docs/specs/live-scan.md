@@ -37,8 +37,20 @@ connection first receives all of them in order (a reload resumes), then live one
 | `done` | `{reclaimable}` | scan.tsv, map.tsv, disk.tsv, insights.json written |
 | `error` | `{message}` | scan failed; page shows it, nothing can be approved |
 
-Rows that only exist after the walk (worktree checks, docker/brew/simulator probes) arrive as
-`item` events after `walked`, each as soon as it is known. `progress` stops after `walked`.
+Items arrive as early as they can be known (decided 2026-10-02):
+
+- Pre-pass: before the full walk, the fixed-location sections (trash, caches, logs, package-manager
+  caches, Xcode data and every other row whose path is known up front) are sized directly and sent
+  as `item` events within the first seconds. The full walk later skips nothing; it re-reads those
+  folders. The pre-pass and the walk must agree: if the walk's size for a pre-pass path differs,
+  the walk's value wins and is re-sent as an `item` (the page upserts by path).
+- Walk-derived rows (node_modules, temp folders, stale build artifacts, large files, old downloads)
+  arrive when the walk finishes.
+- Worktree checks start as soon as the walk finds each repo and run alongside the walk; each
+  worktree row is sent the moment its check finishes, before or after `walked`.
+- docker/brew/simulator probes run alongside the walk and are sent when known.
+- `walked.worktrees` is the number of worktree checks still running when the walk ends (0 if they
+  all finished first). `progress` stops after `walked`.
 
 `/preview` and `/decide` with `approve` answer 409 until `done`. `/decide` with `cancel` works at any
 time and stops the scan thread. Validation is unchanged: `selection()` and `clean` still accept only
