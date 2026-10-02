@@ -24,7 +24,8 @@ bulk directory reads land in the same lane.
 ## Event stream
 
 `GET /events?token=<token>` returns `text/event-stream` (token in the query because EventSource
-cannot set headers; wrong token is 403). The server keeps every event it has emitted; a new
+cannot set headers; wrong token is 403). Every event's data also carries `elapsed_ms`, the time since
+the scan started, so a replayed page shows true phase durations. The server keeps every event it has emitted; a new
 connection first receives all of them in order (a reload resumes), then live ones.
 
 | event | data | when |
@@ -32,7 +33,7 @@ connection first receives all of them in order (a reload resumes), then live one
 | `disk` | `{total, used, free, snapshots}` | immediately (statfs, tmutil) |
 | `progress` | `{files, bytes, dir}` | during the walk, at most 10 per second |
 | `item` | `{category: {id, title, desc, risk}, item: <Item as today>}` | when a scan row is final |
-| `walked` | `{home, tree, insights}` | walk finished (map, home size, insights) |
+| `walked` | `{home, tree, insights, worktrees}` | walk finished (map, home size, insights; `worktrees` = how many will be checked next) |
 | `done` | `{reclaimable}` | scan.tsv, map.tsv, disk.tsv, insights.json written |
 | `error` | `{message}` | scan failed; page shows it, nothing can be approved |
 
@@ -48,10 +49,11 @@ a finished run) plus the token meta.
 
 ## Page
 
-- Loading screen until the first `walked`: ParticleText (React Bits, MIT + Commons Clause; keep its
-  notice in the copied file) drifting around "Scanning your disk…", with the live counter
-  (files, bytes, current folder) under it. On `walked` the particles gather into the reclaimable
-  total so far, then the normal layout fades in. Reduced motion: static text, no particles.
+- No separate loading screen: the normal layout renders immediately. During the walk the summary's
+  big number slot shows ParticleText (React Bits, MIT + Commons Clause; keep its notice in the copied
+  file) drifting around "Scanning your disk…", with the live counter (files, bytes, current folder)
+  under it. On `walked` the particles gather into the reclaimable total so far, then hand over to
+  the normal spinning total. Reduced motion: static text, no particles.
 - Items stream into Cleanup as `item` events arrive (sections appear, totals and the donut update
   through the existing transitions). Preselected items arrive selected.
 - Until `done`: a slim status line in the summary ("Checking 168 worktrees…"), Preview and Approve
@@ -64,8 +66,8 @@ a finished run) plus the token meta.
   window (fuse burning, label "Undo", Escape undoes); `/decide approve` is sent only when the fuse
   runs out. Swap its Hugeicons for lucide. Reduced motion: static countdown text.
 - One Radiant shader (MIT, radiant-shaders.com, WebGL or Canvas 2D, picked by the user) as the
-  loading-screen backdrop behind the particle text only; paused when the tab is hidden, a static
-  frame under reduced motion, removed once the layout fades in.
+  backdrop of the summary strip during the scan only; paused when the tab is hidden, a static frame
+  under reduced motion, faded out on `walked`.
 - Connection lost: reconnect with EventSource defaults; the replay makes it idempotent (items keyed
   by path).
 
