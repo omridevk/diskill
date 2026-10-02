@@ -73,16 +73,12 @@ fn review_serves_page_and_writes_selection() {
     let (status, page) = request(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_string());
     assert_eq!(status, 200);
     assert!(!page.contains("__DATA__") && !page.contains("__TOKEN__"));
-    let data_line = page
-        .lines()
-        .find(|l| l.starts_with("const DATA = "))
-        .unwrap();
-    let data: Value = serde_json::from_str(
-        data_line
-            .trim_start_matches("const DATA = ")
-            .trim_end_matches(';'),
-    )
-    .unwrap();
+    let json = page
+        .split_once(r#"<script id="disk-clean-data" type="application/json">"#)
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(json, _)| json)
+        .expect("data script");
+    let data: Value = serde_json::from_str(json).unwrap();
     assert_eq!(data["categories"][0]["id"], "caches");
     assert_eq!(data["categories"][0]["bytes"], 6144);
     assert_eq!(
@@ -98,11 +94,11 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(data["total"], 100000);
     assert_eq!(data["tree"]["name"], "~");
     assert_eq!(data["tree"]["children"][1]["rest"], true);
-    let token_line = page
-        .lines()
-        .find(|l| l.starts_with("const TOKEN = "))
-        .unwrap();
-    let token = token_line.split('"').nth(1).unwrap().to_string();
+    let token = page
+        .split_once(r#"<meta name="disk-clean-token" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(token, _)| token.to_string())
+        .expect("token meta");
     assert_eq!(token.len(), 22);
 
     assert_eq!(
@@ -203,4 +199,22 @@ fn review_exits_3_when_nothing_found() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
+fn render_keeps_hostile_paths_inside_the_data_script() {
+    let data =
+        serde_json::json!({"path": "/tmp/</script><script>alert(1)</script>", "also": "__TOKEN__"});
+    let page = clean_disk_render(&data);
+    let (_, rest) = page
+        .split_once(r#"<script id="disk-clean-data" type="application/json">"#)
+        .expect("data script");
+    let (json, _) = rest.split_once("</script>").expect("script end");
+    let parsed: Value = serde_json::from_str(json).unwrap();
+    assert_eq!(parsed, data);
+    assert!(page.contains(r#"<meta name="disk-clean-token" content="tok""#));
+}
+
+fn clean_disk_render(data: &Value) -> String {
+    disk_clean::review::render(data, "tok")
 }

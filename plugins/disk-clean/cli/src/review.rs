@@ -235,8 +235,9 @@ pub fn token() -> String {
 }
 
 pub fn render(data: &Value, token: &str) -> String {
-    PAGE.replace("__DATA__", &data.to_string())
-        .replace("__TOKEN__", token)
+    let json = data.to_string().replace("</", "<\\/");
+    PAGE.replacen("__TOKEN__", token, 1)
+        .replacen("__DATA__", &json, 1)
 }
 
 fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) {
