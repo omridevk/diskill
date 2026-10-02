@@ -76,6 +76,22 @@ claude plugin validate --strict ./plugins/disk-clean
 
 The tests build every fixture in a temp folder. Deletion is only ever exercised there.
 
+The review page is a React app in `plugins/disk-clean/web` (Vite, shadcn on Base UI, Tailwind,
+TanStack Charts). `pnpm run build` there writes the single self-contained
+`plugins/disk-clean/cli/assets/page.html` that the binary embeds; commit it with any web change
+(CI fails when it is stale). Cargo builds never need Node.
+
+```bash
+pnpm install
+cd plugins/disk-clean/web
+pnpm test            # browser tests, headless Chromium
+pnpm run build       # rebuilds cli/assets/page.html
+pnpm dev             # needs dev/fixture.json: {"data": <review page data>, "token": "..."}
+```
+
+Set `DISK_CLEAN_REVIEW_URL` to a running `disk-clean review` server to proxy `/preview` and
+`/decide` to it during `pnpm dev`.
+
 ## Releasing
 
 1. Bump `version` in `plugins/disk-clean/.claude-plugin/plugin.json` (and in `cli/Cargo.toml`).

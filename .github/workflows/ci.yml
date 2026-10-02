@@ -32,3 +32,19 @@ jobs:
         run: |
           jq empty .claude-plugin/marketplace.json
           jq empty plugins/disk-clean/.claude-plugin/plugin.json
+
+  review-page:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter disk-clean-review exec playwright install chromium-headless-shell
+      - run: pnpm --filter disk-clean-review test
+      - run: pnpm --filter disk-clean-review run build
+      - name: committed page.html matches the source
+        run: git diff --exit-code plugins/disk-clean/cli/assets/page.html
