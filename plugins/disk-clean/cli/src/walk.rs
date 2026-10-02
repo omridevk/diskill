@@ -7,7 +7,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::Sender;
+use std::sync::{Condvar, Mutex, PoisonError};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -179,6 +180,47 @@ struct Found {
     repo: bool,
 }
 
+fn repo_step(repo_depth: usize, parent_depth: usize, name: Option<&str>) -> bool {
+    let hidden_top =
+        parent_depth == 0 && name.is_some_and(|n| n.starts_with('.') && n != ".claude");
+    name.is_none_or(|n| n != ".git" && !REPO_SKIP.contains(&n))
+        && parent_depth < repo_depth
+        && !hidden_top
+}
+
+struct Scout {
+    repos: Sender<PathBuf>,
+    root: PathBuf,
+    logical: PathBuf,
+    home: PathBuf,
+    repo_depth: usize,
+}
+
+fn scout_repo(scout: &Scout, dir: &Path, found: &[(OsString, Meta)]) {
+    let has_git = found.iter().any(|(name, meta)| {
+        name == ".git"
+            && (meta.kind == Kind::Dir || (meta.kind == Kind::Symlink && dir.join(".git").is_dir()))
+    });
+    let Some(logical) = dir
+        .strip_prefix(&scout.root)
+        .ok()
+        .map(|rest| scout.logical.join(rest))
+        .filter(|_| has_git)
+    else {
+        return;
+    };
+    let Ok(rel) = logical.strip_prefix(&scout.home) else {
+        return;
+    };
+    let reaches = rel
+        .components()
+        .enumerate()
+        .all(|(depth, c)| repo_step(scout.repo_depth, depth, c.as_os_str().to_str()));
+    if reaches {
+        let _ = scout.repos.send(logical);
+    }
+}
+
 fn classify(plan: &Plan, parent: Option<&Frame>, name: Option<&str>, meta: &Meta) -> Found {
     let mut found = Found {
         home: None,
@@ -215,17 +257,12 @@ fn classify(plan: &Plan, parent: Option<&Frame>, name: Option<&str>, meta: &Meta
         ph.dev && !dev_pruned && dev_match && (plan.now - meta.mtime) / 86400 > plan.stale_days;
     let big_pruned =
         (d == 1 && (is("Library") || is(".Trash"))) || is(".git") || is("node_modules");
-    let hidden_top = ph.depth == 0 && name.is_some_and(|n| n.starts_with('.')) && !is(".claude");
     found.home = Some(Home {
         depth: d,
         nm: ph.nm && !nm_pruned && !is_nm && d < plan.nm_depth,
         dev: ph.dev && !dev_pruned && !dev_match && d < plan.dev_depth,
         big: ph.big && !big_pruned && d < plan.big_depth,
-        repo: ph.repo
-            && !is(".git")
-            && !any(REPO_SKIP)
-            && ph.depth < plan.repo_depth
-            && !hidden_top,
+        repo: ph.repo && repo_step(plan.repo_depth, ph.depth, name),
         is_go: d == 1 && is("go"),
     });
     found
@@ -266,7 +303,29 @@ struct Entry {
 
 enum Next {
     Read(PathBuf),
-    Wait(Receiver<Vec<Entry>>),
+    Wait(Arc<Job>),
+}
+
+enum Slot {
+    Queued(PathBuf),
+    Reading,
+    Read(Vec<Entry>),
+}
+
+struct Job {
+    slot: Mutex<Slot>,
+    read: Condvar,
+}
+
+fn claim(job: &Job) -> Option<PathBuf> {
+    let mut slot = job.slot.lock().unwrap_or_else(PoisonError::into_inner);
+    match std::mem::replace(&mut *slot, Slot::Reading) {
+        Slot::Queued(path) => Some(path),
+        other => {
+            *slot = other;
+            None
+        }
+    }
 }
 
 fn take<const N: usize>(buf: &[u8], at: &mut usize) -> Option<[u8; N]> {
@@ -405,15 +464,17 @@ fn read_dir_bulk(dir: &Path) -> Vec<(OsString, Option<Meta>)> {
 #[derive(Clone)]
 struct Reader {
     dev: u64,
-    parallel: bool,
+    pool: Option<Arc<rayon::ThreadPool>>,
     cancel: Arc<AtomicBool>,
+    home_first: Option<Arc<Path>>,
+    scout: Option<Arc<Scout>>,
 }
 
 fn list(dir: &Path, reader: &Reader) -> Vec<Entry> {
     if reader.cancel.load(Ordering::Relaxed) {
         return Vec::new();
     }
-    read_dir_bulk(dir)
+    let mut found: Vec<(OsString, Meta)> = read_dir_bulk(dir)
         .into_iter()
         .filter_map(|(name, meta)| {
             let meta = meta.or_else(|| {
@@ -421,29 +482,68 @@ fn list(dir: &Path, reader: &Reader) -> Vec<Entry> {
                     .ok()
                     .map(|m| meta_of(&m))
             })?;
+            Some((name, meta))
+        })
+        .collect();
+    let toward_home = reader
+        .home_first
+        .as_deref()
+        .and_then(|home| home.strip_prefix(dir).ok())
+        .and_then(|rest| rest.components().next())
+        .and_then(|step| found.iter().position(|(name, _)| name == step.as_os_str()));
+    if let Some(i) = toward_home {
+        found[..=i].rotate_right(1);
+    }
+    if let Some(scout) = &reader.scout {
+        scout_repo(scout, dir, &found);
+    }
+    let mut entries: Vec<Entry> = found
+        .into_iter()
+        .rev()
+        .map(|(name, meta)| {
             let next = (meta.kind == Kind::Dir && meta.dev == reader.dev)
                 .then(|| descend(dir.join(&name), reader));
-            Some(Entry { name, meta, next })
+            Entry { name, meta, next }
         })
-        .collect()
+        .collect();
+    entries.reverse();
+    entries
 }
 
 fn descend(path: PathBuf, reader: &Reader) -> Next {
-    if !reader.parallel {
+    let Some(pool) = &reader.pool else {
         return Next::Read(path);
-    }
-    let (tx, rx) = sync_channel(1);
-    let reader = reader.clone();
-    rayon::spawn(move || {
-        let _ = tx.send(list(&path, &reader));
+    };
+    let job = Arc::new(Job {
+        slot: Mutex::new(Slot::Queued(path)),
+        read: Condvar::new(),
     });
-    Next::Wait(rx)
+    let (queued, reader) = (Arc::clone(&job), reader.clone());
+    pool.spawn(move || {
+        let Some(path) = claim(&queued) else { return };
+        let entries = list(&path, &reader);
+        *queued.slot.lock().unwrap_or_else(PoisonError::into_inner) = Slot::Read(entries);
+        queued.read.notify_one();
+    });
+    Next::Wait(job)
 }
 
 fn open(next: Next, reader: &Reader) -> Vec<Entry> {
-    match next {
-        Next::Read(path) => list(&path, reader),
-        Next::Wait(rx) => rx.recv().unwrap_or_default(),
+    let job = match next {
+        Next::Read(path) => return list(&path, reader),
+        Next::Wait(job) => job,
+    };
+    if let Some(path) = claim(&job) {
+        return list(&path, reader);
+    }
+    let slot = job.slot.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut slot = job
+        .read
+        .wait_while(slot, |s| matches!(s, Slot::Reading))
+        .unwrap_or_else(PoisonError::into_inner);
+    match std::mem::replace(&mut *slot, Slot::Reading) {
+        Slot::Read(entries) => entries,
+        _ => Vec::new(),
     }
 }
 
@@ -457,28 +557,39 @@ pub fn walk(
     progress: &dyn Fn(&Walk, &Path),
 ) -> Option<u64> {
     let root_meta = meta_of(&fs::symlink_metadata(root).ok()?);
-    let reader = Reader {
-        dev: root_meta.dev,
-        parallel,
-        cancel: Arc::clone(&plan.cancel),
-    };
     let threads = std::thread::available_parallelism()
         .map(|n| n.get() * 2)
         .unwrap_or(8);
     let pool = if parallel {
-        Some(
+        Some(Arc::new(
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .ok()?,
-        )
+        ))
     } else {
         None
     };
-    let next = (root_meta.kind == Kind::Dir).then(|| match &pool {
-        Some(pool) => pool.install(|| descend(root.to_path_buf(), &reader)),
-        None => Next::Read(root.to_path_buf()),
-    });
+    let reader = Reader {
+        dev: root_meta.dev,
+        pool,
+        cancel: Arc::clone(&plan.cancel),
+        home_first: plan
+            .home
+            .strip_prefix(logical)
+            .ok()
+            .map(|rest| Arc::from(root.join(rest))),
+        scout: plan.repo_tx.clone().map(|repos| {
+            Arc::new(Scout {
+                repos,
+                root: root.to_path_buf(),
+                logical: logical.to_path_buf(),
+                home: plan.home.clone(),
+                repo_depth: plan.repo_depth,
+            })
+        }),
+    };
+    let next = (root_meta.kind == Kind::Dir).then(|| descend(root.to_path_buf(), &reader));
     let root_entry = Entry {
         name: root.file_name().unwrap_or(OsStr::new("/")).to_os_string(),
         meta: root_meta,
@@ -646,11 +757,15 @@ pub fn walk(
 }
 
 pub fn size_of(path: &Path) -> Option<u64> {
+    size_with(path, false)
+}
+
+pub fn size_with(path: &Path, parallel: bool) -> Option<u64> {
     walk(
         path,
         path,
         &Plan::default(),
-        false,
+        parallel,
         &mut HashSet::new(),
         &mut Walk::default(),
         &|_, _| {},

@@ -4,13 +4,14 @@ use crate::util::{self, tilde};
 use crate::walk::{self, Plan, Walk};
 use crate::worktrees;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 pub type Row = [String; 13];
@@ -49,6 +50,16 @@ struct Ctx {
     home: String,
     now: i64,
     walk: Walk,
+    parallel: bool,
+}
+
+fn early(home: &str, now: i64, parallel: bool) -> Ctx {
+    Ctx {
+        home: home.to_string(),
+        now,
+        walk: Walk::default(),
+        parallel,
+    }
 }
 
 struct Cat<'a> {
@@ -75,7 +86,7 @@ fn size_bytes(ctx: &Ctx, path: &Path) -> Option<u64> {
     {
         return Some(kb_bytes(*r));
     }
-    walk::size_of(path).map(kb_bytes)
+    walk::size_with(path, ctx.parallel).map(kb_bytes)
 }
 
 fn age_of(ctx: &Ctx, path: &Path) -> String {
@@ -382,32 +393,32 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
     Ok(0)
 }
 
+static IN_ORDER: Mutex<()> = Mutex::new(());
+
 fn emit(sink: &dyn Sink, started: Instant, event: &str, mut data: Value) {
+    let _in_order = IN_ORDER.lock().unwrap_or_else(PoisonError::into_inner);
     data["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
     sink.emit(event, data);
 }
 
 struct Published {
-    seen: HashSet<String>,
-    scan: String,
-    reclaimable: i64,
+    shown: HashMap<String, Row>,
+    order: Vec<Row>,
+    settled: HashSet<String>,
     started: Instant,
 }
 
-fn publish(rows: &[Row], out: &mut Published, sink: &dyn Sink) {
-    for r in rows.iter().filter(|r| !r[8].contains(['\t', '\n'])) {
-        if !out.seen.insert(r[8].clone()) {
-            continue;
-        }
-        out.scan.push_str(&r.join("\t"));
-        out.scan.push('\n');
-        let fields: Vec<&str> = r.iter().map(String::as_str).collect();
-        let Some((category, item)) = review::parse_row(&fields) else {
-            continue;
-        };
-        if !item.report && item.accuracy == "exact" {
-            out.reclaimable += item.bytes;
-        }
+fn valid(rows: &[Row]) -> impl Iterator<Item = &Row> {
+    rows.iter().filter(|r| !r[8].contains(['\t', '\n']))
+}
+
+fn show(out: &mut Published, row: &Row, sink: &dyn Sink) {
+    if out.shown.get(&row[8]) == Some(row) {
+        return;
+    }
+    out.shown.insert(row[8].clone(), row.clone());
+    let fields: Vec<&str> = row.iter().map(String::as_str).collect();
+    if let Some((category, item)) = review::parse_row(&fields) {
         emit(
             sink,
             out.started,
@@ -415,6 +426,43 @@ fn publish(rows: &[Row], out: &mut Published, sink: &dyn Sink) {
             json!({"category": category, "item": item}),
         );
     }
+}
+
+fn preview(rows: &[Row], out: &Mutex<Published>, sink: &dyn Sink) {
+    let mut out = out.lock().unwrap_or_else(PoisonError::into_inner);
+    for r in valid(rows) {
+        let taken = out.shown.get(&r[8]).is_some_and(|s| s[0] != r[0]);
+        if !taken && !out.settled.contains(&r[8]) {
+            show(&mut out, r, sink);
+        }
+    }
+}
+
+fn settle(rows: &[Row], out: &Mutex<Published>, sink: &dyn Sink) {
+    let mut out = out.lock().unwrap_or_else(PoisonError::into_inner);
+    for r in valid(rows) {
+        if out.settled.insert(r[8].clone()) {
+            out.order.push(r.clone());
+            show(&mut out, r, sink);
+        }
+    }
+}
+
+fn unsettled(ctx: &Ctx, out: &Mutex<Published>) -> Vec<Row> {
+    let out = out.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut rows: Vec<Row> = out
+        .shown
+        .values()
+        .filter(|r| !out.settled.contains(&r[8]))
+        .cloned()
+        .collect();
+    rows.sort_by(|a, b| a[8].cmp(&b[8]));
+    for r in &mut rows {
+        if let Some(bytes) = size_bytes(ctx, Path::new(&r[8])) {
+            r[9] = bytes.to_string();
+        }
+    }
+    rows
 }
 
 fn interrupted() -> io::Error {
@@ -449,12 +497,12 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     let (repo_tx, repo_rx) = std::sync::mpsc::channel();
     plan.repo_tx = Some(repo_tx);
     let days = plan.days.clone();
-    let mut out = Published {
-        seen: HashSet::new(),
-        scan: String::new(),
-        reclaimable: 0,
+    let out = Mutex::new(Published {
+        shown: HashMap::new(),
+        order: Vec::new(),
+        settled: HashSet::new(),
         started,
-    };
+    });
     let progress = |w: &Walk, dir: &Path| {
         emit(
             sink,
@@ -463,38 +511,94 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             json!({"files": w.files, "bytes": w.bytes, "dir": dir.to_string_lossy()}),
         );
     };
+    let walk_ctx: OnceLock<Ctx> = OnceLock::new();
+    let waiting: Mutex<Vec<worktrees::Checked>> = Mutex::new(Vec::new());
+    let checked_so_far = AtomicUsize::new(0);
+    let show_worktrees = |ctx: &Ctx, checked: &[worktrees::Checked]| {
+        let rows = worktrees::rows(checked, &home, |p| size_bytes(ctx, p).unwrap_or(0));
+        preview(&rows, &out, sink);
+    };
+    let on_checked = |c: &worktrees::Checked| {
+        checked_so_far.fetch_add(1, Ordering::Relaxed);
+        let mut waiting = waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        match walk_ctx.get() {
+            Some(ctx) => {
+                drop(waiting);
+                show_worktrees(ctx, std::slice::from_ref(c));
+            }
+            None => waiting.push(c.clone()),
+        }
+    };
     let (listed_tx, listed_rx) = std::sync::mpsc::channel();
     std::thread::scope(|s| {
-        let brew = s.spawn(probe_brew);
-        let docker = s.spawn(probe_docker);
-        let sims = s.spawn(|| probe_sims(&home));
-        let checks = s.spawn(move || worktrees::check_repos(repo_rx, listed_tx));
-        let mut walked = run_walk(&cfg, plan, &home, tmp_base.as_deref(), &mount, &progress);
+        let (out, cfg, home) = (&out, &cfg, &home);
+        let docker = s.spawn(move || {
+            let bytes = probe_docker();
+            let mut rows = Vec::new();
+            scan_docker(&mut rows, cfg, bytes);
+            preview(&rows, out, sink);
+            bytes
+        });
+        let sims = s.spawn(move || {
+            let sims = probe_sims(home);
+            let mut rows = Vec::new();
+            scan_sims(&early(home, now, true), &mut rows, sims);
+            preview(&rows, out, sink);
+            sims
+        });
+        let on_checked = &on_checked;
+        let checks = s.spawn(move || worktrees::check_repos(repo_rx, listed_tx, on_checked));
+
+        let brew_cache = probe_brew();
+        let fixed = early(home, now, true);
+        let mut rows: Vec<Row> = Vec::new();
+        scan_trash(&fixed, &mut rows);
+        scan_pkg(&fixed, &mut rows, cfg, brew_cache.as_deref());
+        scan_xcode(&fixed, &mut rows, cfg);
+        scan_ios_backups(&fixed, &mut rows, cfg);
+        scan_caches(&fixed, &mut rows, cfg);
+        scan_logs(&fixed, &mut rows, cfg);
+        preview(&rows, out, sink);
+        eprintln!(
+            "  sized {} fixed locations in {:.1}s",
+            rows.len(),
+            started.elapsed().as_secs_f64()
+        );
+
+        let mut walked = run_walk(cfg, plan, home, tmp_base.as_deref(), &mount, &progress);
         if cancel.load(Ordering::Relaxed) {
             return Err(interrupted());
         }
         eprintln!("  walked the disk in {}s", started.elapsed().as_secs());
-        let insights = insights::to_json(std::mem::take(&mut walked.insights), &days, now, &home);
-        let ctx = Ctx {
-            home: home.clone(),
-            now,
-            walk: walked,
+        let insights = insights::to_json(std::mem::take(&mut walked.insights), &days, now, home);
+        let finished_early = {
+            let mut waiting = waiting.lock().unwrap_or_else(PoisonError::into_inner);
+            let _ = walk_ctx.set(Ctx {
+                home: home.clone(),
+                now,
+                walk: walked,
+                parallel: false,
+            });
+            std::mem::take(&mut *waiting)
+        };
+        let Some(ctx) = walk_ctx.get() else {
+            return Err(interrupted());
         };
 
         let mut rows: Vec<Row> = Vec::new();
-        scan_trash(&ctx, &mut rows);
-        let brew_cache = brew.join().ok().flatten();
-        scan_pkg(&ctx, &mut rows, &cfg, brew_cache.as_deref());
-        scan_xcode(&ctx, &mut rows, &cfg);
-        scan_node_modules(&ctx, &mut rows, &cfg);
-        scan_dev_artifacts(&ctx, &mut rows, &cfg);
-        scan_ios_backups(&ctx, &mut rows, &cfg);
-        scan_caches(&ctx, &mut rows, &cfg);
-        scan_logs(&ctx, &mut rows, &cfg);
-        scan_user_tmpdir(&ctx, &mut rows, &cfg, tmp_base.as_deref());
-        scan_private_tmp(&ctx, &mut rows, &cfg);
-        scan_big_files(&ctx, &mut rows, &cfg);
-        publish(&rows, &mut out, sink);
+        scan_trash(ctx, &mut rows);
+        scan_pkg(ctx, &mut rows, cfg, brew_cache.as_deref());
+        scan_xcode(ctx, &mut rows, cfg);
+        scan_node_modules(ctx, &mut rows, cfg);
+        scan_dev_artifacts(ctx, &mut rows, cfg);
+        scan_ios_backups(ctx, &mut rows, cfg);
+        scan_caches(ctx, &mut rows, cfg);
+        scan_logs(ctx, &mut rows, cfg);
+        scan_user_tmpdir(ctx, &mut rows, cfg, tmp_base.as_deref());
+        scan_private_tmp(ctx, &mut rows, cfg);
+        scan_big_files(ctx, &mut rows, cfg);
+        settle(&rows, out, sink);
+        show_worktrees(ctx, &finished_early);
 
         let mut map = String::new();
         if !cfg.skip_map {
@@ -509,16 +613,18 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         }
         fs::write(run_dir.join("map.tsv"), &map)?;
         fs::write(run_dir.join("insights.json"), insights.to_string())?;
-        let home_bytes = size_bytes(&ctx, Path::new(&home)).unwrap_or(0);
+        let home_bytes = size_bytes(ctx, Path::new(home)).unwrap_or(0);
+        let listed = listed_rx.recv().unwrap_or(0);
+        let running = listed.saturating_sub(checked_so_far.load(Ordering::Relaxed));
         emit(
             sink,
             started,
             "walked",
             json!({
                 "home": home_bytes,
-                "tree": review::load_map(run_dir, &home, used as i64),
+                "tree": review::load_map(run_dir, home, used as i64),
                 "insights": insights,
-                "worktrees": listed_rx.recv().unwrap_or(0),
+                "worktrees": running,
             }),
         );
 
@@ -528,18 +634,31 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             checked.len(),
             started.elapsed().as_secs()
         );
-        let mut rows = worktrees::rows(&checked, &home, |p| size_bytes(&ctx, p).unwrap_or(0));
-        publish(&rows, &mut out, sink);
-        rows.clear();
-        scan_old_downloads(&ctx, &mut rows, &cfg);
-        scan_sims(&ctx, &mut rows, sims.join().unwrap_or(0));
-        scan_docker(&mut rows, &cfg, docker.join().ok().flatten());
-        publish(&rows, &mut out, sink);
+        let mut rows = worktrees::rows(&checked, home, |p| size_bytes(ctx, p).unwrap_or(0));
+        scan_old_downloads(ctx, &mut rows, cfg);
+        scan_sims(ctx, &mut rows, sims.join().unwrap_or(0));
+        scan_docker(&mut rows, cfg, docker.join().ok().flatten());
+        settle(&rows, out, sink);
+        settle(&unsettled(ctx, out), out, sink);
         if cancel.load(Ordering::Relaxed) {
             return Err(interrupted());
         }
 
-        fs::write(run_dir.join("scan.tsv"), &out.scan)?;
+        let out = out.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut scan = String::new();
+        let mut reclaimable = 0;
+        for r in &out.order {
+            scan.push_str(&r.join("\t"));
+            scan.push('\n');
+            let fields: Vec<&str> = r.iter().map(String::as_str).collect();
+            if let Some((_, item)) = review::parse_row(&fields)
+                && !item.report
+                && item.accuracy == "exact"
+            {
+                reclaimable += item.bytes;
+            }
+        }
+        fs::write(run_dir.join("scan.tsv"), &scan)?;
         let stats = util::volume_stats(&mount);
         let (total, used, free) = stats
             .as_ref()
@@ -555,13 +674,8 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             run_dir.join("free-before"),
             format!("{}\n", util::free_bytes()),
         )?;
-        eprintln!("  found {} items", out.seen.len());
-        emit(
-            sink,
-            started,
-            "done",
-            json!({"reclaimable": out.reclaimable}),
-        );
+        eprintln!("  found {} items", out.order.len());
+        emit(sink, started, "done", json!({"reclaimable": reclaimable}));
         Ok(())
     })
 }

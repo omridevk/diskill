@@ -51,6 +51,7 @@ const IN_PROGRESS: &[&str] = &[
 
 pub type Entry = HashMap<String, String>;
 
+#[derive(Clone)]
 pub struct Info {
     pub branch: String,
     pub unpushed: Option<i64>,
@@ -416,6 +417,7 @@ fn emit(
     (!fields.iter().any(|f| f.contains(['\t', '\n']))).then_some(fields)
 }
 
+#[derive(Clone)]
 pub struct Checked {
     pub entry: Entry,
     pub blockers: Vec<String>,
@@ -429,7 +431,11 @@ fn listed_worktrees(repo: &Path) -> Vec<Entry> {
         .collect()
 }
 
-fn check_entries(entries: Vec<Entry>, real: &[String]) -> Vec<Checked> {
+fn check_entries(
+    entries: Vec<Entry>,
+    real: &[String],
+    on_checked: &(dyn Fn(&Checked) + Sync),
+) -> Vec<Checked> {
     let paths: Vec<PathBuf> = entries
         .iter()
         .map(|e| PathBuf::from(&e["worktree"]))
@@ -440,19 +446,29 @@ fn check_entries(entries: Vec<Entry>, real: &[String]) -> Vec<Checked> {
         .zip(orphans)
         .map(|(entry, orphans)| {
             let (blockers, info) = evaluate(&entry, real, Some(orphans));
-            Checked {
+            let checked = Checked {
                 entry,
                 blockers,
                 info,
-            }
+            };
+            on_checked(&checked);
+            checked
         })
         .collect()
 }
 
-pub fn check_repos(repos: Receiver<PathBuf>, listed: Sender<usize>) -> Vec<Checked> {
+pub fn check_repos(
+    repos: Receiver<PathBuf>,
+    listed: Sender<usize>,
+    on_checked: &(dyn Fn(&Checked) + Sync),
+) -> Vec<Checked> {
     let real = real_cwds(&process_cwds());
     let done: Mutex<Vec<(usize, Vec<Checked>)>> = Mutex::new(Vec::new());
-    rayon::scope(|s| {
+    let threads = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2));
+    let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).build() else {
+        return Vec::new();
+    };
+    pool.in_place_scope(|s| {
         let mut total = 0;
         let mut seen = HashSet::new();
         for (i, repo) in repos
@@ -464,7 +480,7 @@ pub fn check_repos(repos: Receiver<PathBuf>, listed: Sender<usize>) -> Vec<Check
             total += entries.len();
             let (real, done) = (&real, &done);
             s.spawn(move |_| {
-                let checked = check_entries(entries, real);
+                let checked = check_entries(entries, real, on_checked);
                 if let Ok(mut d) = done.lock() {
                     d.push((i, checked));
                 }
