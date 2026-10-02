@@ -96,7 +96,7 @@ function Kinds({kinds}: {kinds: InsightsData['by_kind']}) {
       defineChart({
         marks: [barX(kinds, {x: 'bytes', y: 'kind', key: 'kind', fill: '#60a5fa', radius: 3, inset: 3})],
         scales: {
-          x: {scale: linear, nice: true, grid: true, axis: {label: 'Bytes', tickFormat: (v: number) => formatBytes(v)}},
+          x: {scale: linear, nice: true, grid: true, axis: {label: 'Bytes', ticks: {format: (v: number) => formatBytes(v)}}},
           y: {scale: () => scaleBand<string>().domain(kinds.map(k => k.kind)), axis: {label: ''}},
         },
         tooltip: {use: tooltip, format: point => `${point.datum.kind}: ${formatBytes(point.datum.bytes)} in ${point.datum.files} files`},

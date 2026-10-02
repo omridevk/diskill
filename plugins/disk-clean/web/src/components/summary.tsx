@@ -1,3 +1,4 @@
+import type {ReactNode} from 'react'
 import {formatBytes, type ScanData} from '@/lib/data'
 import type {Selection} from '@/lib/selection'
 import {DISK_COLORS, DiskDonut} from './disk-donut'
@@ -12,7 +13,7 @@ function Legend({color, label, outlined}: {color: string; label: string; outline
   )
 }
 
-export function Summary({data, selection}: {data: ScanData; selection: Selection}) {
+export function Summary({data, selection, status}: {data: ScanData; selection: Selection; status: ReactNode}) {
   const sections = new Set(
     data.categories.filter(c => c.items.some(i => selection.isOn(i))).map(c => c.id),
   ).size
@@ -30,6 +31,7 @@ export function Summary({data, selection}: {data: ScanData; selection: Selection
           <b className="font-medium text-foreground">{formatBytes(data.free)}</b> to{' '}
           <b className="font-medium text-foreground">{formatBytes(freeAfter)}</b> of {formatBytes(data.total)}
         </div>
+        {status}
       </div>
       <div className="flex flex-col gap-2 self-end text-xs text-muted-foreground">
         <Legend color={DISK_COLORS.used} label="Used" />

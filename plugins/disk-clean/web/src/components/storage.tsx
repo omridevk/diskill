@@ -1,8 +1,9 @@
 import {defineChart, type ChartPoint} from '@tanstack/charts'
 import {sunburst, type SunburstNode} from '@tanstack/charts/hierarchy/sunburst'
 import {treemap, type TreemapNode} from '@tanstack/charts/hierarchy/treemap'
+import {motion} from '@tanstack/charts/motion'
 import {polar} from '@tanstack/charts/polar'
-import {Chart} from '@tanstack/charts/react'
+import {Chart} from '@tanstack/charts/react/core'
 import {tooltip} from '@tanstack/charts/tooltip'
 import {Fragment, useMemo, useState} from 'react'
 import {Badge} from '@/components/ui/badge'
@@ -20,6 +21,8 @@ interface Row {
 }
 
 type Shape = 'sunburst' | 'treemap'
+
+const renderer = motion({initial: false})
 
 const HUES = [210, 28, 152, 340, 265, 46, 190, 120, 8, 300, 172, 65]
 
@@ -209,6 +212,7 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
         <ChartBoundary resetKey={`${shape}:${focus}`}>
           <Chart
             definition={definition}
+            renderer={renderer}
             height={shape === 'sunburst' ? 520 : 480}
             ariaLabel={`Storage ${shape} of ${focusNode.path}`}
             onFocusChange={point => setHover(nodeOf(point))}
