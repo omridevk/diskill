@@ -2,7 +2,51 @@ import {Loader2, SquareTerminal} from 'lucide-react'
 import {useEffect, useState} from 'react'
 import {Button} from '@/components/ui/button'
 import {formatBytes} from '@/lib/data'
+import {useTextSwap} from '@/lib/motion'
 import type {Selection} from '@/lib/selection'
+import {PopBytes} from './numbers'
+
+const CHECKING = 'Checking…'
+
+function PreviewLabel({text}: {text: string}) {
+  if (text !== CHECKING) return text
+  return (
+    <>
+      <span aria-hidden className="t-shimmer" data-text={text}>
+        {text}
+      </span>
+      <span className="sr-only">{text}</span>
+    </>
+  )
+}
+
+function PreviewButton({disabled, previewing, onClick}: {disabled: boolean; previewing: boolean; onClick: () => void}) {
+  const label = useTextSwap(previewing ? CHECKING : 'Preview commands')
+  return (
+    <Button variant="outline" disabled={disabled || previewing} onClick={onClick}>
+      <span className="t-icon-swap" data-state={previewing ? 'b' : 'a'}>
+        <SquareTerminal className="t-icon" data-icon="a" />
+        <span className="t-icon" data-icon="b">
+          <Loader2 className={previewing ? 'animate-spin motion-reduce:animate-none' : undefined} />
+        </span>
+      </span>
+      <span ref={label.ref} className="t-text-swap">
+        <PreviewLabel text={label.shown} />
+      </span>
+    </Button>
+  )
+}
+
+function ApproveButton({disabled, armed, onClick}: {disabled: boolean; armed: boolean; onClick: () => void}) {
+  const label = useTextSwap(armed ? 'Click again to confirm' : 'Approve and delete')
+  return (
+    <Button disabled={disabled} onClick={onClick} className={armed ? 'bg-red-600 text-white hover:bg-red-600/90' : undefined}>
+      <span ref={label.ref} className="t-text-swap">
+        {label.shown}
+      </span>
+    </Button>
+  )
+}
 
 export function ActionBar({selection, previewing, onCancel, onPreview, onApprove}: {selection: Selection; previewing: boolean; onCancel: () => void; onPreview: () => void; onApprove: () => void}) {
   const [armed, setArmed] = useState(false)
@@ -23,7 +67,7 @@ export function ActionBar({selection, previewing, onCancel, onPreview, onApprove
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex grow flex-col gap-0.5">
         <div className="text-sm font-semibold tabular-nums">
-          {count} {count === 1 ? 'item' : 'items'} selected · {formatBytes(selection.exactBytes)}
+          {count} {count === 1 ? 'item' : 'items'} selected · <PopBytes bytes={selection.exactBytes} />
           {selection.apparentBytes > 0 && (
             <span className="font-normal text-muted-foreground"> (+≈{formatBytes(selection.apparentBytes)} apparent)</span>
           )}
@@ -36,17 +80,8 @@ export function ActionBar({selection, previewing, onCancel, onPreview, onApprove
       <Button variant="ghost" onClick={onCancel}>
         Cancel
       </Button>
-      <Button variant="outline" disabled={count === 0 || previewing} onClick={onPreview}>
-        {previewing ? <Loader2 className="animate-spin" /> : <SquareTerminal />}
-        Preview commands
-      </Button>
-      <Button
-        disabled={count === 0}
-        onClick={approve}
-        className={armed ? 'bg-red-600 text-white hover:bg-red-600/90' : undefined}
-      >
-        {armed ? 'Click again to confirm' : 'Approve and delete'}
-      </Button>
+      <PreviewButton disabled={count === 0} previewing={previewing} onClick={onPreview} />
+      <ApproveButton disabled={count === 0} armed={armed} onClick={approve} />
     </footer>
   )
 }

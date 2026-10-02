@@ -1,6 +1,7 @@
 import {formatBytes, type ScanData} from '@/lib/data'
 import type {Selection} from '@/lib/selection'
 import {DISK_COLORS, DiskDonut} from './disk-donut'
+import {SpinningBytes} from './numbers'
 
 function Legend({color, label, outlined}: {color: string; label: string; outlined?: boolean}) {
   return (
@@ -22,7 +23,7 @@ export function Summary({data, selection}: {data: ScanData; selection: Selection
       <div className="flex grow flex-col gap-2">
         <div className="text-xs text-muted-foreground">Selected to free</div>
         <div className="text-5xl leading-none font-bold tracking-tighter tabular-nums">
-          {formatBytes(selection.exactBytes)}
+          <SpinningBytes bytes={selection.exactBytes} />
         </div>
         <div className="text-[13px] text-muted-foreground">
           {selection.selected.length} items in {sections} sections · free space goes from{' '}

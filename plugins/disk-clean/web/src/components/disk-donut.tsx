@@ -1,8 +1,13 @@
 import {defineChart} from '@tanstack/charts'
 import {pie, polar, radialArc} from '@tanstack/charts/polar'
-import {Chart} from '@tanstack/charts/react'
+import {motion} from '@tanstack/charts/motion'
+import {Chart} from '@tanstack/charts/react/core'
 import {useMemo} from 'react'
 import {formatBytes} from '@/lib/data'
+import {cssMs} from '@/lib/motion'
+import {PopBytes} from './numbers'
+
+const renderer = motion({initial: false})
 
 export const DISK_COLORS = {used: '#52525b', selected: '#60a5fa', free: '#27272a'}
 
@@ -33,6 +38,7 @@ export function DiskDonut({used, selected, free, size}: {used: number; selected:
         }),
       ],
       scales: {x: null, y: null},
+      motion: {transition: {type: 'tween', duration: cssMs('--duration-fast', 250), easing: 'ease-out'}},
       color: {domain: ['used', 'selected', 'free'], range: [DISK_COLORS.used, DISK_COLORS.selected, DISK_COLORS.free]},
     })
   }, [used, selected, free])
@@ -41,6 +47,7 @@ export function DiskDonut({used, selected, free, size}: {used: number; selected:
     <div className="relative shrink-0" style={{width: size, height: size}}>
       <Chart
         definition={definition}
+        renderer={renderer}
         width={size}
         height={size}
         tabIndex={-1}
@@ -48,7 +55,9 @@ export function DiskDonut({used, selected, free, size}: {used: number; selected:
       />
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-[11px] text-muted-foreground">free after</span>
-        <span className="text-lg font-bold tracking-tight tabular-nums">{formatBytes(free + selected)}</span>
+        <span className="text-lg font-bold tracking-tight tabular-nums">
+          <PopBytes bytes={free + selected} />
+        </span>
       </div>
     </div>
   )

@@ -1,4 +1,4 @@
-import {ChevronRight, LayoutGrid, List, Search, TriangleAlert} from 'lucide-react'
+import {LayoutGrid, List, Search, TriangleAlert} from 'lucide-react'
 import {useEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {Button} from '@/components/ui/button'
@@ -8,6 +8,7 @@ import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatBytes, isExact, RISK_LABEL, type Category, type Item, type Risk} from '@/lib/data'
+import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {sectionState, type Selection} from '@/lib/selection'
 
 type View = 'list' | 'cards'
@@ -147,6 +148,41 @@ interface Group {
   bytes: number
 }
 
+function ItemTable({items, selection, section}: {items: Item[]; selection: Selection; section: string}) {
+  const reveal = useReveal(section)
+  return (
+    <div ref={reveal} data-open="true" className="t-panel-slide grow overflow-auto px-3 py-1">
+      <div className="grid grid-cols-[36px_minmax(0,1fr)_80px_96px] gap-x-3 px-3 py-2 text-[11px] tracking-wide text-muted-foreground/70 uppercase">
+        <span />
+        <span>Path</span>
+        <span className="text-right">Idle</span>
+        <span className="text-right">Size</span>
+      </div>
+      {items.map(item => {
+        const on = selection.isOn(item)
+        return (
+          <label
+            key={item.path}
+            className={`grid cursor-pointer grid-cols-[36px_minmax(0,1fr)_80px_96px] items-center gap-x-3 rounded-lg px-3 py-2 ${STATE_MOTION} ${on ? 'bg-blue-400/[0.07]' : 'hover:bg-muted/40'}`}
+          >
+            <Checkbox checked={on} disabled={item.report} onCheckedChange={value => selection.set([item], value)} />
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="truncate font-mono text-[12.5px]">{item.label}</span>
+              {item.note && <span className="truncate text-xs text-muted-foreground">{item.note}</span>}
+            </span>
+            <span className={`text-right text-xs tabular-nums ${item.age !== null && item.age >= 90 ? 'text-amber-300' : 'text-muted-foreground'}`}>
+              {item.age === null ? '' : item.age === 0 ? 'today' : `${item.age}d`}
+            </span>
+            <span className="text-right text-[13px] font-medium">
+              <Size item={item} />
+            </span>
+          </label>
+        )
+      })}
+    </div>
+  )
+}
+
 function ListView({groups, selection, active, onActive}: {groups: Group[]; selection: Selection; active: string; onActive: (id: string) => void}) {
   const ordered = GROUPS.flatMap(([, risk]) => groups.filter(g => g.category.risk === risk))
   const current = ordered.find(g => g.category.id === active) ?? ordered[0]
@@ -167,7 +203,7 @@ function ListView({groups, selection, active, onActive}: {groups: Group[]; selec
                 return (
                   <div
                     key={category.id}
-                    className={`flex items-start gap-2.5 rounded-lg border p-2.5 ${isActive ? 'border-zinc-700 bg-zinc-900' : lit ? 'border-blue-400/35 bg-blue-400/5' : 'border-transparent'}`}
+                    className={`flex items-start gap-2.5 rounded-lg border p-2.5 ${STATE_MOTION} ${isActive ? 'border-zinc-700 bg-zinc-900' : lit ? 'border-blue-400/35 bg-blue-400/5' : 'border-transparent'}`}
                   >
                     <SectionCheckbox category={category} selection={selection} />
                     <button type="button" onClick={() => onActive(category.id)} className="flex grow flex-col gap-1.5 text-left">
@@ -206,38 +242,21 @@ function ListView({groups, selection, active, onActive}: {groups: Group[]; selec
             <p className="text-[13px] text-muted-foreground">{current.category.desc}</p>
             <QuickSelect items={current.items} selection={selection} />
           </div>
-          <div className="grow overflow-auto px-3 py-1">
-            <div className="grid grid-cols-[36px_minmax(0,1fr)_80px_96px] gap-x-3 px-3 py-2 text-[11px] tracking-wide text-muted-foreground/70 uppercase">
-              <span />
-              <span>Path</span>
-              <span className="text-right">Idle</span>
-              <span className="text-right">Size</span>
-            </div>
-            {current.items.map(item => {
-              const on = selection.isOn(item)
-              return (
-                <label
-                  key={item.path}
-                  className={`grid cursor-pointer grid-cols-[36px_minmax(0,1fr)_80px_96px] items-center gap-x-3 rounded-lg px-3 py-2 ${on ? 'bg-blue-400/[0.07]' : 'hover:bg-muted/40'}`}
-                >
-                  <Checkbox checked={on} disabled={item.report} onCheckedChange={value => selection.set([item], value)} />
-                  <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="truncate font-mono text-[12.5px]">{item.label}</span>
-                    {item.note && <span className="truncate text-xs text-muted-foreground">{item.note}</span>}
-                  </span>
-                  <span className={`text-right text-xs tabular-nums ${item.age !== null && item.age >= 90 ? 'text-amber-300' : 'text-muted-foreground'}`}>
-                    {item.age === null ? '' : item.age === 0 ? 'today' : `${item.age}d`}
-                  </span>
-                  <span className="text-right text-[13px] font-medium">
-                    <Size item={item} />
-                  </span>
-                </label>
-              )
-            })}
-          </div>
+          <ItemTable items={current.items} selection={selection} section={current.category.id} />
         </main>
       )}
     </div>
+  )
+}
+
+function LearnChevron() {
+  return (
+    <span className="t-learn-chevron">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+        <path className="t-learn-arm t-learn-arm-top" d="M6 4L10 8" />
+        <path className="t-learn-arm t-learn-arm-bot" d="M10 8L6 12" />
+      </svg>
+    </span>
   )
 }
 
@@ -256,7 +275,7 @@ function CardsView({groups, selection, onOpen}: {groups: Group[]; selection: Sel
                 return (
                   <div
                     key={category.id}
-                    className={`flex flex-col gap-3 rounded-xl border p-4 ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'}`}
+                    className={`flex flex-col gap-3 rounded-xl border p-4 ${STATE_MOTION} ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'}`}
                   >
                     <div className="flex items-center gap-2.5">
                       <SectionCheckbox category={category} selection={selection} />
@@ -268,8 +287,8 @@ function CardsView({groups, selection, onOpen}: {groups: Group[]; selection: Sel
                       <span className="text-xs text-muted-foreground">{pickedLabel(category, selection)}</span>
                     </div>
                     <p className="grow text-xs leading-relaxed text-muted-foreground">{category.desc}</p>
-                    <Button variant="link" size="xs" className="self-start px-0" onClick={() => onOpen(category.id)}>
-                      Show items <ChevronRight />
+                    <Button variant="link" size="xs" className="t-learn self-start px-0" onClick={() => onOpen(category.id)}>
+                      Show items <LearnChevron />
                     </Button>
                   </div>
                 )
@@ -366,8 +385,7 @@ function Warning({children}: {children: ReactNode}) {
   )
 }
 
-function Warnings({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
-  if (hidden.length === 0 && risky.length === 0) return null
+function WarningLines({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
   return (
     <div className="flex flex-col gap-1 border-b bg-amber-500/5 px-7 py-2 text-xs text-amber-200">
       {hidden.length > 0 && (
@@ -377,6 +395,26 @@ function Warnings({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
         </Warning>
       )}
       {risky.length > 0 && <Warning>{plural(risky.length, 'item', 'items')} marked review selected: slow or costly to rebuild.</Warning>}
+    </div>
+  )
+}
+
+function useHeld<T>(value: T, keep: boolean) {
+  const held = useRef(value)
+  if (keep) held.current = value
+  return held.current
+}
+
+function Warnings({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
+  const open = hidden.length > 0 || risky.length > 0
+  const shown = useHeld({hidden, risky}, open)
+  return (
+    <div className="t-acc" data-open={String(open)} inert={!open}>
+      <div className="t-acc-panel">
+        <div className="t-acc-panel-inner">
+          <WarningLines hidden={shown.hidden} risky={shown.risky} />
+        </div>
+      </div>
     </div>
   )
 }
@@ -422,6 +460,7 @@ export function Cleanup({categories, selection}: {categories: Category[]; select
   const [view, setView] = useStoredView()
   const [active, setActive] = useState('')
   const search = useRef<HTMLInputElement>(null)
+  const reveal = useReveal(view)
   const groups = useMemo(() => groupItems(categories, filters, selection), [categories, filters, selection])
   const shown = new Set(groups.flatMap(g => g.items.map(i => i.path)))
 
@@ -455,7 +494,9 @@ export function Cleanup({categories, selection}: {categories: Category[]; select
     <div className="flex min-h-0 grow flex-col">
       <Toolbar filters={filters} setFilters={setFilters} view={view} onView={setView} searchRef={search} />
       <Warnings hidden={selection.selected.filter(i => !shown.has(i.path))} risky={selection.risky} />
-      {body}
+      <div ref={reveal} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
+        {body}
+      </div>
     </div>
   )
 }

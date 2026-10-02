@@ -67,7 +67,7 @@ function Calendar({days}: {days: InsightsData['modified_by_day']}) {
         y: {scale: () => scaleBand<string>().domain(WEEKDAYS), axis: {label: ''}},
       },
       color: {scale: heat(cap)},
-      tooltip: {...tooltip, content: (point: {datum: {day: string; bytes: number; files: number}}) => `${point.datum.day}: ${formatBytes(point.datum.bytes)} in ${point.datum.files} files`},
+      tooltip: {use: tooltip, format: point => `${point.datum.day}: ${formatBytes(point.datum.bytes)} in ${point.datum.files} files`},
     })
   }, [days])
   return <Chart definition={definition} height={170} ariaLabel="Bytes by last-modified day over the past year" />
@@ -84,7 +84,7 @@ function FolderAge({data}: {data: InsightsData['age_by_folder']}) {
         y: {scale: () => scaleBand<string>().domain(data.folders.map(f => f.path)), axis: {label: ''}},
       },
       color: {scale: heat(max)},
-      tooltip,
+      tooltip: {use: tooltip, format: point => `${point.datum.folder} · ${point.datum.bucket}: ${formatBytes(point.datum.bytes)}`},
     })
   }, [data])
   return <Chart definition={definition} height={36 + data.folders.length * 26} ariaLabel="Folder size by last-modified age" />
@@ -99,7 +99,7 @@ function Kinds({kinds}: {kinds: InsightsData['by_kind']}) {
           x: {scale: linear, nice: true, grid: true, axis: {label: 'Bytes', tickFormat: (v: number) => formatBytes(v)}},
           y: {scale: () => scaleBand<string>().domain(kinds.map(k => k.kind)), axis: {label: ''}},
         },
-        tooltip,
+        tooltip: {use: tooltip, format: point => `${point.datum.kind}: ${formatBytes(point.datum.bytes)} in ${point.datum.files} files`},
       }),
     [kinds],
   )
@@ -127,7 +127,7 @@ function SectionAge({categories}: {categories: Category[]}) {
           y: {scale: () => scaleBand<string>().domain(rows.map(c => c.title)), axis: {label: ''}},
         },
         color: {scale: heat(max)},
-        tooltip,
+        tooltip: {use: tooltip, format: point => `${point.datum.section} · idle ${point.datum.bucket}: ${formatBytes(point.datum.bytes)}`},
       }),
     }
   }, [categories])

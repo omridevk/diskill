@@ -87,7 +87,10 @@ export function PreviewDialog({plan, open, onOpenChange, onApprove}: {plan: Plan
                 </TabsList>
                 <span className="grow" />
                 <Button variant="outline" size="sm" onClick={copy}>
-                  {copied ? <Check /> : <Copy />}
+                  <span className="t-icon-swap" data-state={copied ? 'b' : 'a'}>
+                    <Copy className="t-icon" data-icon="a" />
+                    <Check className="t-icon" data-icon="b" />
+                  </span>
                   {copied ? 'Copied' : 'Copy as shell script'}
                 </Button>
               </div>

@@ -28,6 +28,9 @@ importers:
       cn:
         specifier: 0.4.0
         version: 0.4.0
+      d3-hierarchy:
+        specifier: 3.1.2
+        version: 3.1.2
       d3-scale:
         specifier: 4.0.2
         version: 4.0.2
@@ -47,6 +50,9 @@ importers:
       '@tailwindcss/vite':
         specifier: 4.3.3
         version: 4.3.3(vite@8.3.2(@types/node@26.6.4)(jiti@2.7.0))
+      '@types/d3-hierarchy':
+        specifier: 3.1.7
+        version: 3.1.7
       '@types/d3-scale':
         specifier: 4.0.9
         version: 4.0.9

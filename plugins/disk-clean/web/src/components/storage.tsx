@@ -9,6 +9,7 @@ import {Badge} from '@/components/ui/badge'
 import {ChartBoundary} from './chart-boundary'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatBytes, type ScanData, type TreeNode} from '@/lib/data'
+import {squarifyInBounds} from '@/lib/treemap-tile'
 
 interface Row {
   id: string
@@ -50,6 +51,17 @@ function subtree(root: TreeNode, depth: number): Row[] {
   }
   visit(root, undefined, 0)
   return rows
+}
+
+function nodeOf(point: ChartPoint | null) {
+  const datum = point?.datum as SunburstNode<Row> | TreemapNode<Row> | undefined
+  return datum?.data?.node ?? null
+}
+
+function describe(point: ChartPoint, focus: TreeNode) {
+  const node = nodeOf(point)
+  if (!node) return ''
+  return `${node.name} · ${formatBytes(node.bytes)} · ${((node.bytes / focus.bytes) * 100).toFixed(1)}% of ${focus.name}`
 }
 
 function Reconciliation({data}: {data: ScanData}) {
@@ -101,6 +113,7 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
     if (!flat || !tree) return null
     const stroke = (node: {data: Row | null}) => (node.data && cleanable.has(node.data.id) ? '#fafafa' : '#0a0a0a')
     const focusNode = flat.byPath.get(focus)
+    const storageTooltip = {use: tooltip, format: (point: ChartPoint) => describe(point, focusNode ?? tree)}
     const hueOf = new Map((focusNode?.children ?? []).map((child, i) => [child.path, HUES[i % HUES.length] ?? 210]))
     const fill = (branch: string, depth: number) => tone(hueOf.get(branch) ?? 210, depth)
     if (shape === 'sunburst') {
@@ -127,7 +140,7 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
         ],
         scales: {x: null, y: null},
         motion: {transition: {type: 'tween', duration: 480, easing: 'ease-in-out'}},
-        tooltip,
+        tooltip: storageTooltip,
       })
     }
     return defineChart({
@@ -137,6 +150,7 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
           nodeId: 'id',
           parentId: 'parent',
           value: 'value',
+          method: squarifyInBounds,
           fill: node => fill(node.ancestorIds[1] ?? node.id, node.depth),
           label: node => node.data?.name ?? node.name,
           labelFill: '#09090b',
@@ -146,7 +160,7 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
         }),
       ],
       scales: {x: null, y: null},
-      tooltip,
+      tooltip: storageTooltip,
     })
   }, [flat, shape, focus, cleanable, tree])
 
@@ -159,10 +173,6 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
   for (let n: TreeNode | undefined = focusNode; n; n = flat.parents.get(n.path)) chain.unshift(n)
   const shown = hover ?? focusNode
 
-  const nodeOf = (point: ChartPoint | null) => {
-    const datum = point?.datum as SunburstNode<Row> | TreemapNode<Row> | undefined
-    return datum?.data?.node ?? null
-  }
   const drill = (point: ChartPoint | null) => {
     let node = nodeOf(point)
     while (shape === 'treemap' && node) {
@@ -182,7 +192,7 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
               {i > 0 && <span className="text-muted-foreground">/</span>}
               <button
                 type="button"
-                className={i === chain.length - 1 ? 'font-semibold' : 'text-muted-foreground hover:text-foreground'}
+                className={i === chain.length - 1 ? 'font-semibold' : `text-muted-foreground transition-[color] duration-(--duration-quick) ease-(--ease-smooth-out) motion-reduce:transition-none hover:text-foreground`}
                 onClick={() => setFocus(n.path)}
               >
                 {n.name}
