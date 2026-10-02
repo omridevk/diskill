@@ -1,10 +1,11 @@
-import {Loader2, SquareTerminal} from 'lucide-react'
+import {Loader2, SquareTerminal, Trash2} from 'lucide-react'
 import {useEffect, useState} from 'react'
 import {Button} from '@/components/ui/button'
 import {formatBytes} from '@/lib/data'
-import {useTextSwap} from '@/lib/motion'
+import {cssMs, useReducedMotion, useTextSwap} from '@/lib/motion'
 import type {Selection} from '@/lib/selection'
 import {PopBytes} from './numbers'
+import FuseButton from './react-bits/fuse-button'
 
 const CHECKING = 'Checking…'
 
@@ -23,7 +24,7 @@ function PreviewLabel({text}: {text: string}) {
 function PreviewButton({disabled, previewing, onClick}: {disabled: boolean; previewing: boolean; onClick: () => void}) {
   const label = useTextSwap(previewing ? CHECKING : 'Preview commands')
   return (
-    <Button variant="outline" disabled={disabled || previewing} onClick={onClick}>
+    <Button variant="outline" size="lg" disabled={disabled || previewing} onClick={onClick}>
       <span className="t-icon-swap" data-state={previewing ? 'b' : 'a'}>
         <SquareTerminal className="t-icon" data-icon="a" />
         <span className="t-icon" data-icon="b">
@@ -37,31 +38,65 @@ function PreviewButton({disabled, previewing, onClick}: {disabled: boolean; prev
   )
 }
 
-function ApproveButton({disabled, armed, onClick}: {disabled: boolean; armed: boolean; onClick: () => void}) {
-  const label = useTextSwap(armed ? 'Click again to confirm' : 'Approve and delete')
+function useCountdown(running: boolean, ms: number) {
+  const [left, setLeft] = useState(ms)
+  useEffect(() => {
+    setLeft(ms)
+    if (!running) return
+    const started = performance.now()
+    const timer = setInterval(() => setLeft(Math.max(0, ms - (performance.now() - started))), 250)
+    return () => clearInterval(timer)
+  }, [running, ms])
+  return Math.ceil(left / 1000)
+}
+
+function ApproveButton({disabled, onApprove}: {disabled: boolean; onApprove: () => void}) {
+  const reduced = useReducedMotion()
+  const undoWindow = cssMs('--fuse-window', 4000)
+  const [armed, setArmed] = useState(false)
+  const seconds = useCountdown(armed && reduced, undoWindow)
   return (
-    <Button disabled={disabled} onClick={onClick} className={armed ? 'bg-red-600 text-white hover:bg-red-600/90' : undefined}>
-      <span ref={label.ref} className="t-text-swap">
-        {label.shown}
-      </span>
-    </Button>
+    <FuseButton
+      label="Approve and delete"
+      undoLabel={reduced ? `Undo (${seconds}s)` : 'Undo'}
+      doneLabel="Approving"
+      icon={<Trash2 />}
+      size="sm"
+      radius={8}
+      background="var(--primary)"
+      color="var(--primary-foreground)"
+      fuseColor={reduced ? 'transparent' : '#ef4444'}
+      fuseThickness={2}
+      undoWindow={undoWindow}
+      commitOn="fuseEnd"
+      disabled={disabled}
+      onCommit={onApprove}
+      onPhaseChange={phase => setArmed(phase === 'armed')}
+    />
   )
 }
 
-export function ActionBar({selection, previewing, onCancel, onPreview, onApprove}: {selection: Selection; previewing: boolean; onCancel: () => void; onPreview: () => void; onApprove: () => void}) {
-  const [armed, setArmed] = useState(false)
+function hint(locked: boolean) {
+  return locked ? ' · Preview and Approve unlock when the scan finishes' : ' · Approve gives you a few seconds to undo'
+}
+
+export function ActionBar({
+  selection,
+  locked,
+  previewing,
+  onCancel,
+  onPreview,
+  onApprove,
+}: {
+  selection: Selection
+  locked: boolean
+  previewing: boolean
+  onCancel: () => void
+  onPreview: () => void
+  onApprove: () => void
+}) {
   const count = selection.selected.length
-  const needsConfirm = selection.risky.length > 0
-
-  useEffect(() => setArmed(false), [selection.selected])
-
-  const approve = () => {
-    if (needsConfirm && !armed) {
-      setArmed(true)
-      return
-    }
-    onApprove()
-  }
+  const disabled = count === 0 || locked
 
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
@@ -74,14 +109,14 @@ export function ActionBar({selection, previewing, onCancel, onPreview, onApprove
         </div>
         <div className="text-xs text-muted-foreground">
           Permanent delete, not to the Trash · worktrees are re-checked right before removal
-          {needsConfirm ? ' · review items need a second click' : ''}
+          {hint(locked)}
         </div>
       </div>
-      <Button variant="ghost" onClick={onCancel}>
+      <Button variant="ghost" size="lg" onClick={onCancel}>
         Cancel
       </Button>
-      <PreviewButton disabled={count === 0} previewing={previewing} onClick={onPreview} />
-      <ApproveButton disabled={count === 0} armed={armed} onClick={approve} />
+      <PreviewButton disabled={disabled} previewing={previewing} onClick={onPreview} />
+      <ApproveButton disabled={disabled} onApprove={onApprove} />
     </footer>
   )
 }

@@ -1,7 +1,19 @@
-import {useEffect, useLayoutEffect, useRef, useState} from 'react'
+import {useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore} from 'react'
+
+const REDUCED_MOTION = '(prefers-reduced-motion: reduce)'
 
 function prefersReducedMotion() {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  return window.matchMedia(REDUCED_MOTION).matches
+}
+
+function onReducedMotionChange(notify: () => void) {
+  const query = window.matchMedia(REDUCED_MOTION)
+  query.addEventListener('change', notify)
+  return () => query.removeEventListener('change', notify)
+}
+
+export function useReducedMotion() {
+  return useSyncExternalStore(onReducedMotionChange, prefersReducedMotion)
 }
 
 function cssValue(name: string) {

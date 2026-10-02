@@ -50,19 +50,35 @@ export interface ScanData {
   insights?: Insights | null
 }
 
+export interface EventSourceLike extends EventTarget {
+  readonly readyState: number
+  close(): void
+}
+
+export type OpenEvents = (url: string) => EventSourceLike
+
 export interface Loaded {
   data: ScanData
   token: string
+  live?: boolean
+  openEvents?: OpenEvents
+}
+
+export const NO_DATA: ScanData = {categories: [], reclaimable: 0, free: 0, total: 0, used: 0, home: 0, snapshots: 0, tree: null, insights: null}
+
+async function loadDev(): Promise<Loaded> {
+  const params = new URLSearchParams(location.search)
+  if (params.has('live')) return {data: NO_DATA, token: params.get('token') ?? '', live: true}
+  const response = await fetch('/dev/fixture.json')
+  return response.json()
 }
 
 export async function load(): Promise<Loaded> {
   const text = document.getElementById('disk-clean-data')?.textContent ?? ''
   const token = document.querySelector<HTMLMetaElement>('meta[name="disk-clean-token"]')?.content ?? ''
-  if (import.meta.env.DEV && text.trim() === '__DATA__') {
-    const response = await fetch('/dev/fixture.json')
-    return response.json()
-  }
-  return {data: JSON.parse(text), token}
+  if (import.meta.env.DEV && text.trim() === '__DATA__') return loadDev()
+  const parsed: ScanData | {live: true} = JSON.parse(text)
+  return 'live' in parsed ? {data: NO_DATA, token, live: true} : {data: parsed, token}
 }
 
 const UNITS = ['KB', 'MB', 'GB', 'TB']

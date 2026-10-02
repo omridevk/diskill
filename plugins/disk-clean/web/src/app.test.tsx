@@ -1,11 +1,15 @@
 import {hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode} from 'd3-hierarchy'
-import {describe, expect, test} from 'vitest'
+import {useState} from 'react'
+import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
+import {ActionBar} from './components/action-bar'
 import {PreviewDialog} from './components/preview-dialog'
-import {formatBytes} from './lib/data'
+import {formatBytes, NO_DATA, type Category, type Loaded} from './lib/data'
 import {cssMs} from './lib/motion'
+import {scanReducer, startScan, type ScanEvent} from './lib/scan'
+import {NO_PICKS, picksReducer, useSelection} from './lib/selection'
 import {squarifyInBounds} from './lib/treemap-tile'
 import {fixture} from './test/fixture'
 import './index.css'
@@ -71,15 +75,6 @@ describe('cleanup', () => {
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
   })
 
-  test('review items need a second click before approving', async () => {
-    const screen = await render(<App loaded={fixture} />)
-    await screen.getByRole('button', {name: /^Docker/}).click()
-    await screen.getByText('docker system prune -f').click()
-    await expect.element(screen.getByText(/marked review selected/)).toBeVisible()
-    await screen.getByRole('button', {name: 'Approve and delete'}).click()
-    await expect.element(screen.getByRole('button', {name: 'Click again to confirm'})).toBeVisible()
-  })
-
   test('card view shows every section and opens one in the list', async () => {
     const screen = await render(<App loaded={fixture} />)
     await screen.getByRole('button', {name: 'Card view'}).click()
@@ -127,6 +122,9 @@ describe('other tabs', () => {
       await expect.element(screen.getByText(title)).toBeVisible()
     }
     await expect.element(page.getByText('This chart could not be drawn')).not.toBeInTheDocument()
+    const kinds = screen.getByLabelText('Bytes by file kind')
+    await expect.element(kinds.getByText(/^\d+(\.\d)? [KMG]B$/).first()).toBeVisible()
+    await expect.element(kinds.getByText(/^[\d,.]{7,}$/)).not.toBeInTheDocument()
   })
 })
 
@@ -170,5 +168,167 @@ describe('treemap tiling', () => {
 
   test('the clamped tiler keeps every tile inside the container', () => {
     expect(outside(layout(squarifyInBounds))).toHaveLength(0)
+  })
+})
+
+const GB = 1024 ** 3
+const LIVE: Loaded = {data: NO_DATA, token: 'test-token', live: true}
+
+function itemEvents(categories: Category[]): ScanEvent[] {
+  return categories
+    .flatMap(c => c.items)
+    .map((item, i) => ({type: 'item' as const, data: {category: categoryOf(item.path), item, elapsed_ms: 500 + i * 100}}))
+}
+
+function categoryOf(path: string) {
+  const found = fixture.data.categories.find(c => c.items.some(i => i.path === path))
+  if (!found) throw new Error(`no category for ${path}`)
+  return {id: found.id, title: found.title, desc: found.desc, risk: found.risk}
+}
+
+const disk: ScanEvent = {type: 'disk', data: {total: 500 * GB, used: 400 * GB, free: 50 * GB, snapshots: 2, elapsed_ms: 20}}
+const walked: ScanEvent = {
+  type: 'walked',
+  data: {home: 40 * GB, tree: fixture.data.tree, insights: fixture.data.insights ?? null, worktrees: 3, elapsed_ms: 4000},
+}
+const done: ScanEvent = {type: 'done', data: {reclaimable: 7 * GB, elapsed_ms: 9500}}
+const items = itemEvents(fixture.data.categories)
+const fold = (events: ScanEvent[]) => events.reduce(scanReducer, startScan(LIVE))
+const itemsOf = (events: ScanEvent[]) => fold(events).data.categories.flatMap(c => c.items)
+
+describe('live scan reducer', () => {
+  test('items land in their categories, ordered by risk then size like the server', () => {
+    const scan = fold([disk, ...items.toReversed()])
+    expect(scan.data.categories.map(c => c.id)).toEqual(['docker', 'caches', 'node', 'big'])
+    expect(scan.data.categories.find(c => c.id === 'caches')?.items.map(i => i.label)).toEqual([
+      '~/Library/Caches/app-a',
+      '~/Library/Caches/app-b',
+      '~/Library/Caches/app-c',
+      '~/Library/Caches/app-d',
+    ])
+    expect(scan.data.reclaimable).toBe(6.75 * GB)
+    expect([scan.data.total, scan.data.free, scan.walked, scan.done]).toEqual([500 * GB, 50 * GB, false, false])
+  })
+
+  test('a replay of every event leaves the state unchanged', () => {
+    const events = [disk, ...items, walked, done]
+    expect(fold([...events, ...events])).toEqual(fold(events))
+  })
+
+  test('walked, done and error each set their part, and elapsed tracks the scan clock', () => {
+    const scan = fold([disk, ...items, walked, done])
+    expect([scan.walked, scan.done, scan.data.home, scan.data.reclaimable, scan.data.tree?.name]).toEqual([true, true, 40 * GB, 7 * GB, '~'])
+    expect([scan.worktrees, scan.walkedAt, scan.elapsed]).toEqual([3, 4000, 9500])
+    expect(scan.data).not.toHaveProperty('elapsed_ms')
+    expect(scan.data).not.toHaveProperty('worktrees')
+    expect(fold([disk, {type: 'error', data: {message: 'walk failed', elapsed_ms: 30}}]).error).toBe('walk failed')
+  })
+
+  test('a finished run starts walked and done', () => {
+    expect(startScan(fixture)).toMatchObject({walked: true, done: true, data: fixture.data})
+  })
+
+  test('preselected items are selected when they arrive, and an unticked one stays unticked on replay', () => {
+    const appA = items[0]?.type === 'item' ? items[0].data.item : undefined
+    if (!appA) throw new Error('fixture has no first item')
+    const first = picksReducer(NO_PICKS, {type: 'offer', items: itemsOf(items.slice(0, 2))})
+    expect([...first.on]).toEqual(['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b'])
+    const unticked = picksReducer(first, {type: 'set', items: [appA], value: false})
+    const replayed = picksReducer(unticked, {type: 'offer', items: itemsOf([...items, ...items])})
+    expect(replayed.on.has(appA.path)).toBe(false)
+    expect(replayed.on.has('/Users/you/Library/Caches/app-d')).toBe(true)
+    expect(replayed.on.has('/Users/you/code/web/node_modules')).toBe(false)
+  })
+})
+
+const SHOWN = {visibility: 'visible'}
+
+function fakeEventSource() {
+  const source = Object.assign(new EventTarget(), {
+    readyState: 1,
+    close: () => {
+      source.readyState = 2
+    },
+  })
+  const send = (event: ScanEvent) => source.dispatchEvent(new MessageEvent(event.type, {data: JSON.stringify(event.data)}))
+  return {source, send}
+}
+
+describe('live page', () => {
+  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
+  afterEach(() => document.documentElement.style.removeProperty('--fuse-window'))
+
+  test('streams items during the walk, reveals storage on walked, unlocks on done and undoes an approve', async () => {
+    const {source, send} = fakeEventSource()
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
+    await expect.element(screen.getByText('Scanning your disk…').first()).toBeInTheDocument()
+    await expect.element(screen.getByText('Walking disk')).toBeVisible()
+    send({type: 'progress', data: {files: 1234, bytes: 5 * GB, dir: '/Users/you/Library/Caches', elapsed_ms: 300}})
+    await expect.element(screen.getByText('1,234 files · 5.0 GB')).toBeVisible()
+    for (const event of [disk, ...items.slice(0, 5)]) send(event)
+    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+    await screen.getByRole('tab', {name: 'Storage'}).click()
+    await expect.element(screen.getByText(/^Where your/)).not.toBeInTheDocument()
+    send(walked)
+    await expect.element(screen.getByLabelText('3.8 GB')).toBeInTheDocument()
+    await expect.element(screen.getByText('4 items selected · 3.8 GB')).toBeVisible()
+    await expect.element(screen.getByText('Where your 500 GB went')).toBeVisible()
+    await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
+    await screen.getByRole('tab', {name: 'Cleanup'}).click()
+    await expect.element(screen.getByText(/Preview and Approve unlock when the scan finishes/)).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: 'Preview commands'})).toBeDisabled()
+    for (const event of items.slice(5)) send(event)
+    await expect.element(screen.getByRole('button', {name: /^Docker/})).toBeVisible()
+    send(done)
+    await expect.element(screen.getByText('Scan complete')).toBeVisible()
+    await expect.element(screen.getByText('5.5s')).toBeVisible()
+    await screen.getByRole('button', {name: 'Approve and delete'}).click()
+    await expect.element(screen.getByRole('button', {name: 'Undo'})).toHaveStyle(SHOWN)
+    await userEvent.keyboard('{Escape}')
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toHaveStyle(SHOWN)
+    await expect.element(screen.getByText(/queued for deletion/)).not.toBeInTheDocument()
+  })
+
+  test('a scan error shows and keeps approve locked', async () => {
+    const {source, send} = fakeEventSource()
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
+    send(disk)
+    send({type: 'error', data: {message: 'permission denied', elapsed_ms: 40}})
+    await expect.element(screen.getByText(/The scan failed: permission denied/)).toBeVisible()
+    await expect.element(screen.getByText('Scan failed')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
+  })
+})
+
+function Bar() {
+  const selection = useSelection(fixture.data.categories)
+  const [approved, setApproved] = useState(0)
+  return (
+    <>
+      <output>{approved} approved</output>
+      <ActionBar selection={selection} locked={false} previewing={false} onCancel={() => {}} onPreview={() => {}} onApprove={() => setApproved(n => n + 1)} />
+    </>
+  )
+}
+
+describe('approve fuse', () => {
+  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
+  afterEach(() => document.documentElement.style.removeProperty('--fuse-window'))
+
+  test('approves only when the fuse runs out, and an undone press never approves', async () => {
+    const screen = await render(<Bar />)
+    const approve = screen.getByRole('button', {name: 'Approve and delete'})
+    const undo = screen.getByRole('button', {name: 'Undo'})
+    await approve.click()
+    await expect.element(undo).toHaveStyle(SHOWN)
+    await undo.click()
+    await expect.element(approve).toHaveStyle(SHOWN)
+    await expect.element(screen.getByText('0 approved')).toBeVisible()
+    await approve.click()
+    await expect.element(undo).toHaveStyle(SHOWN)
+    await expect.element(screen.getByText('1 approved')).toBeVisible()
+    await expect.element(approve).toHaveStyle(SHOWN)
+    await expect.element(screen.getByText('1 approved')).toBeVisible()
   })
 })
