@@ -34,6 +34,18 @@ jobs:
           mode: firewall-free
       - name: fetch crates through Socket Firewall
         run: sfw cargo fetch --locked
+      - name: Socket Firewall report
+        if: ${{ !cancelled() }}
+        run: |
+          crates=$(grep -c '^name = ' Cargo.lock)
+          blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
+          unparsed=$(jq '.parseFail // [] | length' "$SFW_JSON_REPORT_PATH")
+          {
+            echo "### Socket Firewall"
+            echo "$crates crates in Cargo.lock fetched through sfw: $blocked blocked, $unparsed unparsed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          jq . "$SFW_JSON_REPORT_PATH"
+          [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
       - run: cargo test --frozen
