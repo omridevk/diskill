@@ -1,3 +1,4 @@
+use crate::insights::{self, Ins, Insights};
 use jwalk::{Parallelism, WalkDirGeneric};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -60,6 +61,7 @@ pub struct Plan {
     pub exact: HashSet<PathBuf>,
     pub parents: HashSet<PathBuf>,
     pub repo_tx: Option<std::sync::mpsc::Sender<PathBuf>>,
+    pub days: Vec<i64>,
 }
 
 #[derive(Default)]
@@ -70,6 +72,7 @@ pub struct Walk {
     pub node_modules: Vec<PathBuf>,
     pub artifacts: Vec<PathBuf>,
     pub big_files: Vec<(PathBuf, u64, u64)>,
+    pub insights: Insights,
 }
 
 const NM_TOP: &[&str] = &[
@@ -158,6 +161,7 @@ struct Frame {
     track: bool,
     collect_children: bool,
     home: Option<Home>,
+    ins: Option<Ins>,
 }
 
 struct Found {
@@ -311,7 +315,12 @@ pub fn walk(
         if meta.kind == Kind::Dir {
             let path = path_of(parent);
             let mut home = found.home;
+            let mut ins = parent.and_then(|p| {
+                p.ins
+                    .map(|i| insights::enter(&mut out.insights, i, &p.path, &entry.file_name))
+            });
             if home.is_none() && path == plan.home {
+                ins = insights::start(&mut out.insights);
                 home = Some(Home {
                     depth: 0,
                     nm: plan.nm_depth >= 1,
@@ -350,6 +359,7 @@ pub fn walk(
                 track,
                 collect_children,
                 home,
+                ins,
             });
             continue;
         }
@@ -373,6 +383,22 @@ pub fn walk(
             if found.big_file {
                 out.big_files.push((path, meta.size, meta.blocks));
             }
+        }
+        if meta.kind == Kind::File
+            && counted
+            && let Some(p) = parent
+            && let Some(i) = p.ins
+        {
+            let path = || p.path.join(&entry.file_name);
+            insights::add(
+                &mut out.insights,
+                i,
+                &plan.days,
+                plan.now,
+                &entry.file_name,
+                &meta,
+                path,
+            );
         }
         if let Some(p) = stack.last_mut() {
             p.blocks += own;

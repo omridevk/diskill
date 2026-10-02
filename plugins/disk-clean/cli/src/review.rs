@@ -425,6 +425,10 @@ pub fn run(run_dir: &str) -> io::Result<i32> {
     let home = util::home();
     let used = fact("used").unwrap_or((total - free).max(0));
     let tree = load_map(dir, &home, used);
+    let insights: Value = std::fs::read(dir.join("insights.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null);
     let reclaimable: i64 = categories
         .iter()
         .filter(|c| c.risk != "report")
@@ -441,6 +445,7 @@ pub fn run(run_dir: &str) -> io::Result<i32> {
         "home": fact("home").unwrap_or(0),
         "snapshots": fact("snapshots").unwrap_or(0),
         "tree": tree,
+        "insights": insights,
     });
     let token = token();
     let html = render(&data, &token);
