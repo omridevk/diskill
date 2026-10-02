@@ -5,24 +5,38 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   clean-disk:
+    name: clean-disk cli
     runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: plugins/clean-disk/cli
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: "1.93"
           components: rustfmt, clippy
+      - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
+        with:
+          mode: firewall-free
+      - name: fetch crates through Socket Firewall
+        run: sfw cargo fetch --locked
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --locked
+      - run: cargo clippy --frozen --all-targets -- -D warnings
+      - run: cargo test --frozen
       - name: shellcheck run.sh
         run: |
           command -v shellcheck >/dev/null || brew install shellcheck
@@ -32,3 +46,18 @@ jobs:
         run: |
           jq empty .claude-plugin/marketplace.json
           jq empty plugins/clean-disk/.claude-plugin/plugin.json
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          annotations: true
