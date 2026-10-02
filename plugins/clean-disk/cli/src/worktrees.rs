@@ -537,34 +537,44 @@ fn common_repo(path: &Path) -> Option<PathBuf> {
     )
 }
 
+pub fn removable(path_s: &str, real: &[String]) -> Result<PathBuf, String> {
+    let path = Path::new(path_s);
+    let repo = if path.is_dir() {
+        common_repo(path)
+    } else {
+        None
+    };
+    let target = realpath(path);
+    let entry = repo.as_ref().and_then(|r| {
+        list_worktrees(r).into_iter().find(|e| {
+            e.get("worktree")
+                .is_some_and(|w| realpath(Path::new(w)) == target)
+        })
+    });
+    let (Some(repo), Some(entry)) = (repo, entry) else {
+        return Err("not a registered worktree".to_string());
+    };
+    let (blockers, _) = evaluate(&entry, real, None);
+    if blockers.is_empty() {
+        Ok(repo)
+    } else {
+        Err(blockers.join("; "))
+    }
+}
+
 pub fn remove(paths: &[String], out: &mut impl Write) -> std::io::Result<()> {
     let real = real_cwds(&process_cwds());
     let mut touched: Vec<PathBuf> = Vec::new();
     for path_s in paths {
-        let path = Path::new(path_s);
-        let repo = if path.is_dir() {
-            common_repo(path)
-        } else {
-            None
+        let repo = match removable(path_s, &real) {
+            Ok(repo) => repo,
+            Err(reason) => {
+                writeln!(out, "KEPT    {path_s} ({reason})")?;
+                continue;
+            }
         };
-        let target = realpath(path);
-        let entry = repo.as_ref().and_then(|r| {
-            list_worktrees(r).into_iter().find(|e| {
-                e.get("worktree")
-                    .is_some_and(|w| realpath(Path::new(w)) == target)
-            })
-        });
-        let (Some(repo), Some(entry)) = (repo, entry) else {
-            writeln!(out, "KEPT    {path_s} (not a registered worktree)")?;
-            continue;
-        };
-        let (blockers, _) = evaluate(&entry, &real, None);
-        if !blockers.is_empty() {
-            writeln!(out, "KEPT    {path_s} ({})", blockers.join("; "))?;
-            continue;
-        }
         let (code, _, stderr) = git(&repo, &["worktree", "remove", path_s]);
-        if code == 0 && !path.exists() {
+        if code == 0 && !Path::new(path_s).exists() {
             writeln!(out, "removed worktree {path_s}")?;
             if !touched.contains(&repo) {
                 touched.push(repo);

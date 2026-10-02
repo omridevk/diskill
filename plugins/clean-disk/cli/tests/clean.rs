@@ -143,6 +143,37 @@ fn clean_end_to_end_on_fixture() {
     )
     .unwrap();
 
+    let dry = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
+        .args(["clean", "--dry-run", &p(&run)])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    let plan = String::from_utf8_lossy(&dry.stdout);
+    assert!(dry.status.success(), "{plan}");
+    assert!(
+        plan.contains(&format!("\nrm -rf -- {}\n", p(&doomed))),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("\nrm -rf -- {}\n", p(&doomed_file))),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("# kept, not a registered worktree: {}", p(&repo))),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("# rejected (protected path): /etc/hosts"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("# rejected (unknown command id): rm-rf-everything"),
+        "{plan}"
+    );
+    assert!(plan.contains("# 3 items, 12288 bytes"), "{plan}");
+    assert!(doomed.exists() && doomed_file.exists());
+    assert!(!run.join("rm-list").exists() && !run.join("status").exists());
+
     let out = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
         .args(["clean", &p(&run)])
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -227,4 +258,35 @@ fn clean_rejects_everything() {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nothing passed validation"));
     assert!(!run.join("clean.log").exists());
+}
+
+#[test]
+fn dry_run_quotes_paths_and_lists_fixed_commands() {
+    let t = common::temp_dir("clean-dry");
+    let run = t.0.join("run");
+    fs::create_dir_all(&run).unwrap();
+    let odd = t.0.join("it's a dir");
+    fs::create_dir_all(&odd).unwrap();
+    let odd_s = odd.to_string_lossy().into_owned();
+    fs::write(run.join("scan.tsv"), scan_row("caches", "rm", &odd_s)).unwrap();
+    let items = [
+        selection_item("rm", &odd_s).replace('\'', "\\u0027"),
+        r#"{"action": "cmd", "cmd_id": "docker-prune", "bytes": 7}"#.to_string(),
+    ]
+    .join(",");
+    fs::write(
+        run.join("selection.json"),
+        format!(r#"{{"items": [{items}]}}"#),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_clean-disk"))
+        .args(["clean", "--dry-run", &run.to_string_lossy()])
+        .output()
+        .unwrap();
+    let plan = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{plan}");
+    let quoted = format!("'{}'", odd_s.replace('\'', r"'\''"));
+    assert!(plan.contains(&format!("\nrm -rf -- {quoted}\n")), "{plan}");
+    assert!(plan.contains("\ndocker system prune -f\n"), "{plan}");
+    assert!(odd.exists());
 }

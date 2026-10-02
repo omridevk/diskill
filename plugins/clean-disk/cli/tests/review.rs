@@ -122,6 +122,41 @@ fn review_serves_page_and_writes_selection() {
     );
     assert_eq!(post(port, "not json"), 400);
 
+    let raw_preview = |body: String| {
+        format!(
+            "POST /preview HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    assert_eq!(
+        request(
+            port,
+            raw_preview(r#"{"token": "wrong", "items": []}"#.to_string())
+        )
+        .0,
+        403
+    );
+    let (status, body) = request(
+        port,
+        raw_preview(format!(
+            r#"{{"token": "{token}", "items": [
+                {{"path": "/h/Library/Caches/a"}},
+                {{"path": "/h/big.iso"}},
+                {{"path": "cmd:docker-prune"}}
+            ]}}"#
+        )),
+    );
+    assert_eq!(status, 200);
+    let plan: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        plan["commands"],
+        serde_json::json!(["docker system prune -f"])
+    );
+    assert_eq!(plan["rejected"][0]["path"], "/h/Library/Caches/a");
+    assert_eq!(plan["rejected"][0]["reason"], "already gone");
+    assert_eq!(plan["count"], 1);
+    assert!(!run.join("selection.json").exists());
+
     let approve = format!(
         r#"{{"token": "{token}", "decision": "approve", "items": [
             {{"path": "/h/Library/Caches/a", "category": "caches"}},

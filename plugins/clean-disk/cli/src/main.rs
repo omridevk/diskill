@@ -1,7 +1,7 @@
 use clean_disk::{clean, review, scan};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: clean-disk scan [RUN_DIR] | review RUN_DIR | clean RUN_DIR";
+const USAGE: &str = "usage: clean-disk scan [RUN_DIR] | review RUN_DIR | clean [--dry-run] RUN_DIR";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -18,7 +18,10 @@ fn main() -> ExitCode {
         Some("clean") if arg(1).as_deref() == Some("--worker") => {
             clean::worker(&arg(2).unwrap_or_default())
         }
-        Some("clean") => clean::queue(&arg(1).unwrap_or_default()),
+        Some("clean") if arg(1).as_deref() == Some("--dry-run") => {
+            clean::queue(&arg(2).unwrap_or_default(), true)
+        }
+        Some("clean") => clean::queue(&arg(1).unwrap_or_default(), false),
         _ => {
             eprintln!("{USAGE}");
             Ok(2)

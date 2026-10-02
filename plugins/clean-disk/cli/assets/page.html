@@ -228,6 +228,19 @@ button:not(:disabled):hover { filter: brightness(1.07); }
 .done { text-align: center; padding: 110px 24px; }
 .done h2 { font-size: 23px; margin: 0 0 10px; letter-spacing: -.02em; }
 .hidden { display: none !important; }
+dialog.preview {
+  width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink);
+}
+dialog.preview::backdrop { background: rgba(0,0,0,.45); }
+.pv-head { padding: 18px 22px 10px; }
+.pv-head h3 { margin: 0 0 4px; font-size: 17px; }
+.pv-body { padding: 0 22px; overflow: auto; max-height: calc(100vh - 230px); }
+.pv-body pre {
+  margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.pv-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 22px; border-top: 1px solid var(--line); }
 kbd {
   font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line); border-bottom-width: 2px;
   border-radius: 4px; padding: 1px 5px; color: var(--muted); background: var(--panel);
@@ -329,8 +342,26 @@ kbd {
     <div class="foot-sub" id="foothint"></div>
   </div>
   <button id="cancel">Cancel</button>
+  <button id="preview">Preview commands</button>
   <button id="approve" class="primary">Approve and delete</button>
 </div></footer>
+<dialog id="pv" class="preview">
+  <div class="pv-head">
+    <h3>Dry run: exact commands</h3>
+    <div class="foot-sub" id="pvsub"></div>
+  </div>
+  <div class="pv-body">
+    <pre id="pvcmds"></pre>
+    <div id="pvrej" class="hidden">
+      <div class="foot-sub">Rejected by the safety checks, will not be touched:</div>
+      <pre id="pvrejlist"></pre>
+    </div>
+  </div>
+  <div class="pv-foot">
+    <button id="pvcopy">Copy</button>
+    <button id="pvclose" class="primary">Close</button>
+  </div>
+</dialog>
 </div>
 <div id="done" class="done hidden">
   <h2 id="donetitle"></h2>
@@ -549,6 +580,7 @@ function render() {
     groups.reduce((a, g) => a + g.items.length, 0) + " of " + ALL.length + " shown" +
     (risky.length ? " · confirmation required" : "");
   document.getElementById("approve").disabled = sel.length === 0;
+  document.getElementById("preview").disabled = sel.length === 0;
   document.getElementById("onlysel").style.color = ui.onlySel ? "var(--ink)" : "";
   document.getElementById("onlysel").textContent = ui.onlySel ? "Showing only selected" : "Show only selected";
 
@@ -595,6 +627,7 @@ function act(name) {
 }
 
 document.addEventListener("keydown", e => {
+  if (document.getElementById("pv").open) return;
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") {
     if (e.key === "Escape") { e.target.blur(); if (e.target === qEl) { qEl.value = ""; ui.q = ""; render(); } }
     return;
@@ -632,6 +665,36 @@ document.getElementById("approve").addEventListener("click", () => {
   post("approve").then(() =>
     finish("Approved — " + fmt(total) + " queued for deletion",
            "Deletion runs in the background. You can close this tab and return to the terminal."));
+});
+document.getElementById("preview").addEventListener("click", e => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  fetch("/preview", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      token: TOKEN,
+      items: selected().map(it => ({ path: it.path, category: it.cat.id })),
+    }),
+  }).then(r => r.json()).then(plan => {
+    document.getElementById("pvsub").textContent =
+      "Nothing has run yet. Approve runs exactly these " + plan.count + " item" +
+      (plan.count === 1 ? "" : "s") + " (" + fmt(plan.bytes) + "), four at a time, largest first. " +
+      "Deletion is permanent, not to the Trash. Worktrees are re-checked right before removal; " +
+      "git refuses any that changed.";
+    document.getElementById("pvcmds").textContent = plan.commands.join("\n");
+    document.getElementById("pvrejlist").textContent =
+      plan.rejected.map(r => r.reason + ": " + r.path).join("\n");
+    document.getElementById("pvrej").classList.toggle("hidden", !plan.rejected.length);
+    document.getElementById("pv").showModal();
+  }).catch(() => alert("Preview failed. Nothing was deleted."))
+    .finally(() => { btn.textContent = "Preview commands"; btn.disabled = selected().length === 0; });
+});
+document.getElementById("pvclose").addEventListener("click", () => document.getElementById("pv").close());
+document.getElementById("pvcopy").addEventListener("click", e => {
+  navigator.clipboard.writeText(document.getElementById("pvcmds").textContent)
+    .then(() => { e.target.textContent = "Copied"; setTimeout(() => { e.target.textContent = "Copy"; }, 1500); });
 });
 document.getElementById("cancel").addEventListener("click", () => {
   post("cancel").then(() => finish("Cancelled", "Nothing was deleted. You can close this tab."));

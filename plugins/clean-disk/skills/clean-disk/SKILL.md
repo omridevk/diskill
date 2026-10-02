@@ -50,6 +50,10 @@ The page has two tabs:
   none** — which is how you take all node_modules at once or just the stale ones. A banner warns
   when selected items are hidden behind a filter, and picking anything marked `review` turns
   Approve into a two-click confirm.
+- **Preview commands** (footer button) — a dry run. Shows the exact shell commands Approve would run
+  for the current selection (`rm -rf -- '<path>'`, `git -C <repo> worktree remove <path>`, the fixed
+  commands), plus anything the safety checks reject. Nothing runs; the list is built by the same
+  validation code `clean` uses, with worktrees re-checked live.
 - **Storage map** — read-only, DaisyDisk-style. A three-ring **sunburst** of the home directory:
   hover to highlight a branch and inspect it, click a segment to zoom into it, click the hub or a
   breadcrumb to go back up. Segments the Cleanup tab can act on are outlined with a white dashed
@@ -62,6 +66,12 @@ Exit codes: `0` approved (`$RUN_DIR/selection.json` written), `3` nothing found,
 On any non-zero exit, stop and report — do not delete anything.
 
 ## Stage 3 — Background delete
+
+To print the plan without deleting anything (same validation, same commands):
+
+```bash
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean --dry-run "$RUN_DIR"
+```
 
 ```bash
 bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean "$RUN_DIR"

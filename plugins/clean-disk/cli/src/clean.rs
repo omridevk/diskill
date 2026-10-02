@@ -4,13 +4,183 @@ use serde_json::Value;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-const COMMANDS: &[&str] = &["xcode-unavailable-sims", "docker-prune", "brew-cleanup"];
+const COMMANDS: &[(&str, &str, &[&str])] = &[
+    (
+        "xcode-unavailable-sims",
+        "xcrun",
+        &["simctl", "delete", "unavailable"],
+    ),
+    ("docker-prune", "docker", &["system", "prune", "-f"]),
+    ("brew-cleanup", "brew", &["cleanup", "--prune=all", "-s"]),
+];
+
+fn command(id: &str) -> Option<(&'static str, &'static [&'static str])> {
+    COMMANDS
+        .iter()
+        .find(|(known, _, _)| *known == id)
+        .map(|(_, program, args)| (*program, *args))
+}
+
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/._-+=:@%,".contains(&b))
+    {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+fn shell_line(program: &str, args: &[&str]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().copied())
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[derive(Default)]
+pub struct Plan {
+    pub rm: Vec<String>,
+    pub worktrees: Vec<String>,
+    pub cmds: Vec<String>,
+    pub rejected: Vec<(String, String)>,
+    pub bytes: i64,
+}
+
+impl Plan {
+    pub fn count(&self) -> usize {
+        self.rm.len() + self.worktrees.len() + self.cmds.len()
+    }
+
+    pub fn commands(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .rm
+            .iter()
+            .map(|p| shell_line("rm", &["-rf", "--", p]))
+            .collect();
+        let mut repos: Vec<String> = Vec::new();
+        let real = worktrees::real_cwds(&worktrees::process_cwds());
+        let chunk = self.worktrees.len().div_ceil(8).max(1);
+        let checks: Vec<Result<PathBuf, String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = self
+                .worktrees
+                .chunks(chunk)
+                .map(|paths| {
+                    let real = &real;
+                    s.spawn(move || {
+                        paths
+                            .iter()
+                            .map(|p| worktrees::removable(p, real))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().expect("worktree check thread panicked"))
+                .collect()
+        });
+        for (path, check) in self.worktrees.iter().zip(checks) {
+            match check {
+                Ok(repo) => {
+                    let repo = repo.to_string_lossy().into_owned();
+                    out.push(shell_line(
+                        "git",
+                        &["-C", &repo, "worktree", "remove", path],
+                    ));
+                    if !repos.contains(&repo) {
+                        repos.push(repo);
+                    }
+                }
+                Err(reason) => out.push(format!("# kept, {reason}: {}", shell_quote(path))),
+            }
+        }
+        out.extend(
+            repos
+                .iter()
+                .map(|repo| shell_line("git", &["-C", repo, "worktree", "prune"])),
+        );
+        out.extend(
+            self.cmds
+                .iter()
+                .filter_map(|id| command(id))
+                .map(|(program, args)| shell_line(program, args)),
+        );
+        out
+    }
+}
+
+pub fn plan(scan_lines: &[String], items: &[Value]) -> Plan {
+    let home = util::home();
+    let tmp_base = util::user_tmp_base();
+    let mut plan = Plan::default();
+    for item in items {
+        let action = item.get("action").and_then(Value::as_str).unwrap_or("rm");
+        let key = if action == "cmd" { "cmd_id" } else { "path" };
+        let Some(value) = item
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+        else {
+            continue;
+        };
+        let bytes = int_of(item.get("bytes"));
+        let reason = if action == "cmd" {
+            command(value).is_none().then_some("unknown command id")
+        } else {
+            rm_rejection(scan_lines, action, value, &home, tmp_base.as_deref())
+        };
+        if let Some(reason) = reason {
+            plan.rejected.push((reason.to_string(), value.to_string()));
+            continue;
+        }
+        match action {
+            "cmd" => plan.cmds.push(value.to_string()),
+            "worktree" => plan.worktrees.push(value.to_string()),
+            _ => plan.rm.push(value.to_string()),
+        }
+        plan.bytes += bytes;
+    }
+    plan
+}
+
+fn rm_rejection(
+    scan_lines: &[String],
+    action: &str,
+    value: &str,
+    home: &str,
+    tmp_base: Option<&str>,
+) -> Option<&'static str> {
+    let scan_actions: Vec<&str> = scan_lines
+        .iter()
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .filter(|cols| cols.len() == 13 && cols[8] == value)
+        .map(|cols| cols[5])
+        .collect();
+    if scan_actions.is_empty() {
+        return Some("not in scan");
+    }
+    if !scan_actions.contains(&action) {
+        return Some("action does not match scan");
+    }
+    if !is_allowed(value, home, tmp_base) {
+        return Some("protected path");
+    }
+    if !Path::new(value).exists() {
+        return Some("already gone");
+    }
+    if value.contains('\n') {
+        return Some("newline in path");
+    }
+    None
+}
 
 fn rest_after<'a>(p: &'a str, prefix: &str) -> Option<&'a str> {
     p.strip_prefix(prefix).filter(|r| !r.is_empty())
@@ -97,10 +267,16 @@ fn int_of(v: Option<&Value>) -> i64 {
     }
 }
 
-pub fn queue(run_dir: &str) -> io::Result<i32> {
+fn lines(items: &[String]) -> String {
+    items.iter().map(|s| format!("{s}\n")).collect()
+}
+
+pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     let dir = Path::new(run_dir);
     if run_dir.is_empty() || !dir.join("selection.json").is_file() {
-        eprintln!("usage: clean-disk clean <run_dir>  (run_dir must contain selection.json)");
+        eprintln!(
+            "usage: clean-disk clean [--dry-run] <run_dir>  (run_dir must contain selection.json)"
+        );
         return Ok(2);
     }
     let scan_path = dir.join("scan.tsv");
@@ -108,17 +284,6 @@ pub fn queue(run_dir: &str) -> io::Result<i32> {
         eprintln!("missing scan.tsv in {run_dir}");
         return Ok(2);
     }
-    let scan_lines = util::read_lines(&scan_path);
-    let home = util::home();
-    let tmp_base = util::user_tmp_base();
-
-    let mut rm_list = String::new();
-    let mut cmd_list = String::new();
-    let mut wt_list = String::new();
-    let mut rejected = String::new();
-    let mut total_bytes: i64 = 0;
-    let mut kept = 0usize;
-
     let selection: Value =
         match fs::read(dir.join("selection.json")).map(|b| serde_json::from_slice(&b)) {
             Ok(Ok(v)) => v,
@@ -132,66 +297,31 @@ pub fn queue(run_dir: &str) -> io::Result<i32> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for item in &items {
-        let action = item.get("action").and_then(Value::as_str).unwrap_or("rm");
-        let key = if action == "cmd" { "cmd_id" } else { "path" };
-        let Some(value) = item
-            .get(key)
-            .and_then(Value::as_str)
-            .filter(|v| !v.is_empty())
-        else {
-            continue;
-        };
-        let bytes = int_of(item.get("bytes"));
-        if action == "cmd" {
-            if COMMANDS.contains(&value) {
-                cmd_list.push_str(&format!("{value}\n"));
-                total_bytes += bytes;
-                kept += 1;
-            } else {
-                rejected.push_str(&format!("unknown command id\t{value}\n"));
-            }
-            continue;
+    let plan = plan(&util::read_lines(&scan_path), &items);
+    let rejected: String = plan
+        .rejected
+        .iter()
+        .map(|(reason, value)| format!("{reason}\t{value}\n"))
+        .collect();
+
+    if dry_run {
+        println!("# dry run: nothing is deleted. These are the commands clean would run.");
+        for line in plan.commands() {
+            println!("{line}");
         }
-        let scan_actions: Vec<&str> = scan_lines
-            .iter()
-            .map(|l| l.split('\t').collect::<Vec<_>>())
-            .filter(|cols| cols.len() == 13 && cols[8] == value)
-            .map(|cols| cols[5])
-            .collect();
-        if scan_actions.is_empty() {
-            rejected.push_str(&format!("not in scan\t{value}\n"));
-            continue;
+        for (reason, value) in &plan.rejected {
+            println!("# rejected ({reason}): {}", shell_quote(value));
         }
-        if !scan_actions.contains(&action) {
-            rejected.push_str(&format!("action does not match scan\t{value}\n"));
-            continue;
-        }
-        if !is_allowed(value, &home, tmp_base.as_deref()) {
-            rejected.push_str(&format!("protected path\t{value}\n"));
-            continue;
-        }
-        if !Path::new(value).exists() {
-            rejected.push_str(&format!("already gone\t{value}\n"));
-            continue;
-        }
-        if value.contains('\n') {
-            rejected.push_str(&format!("newline in path\t{value}\n"));
-            continue;
-        }
-        if action == "worktree" {
-            wt_list.push_str(&format!("{value}\n"));
-        } else {
-            rm_list.push_str(&format!("{value}\n"));
-        }
-        total_bytes += bytes;
-        kept += 1;
+        println!("# {} items, {} bytes", plan.count(), plan.bytes);
+        return Ok(0);
     }
-    fs::write(dir.join("rm-list"), &rm_list)?;
-    fs::write(dir.join("cmd-list"), &cmd_list)?;
-    fs::write(dir.join("wt-list"), &wt_list)?;
+
+    fs::write(dir.join("rm-list"), lines(&plan.rm))?;
+    fs::write(dir.join("cmd-list"), lines(&plan.cmds))?;
+    fs::write(dir.join("wt-list"), lines(&plan.worktrees))?;
     fs::write(dir.join("rejected"), &rejected)?;
 
+    let (kept, total_bytes) = (plan.count(), plan.bytes);
     if kept == 0 {
         eprintln!("nothing passed validation. see {run_dir}/rejected");
         return Ok(3);
@@ -311,23 +441,9 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
     }
 
     for cmd_id in util::read_lines(&dir.join("cmd-list")) {
-        match cmd_id.as_str() {
-            "xcode-unavailable-sims" => run_logged(
-                "xcrun simctl delete unavailable",
-                "xcrun",
-                &["simctl", "delete", "unavailable"],
-            ),
-            "docker-prune" => run_logged(
-                "docker system prune -f",
-                "docker",
-                &["system", "prune", "-f"],
-            ),
-            "brew-cleanup" => run_logged(
-                "brew cleanup --prune=all -s",
-                "brew",
-                &["cleanup", "--prune=all", "-s"],
-            ),
-            other => println!("skipped unknown command id: {other}"),
+        match command(&cmd_id) {
+            Some((program, args)) => run_logged(&shell_line(program, args), program, args),
+            None => println!("skipped unknown command id: {cmd_id}"),
         }
     }
 

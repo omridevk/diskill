@@ -1,3 +1,4 @@
+use crate::clean;
 use crate::util;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -5,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 const PAGE: &str = include_str!("../assets/page.html");
@@ -247,7 +248,13 @@ fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) {
     let _ = stream.write_all(body);
 }
 
-fn handle(stream: TcpStream, html: &str, token: &str, done: &mpsc::Sender<Value>) {
+fn handle(
+    stream: TcpStream,
+    html: &str,
+    token: &str,
+    done: &mpsc::Sender<Value>,
+    preview: &dyn Fn(&[Value]) -> Value,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let Ok(mut write) = stream.try_clone() else {
         return;
@@ -292,7 +299,7 @@ fn handle(stream: TcpStream, html: &str, token: &str, done: &mpsc::Sender<Value>
             }
         }
         "POST" => {
-            if target != "/decide" {
+            if target != "/decide" && target != "/preview" {
                 respond(&mut write, "404 Not Found", "text/plain", b"not found");
                 return;
             }
@@ -319,6 +326,16 @@ fn handle(stream: TcpStream, html: &str, token: &str, done: &mpsc::Sender<Value>
             };
             if !constant_eq(sent.as_bytes(), token.as_bytes()) {
                 respond(&mut write, "403 Forbidden", "text/plain", b"forbidden");
+                return;
+            }
+            if target == "/preview" {
+                let items = payload
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let body = preview(&items).to_string();
+                respond(&mut write, "200 OK", "application/json", body.as_bytes());
                 return;
             }
             respond(&mut write, "200 OK", "application/json", b"{}");
@@ -375,6 +392,24 @@ pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
     Some(json!({"items": chosen, "total_bytes": total}))
 }
 
+pub fn preview(categories: &[Category], scan_lines: &[String], items: &[Value]) -> Value {
+    let chosen = selection(categories, items)
+        .and_then(|s| s.get("items").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    let plan = clean::plan(scan_lines, &chosen);
+    let rejected: Vec<Value> = plan
+        .rejected
+        .iter()
+        .map(|(reason, path)| json!({"reason": reason, "path": path}))
+        .collect();
+    json!({
+        "commands": plan.commands(),
+        "rejected": rejected,
+        "count": plan.count(),
+        "bytes": plan.bytes,
+    })
+}
+
 pub fn run(run_dir: &str) -> io::Result<i32> {
     let dir = Path::new(run_dir);
     let categories = load_scan(dir);
@@ -412,10 +447,18 @@ pub fn run(run_dir: &str) -> io::Result<i32> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
     let (tx, rx) = mpsc::channel::<Value>();
+    let categories = Arc::new(categories);
+    let scan_lines = Arc::new(util::read_lines(&dir.join("scan.tsv")));
+    let shared = Arc::clone(&categories);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let (html, token, tx) = (html.clone(), token.clone(), tx.clone());
-            std::thread::spawn(move || handle(stream, &html, &token, &tx));
+            let (categories, scan_lines) = (Arc::clone(&shared), Arc::clone(&scan_lines));
+            std::thread::spawn(move || {
+                handle(stream, &html, &token, &tx, &|items| {
+                    preview(&categories, &scan_lines, items)
+                })
+            });
         }
     });
 
