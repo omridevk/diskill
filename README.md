@@ -82,7 +82,14 @@ The tests build every fixture in a temp folder. Deletion is only ever exercised 
    Installed copies only update when that string changes, and `run.sh` fetches the binary for it.
 2. Tag with `claude plugin tag ./plugins/clean-disk` (creates `clean-disk--v<version>`) and push the tag.
 3. The `release` workflow checks the tag matches `plugin.json`, builds an arm64 + x86_64 universal
-   binary, and publishes `clean-disk-macos-universal.tar.gz` with its `.sha256`.
+   binary, and publishes `clean-disk-macos-universal.tar.gz` with its `.sha256` and a signed
+   build provenance attestation. Crates are fetched through Socket Firewall Free, then built offline.
+
+To verify a downloaded release came from this repo's workflow:
+
+```bash
+gh attestation verify clean-disk-macos-universal.tar.gz --repo omridevk/diskill
+```
 
 ## License
 
