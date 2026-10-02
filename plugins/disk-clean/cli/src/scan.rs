@@ -1,12 +1,17 @@
 use crate::insights;
+use crate::review;
 use crate::util::{self, tilde};
 use crate::walk::{self, Plan, Walk};
 use crate::worktrees;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 pub type Row = [String; 13];
 
@@ -197,13 +202,6 @@ const CRASH_REPORTER: &str = "Library/Application Support/CrashReporter";
 const DIAGNOSTIC_REPORTS: &str = "Library/Logs/DiagnosticReports";
 const IOS_BACKUP: &str = "Library/Application Support/MobileSync/Backup";
 
-struct Probes {
-    brew_cache: Option<String>,
-    docker_bytes: Option<u64>,
-    sims: usize,
-    snapshots: usize,
-}
-
 pub fn parse_docker_bytes(s: &str) -> u64 {
     let b = s.as_bytes();
     let numeric = |c: u8| c.is_ascii_digit() || c == b'.';
@@ -319,137 +317,253 @@ fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
         parents,
         repo_tx: None,
         days: insights::midnights(now),
+        cancel: Arc::default(),
     }
 }
 
-fn run_walk(cfg: &Config, plan: Plan, home: &str, tmp_base: Option<&str>, mount: &Path) -> Walk {
+pub trait Sink: Sync {
+    fn emit(&self, event: &str, data: Value);
+}
+
+pub struct FilesOnly;
+
+impl Sink for FilesOnly {
+    fn emit(&self, _: &str, _: Value) {}
+}
+
+fn run_walk(
+    cfg: &Config,
+    plan: Plan,
+    home: &str,
+    tmp_base: Option<&str>,
+    mount: &Path,
+    progress: &dyn Fn(&Walk, &Path),
+) -> Walk {
     let mut out = Walk::default();
     let mut seen = HashSet::new();
     if cfg.skip_map {
         let mut roots = vec![PathBuf::from(home), PathBuf::from("/private/tmp")];
         roots.extend(tmp_base.map(PathBuf::from));
         for root in roots.iter().filter(|r| r.is_dir()) {
-            walk::walk(root, root, &plan, true, &mut seen, &mut out);
+            walk::walk(root, root, &plan, true, &mut seen, &mut out, progress);
         }
     } else {
-        walk::walk(mount, Path::new("/"), &plan, true, &mut seen, &mut out);
+        walk::walk(
+            mount,
+            Path::new("/"),
+            &plan,
+            true,
+            &mut seen,
+            &mut out,
+            progress,
+        );
     }
     out
 }
 
-pub fn run(run_dir: Option<String>) -> io::Result<i32> {
-    let cfg = Config::from_env();
-    let home = util::home();
-    let now = util::now();
+pub fn new_run_dir(run_dir: Option<String>) -> io::Result<PathBuf> {
     let run_dir = match run_dir.filter(|d| !d.is_empty()) {
         Some(d) => PathBuf::from(d),
         None => PathBuf::from(format!(
-            "{home}/.cache/disk-clean/run-{}",
+            "{}/.cache/disk-clean/run-{}",
+            util::home(),
             util::local_time(c"%Y%m%d-%H%M%S")
         )),
     };
     fs::create_dir_all(&run_dir)?;
+    Ok(run_dir)
+}
+
+pub fn run(run_dir: Option<String>) -> io::Result<i32> {
+    let run_dir = new_run_dir(run_dir)?;
+    scan(&run_dir, &FilesOnly, Arc::new(AtomicBool::new(false)))?;
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{}", run_dir.display())?;
+    Ok(0)
+}
+
+fn emit(sink: &dyn Sink, started: Instant, event: &str, mut data: Value) {
+    data["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    sink.emit(event, data);
+}
+
+struct Published {
+    seen: HashSet<String>,
+    scan: String,
+    reclaimable: i64,
+    started: Instant,
+}
+
+fn publish(rows: &[Row], out: &mut Published, sink: &dyn Sink) {
+    for r in rows.iter().filter(|r| !r[8].contains(['\t', '\n'])) {
+        if !out.seen.insert(r[8].clone()) {
+            continue;
+        }
+        out.scan.push_str(&r.join("\t"));
+        out.scan.push('\n');
+        let fields: Vec<&str> = r.iter().map(String::as_str).collect();
+        let Some((category, item)) = review::parse_row(&fields) else {
+            continue;
+        };
+        if !item.report && item.accuracy == "exact" {
+            out.reclaimable += item.bytes;
+        }
+        emit(
+            sink,
+            out.started,
+            "item",
+            json!({"category": category, "item": item}),
+        );
+    }
+}
+
+fn interrupted() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "scan cancelled")
+}
+
+pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Result<()> {
+    let cfg = Config::from_env();
+    let home = util::home();
+    let now = util::now();
+    let started = Instant::now();
     eprintln!("  scanning (one parallel walk of the data volume)...");
 
     let tmp_base = util::user_tmp_base();
     let mount = util::data_mount();
+    let start = util::volume_stats(&mount);
+    let used = start.as_ref().map_or(0, |s| s.used);
+    let snapshots = probe_snapshots();
+    emit(
+        sink,
+        started,
+        "disk",
+        json!({
+            "total": start.as_ref().map_or(0, |s| s.total),
+            "used": used,
+            "free": start.as_ref().map_or(0, |s| s.avail),
+            "snapshots": snapshots,
+        }),
+    );
     let mut plan = plan(&cfg, &home, now, tmp_base.as_deref());
+    plan.cancel = Arc::clone(&cancel);
     let (repo_tx, repo_rx) = std::sync::mpsc::channel();
     plan.repo_tx = Some(repo_tx);
     let days = plan.days.clone();
-    let started = std::time::Instant::now();
-    let (mut walked, probes, checked) = std::thread::scope(|s| {
+    let mut out = Published {
+        seen: HashSet::new(),
+        scan: String::new(),
+        reclaimable: 0,
+        started,
+    };
+    let progress = |w: &Walk, dir: &Path| {
+        emit(
+            sink,
+            started,
+            "progress",
+            json!({"files": w.files, "bytes": w.bytes, "dir": dir.to_string_lossy()}),
+        );
+    };
+    let (listed_tx, listed_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
         let brew = s.spawn(probe_brew);
         let docker = s.spawn(probe_docker);
         let sims = s.spawn(|| probe_sims(&home));
-        let snaps = s.spawn(probe_snapshots);
-        let checks = s.spawn(move || worktrees::check_repos(repo_rx));
-        let walked = run_walk(&cfg, plan, &home, tmp_base.as_deref(), &mount);
+        let checks = s.spawn(move || worktrees::check_repos(repo_rx, listed_tx));
+        let mut walked = run_walk(&cfg, plan, &home, tmp_base.as_deref(), &mount, &progress);
+        if cancel.load(Ordering::Relaxed) {
+            return Err(interrupted());
+        }
         eprintln!("  walked the disk in {}s", started.elapsed().as_secs());
-        let probes = Probes {
-            brew_cache: brew.join().ok().flatten(),
-            docker_bytes: docker.join().ok().flatten(),
-            sims: sims.join().unwrap_or(0),
-            snapshots: snaps.join().unwrap_or(0),
+        let insights = insights::to_json(std::mem::take(&mut walked.insights), &days, now, &home);
+        let ctx = Ctx {
+            home: home.clone(),
+            now,
+            walk: walked,
         };
+
+        let mut rows: Vec<Row> = Vec::new();
+        scan_trash(&ctx, &mut rows);
+        let brew_cache = brew.join().ok().flatten();
+        scan_pkg(&ctx, &mut rows, &cfg, brew_cache.as_deref());
+        scan_xcode(&ctx, &mut rows, &cfg);
+        scan_node_modules(&ctx, &mut rows, &cfg);
+        scan_dev_artifacts(&ctx, &mut rows, &cfg);
+        scan_ios_backups(&ctx, &mut rows, &cfg);
+        scan_caches(&ctx, &mut rows, &cfg);
+        scan_logs(&ctx, &mut rows, &cfg);
+        scan_user_tmpdir(&ctx, &mut rows, &cfg, tmp_base.as_deref());
+        scan_private_tmp(&ctx, &mut rows, &cfg);
+        scan_big_files(&ctx, &mut rows, &cfg);
+        publish(&rows, &mut out, sink);
+
+        let mut map = String::new();
+        if !cfg.skip_map {
+            let min_kb = cfg.map_min_bytes / 1024;
+            for (p, blocks) in &ctx.walk.map {
+                let kb = blocks.div_ceil(2);
+                let Some(s) = p.to_str() else { continue };
+                if kb >= min_kb || s == "/" {
+                    map.push_str(&format!("{}\t{s}\n", kb * 1024));
+                }
+            }
+        }
+        fs::write(run_dir.join("map.tsv"), &map)?;
+        fs::write(run_dir.join("insights.json"), insights.to_string())?;
+        let home_bytes = size_bytes(&ctx, Path::new(&home)).unwrap_or(0);
+        emit(
+            sink,
+            started,
+            "walked",
+            json!({
+                "home": home_bytes,
+                "tree": review::load_map(run_dir, &home, used as i64),
+                "insights": insights,
+                "worktrees": listed_rx.recv().unwrap_or(0),
+            }),
+        );
+
         let checked = checks.join().unwrap_or_default();
         eprintln!(
             "  checked {} git worktrees by {}s",
             checked.len(),
             started.elapsed().as_secs()
         );
-        (walked, probes, checked)
-    });
-    let insights = insights::to_json(std::mem::take(&mut walked.insights), &days, now, &home);
-    let ctx = Ctx {
-        home: home.clone(),
-        now,
-        walk: walked,
-    };
-
-    let mut rows: Vec<Row> = Vec::new();
-    scan_trash(&ctx, &mut rows);
-    scan_pkg(&ctx, &mut rows, &cfg, probes.brew_cache.as_deref());
-    scan_xcode(&ctx, &mut rows, &cfg, probes.sims);
-    scan_node_modules(&ctx, &mut rows, &cfg);
-    scan_dev_artifacts(&ctx, &mut rows, &cfg);
-    scan_docker(&mut rows, &cfg, probes.docker_bytes);
-    scan_ios_backups(&ctx, &mut rows, &cfg);
-    scan_caches(&ctx, &mut rows, &cfg);
-    scan_logs(&ctx, &mut rows, &cfg);
-    scan_user_tmpdir(&ctx, &mut rows, &cfg, tmp_base.as_deref());
-    scan_private_tmp(&ctx, &mut rows, &cfg);
-    let worktree_rows = worktrees::rows(&checked, &home, |p| size_bytes(&ctx, p).unwrap_or(0));
-    rows.extend(worktree_rows);
-    scan_big_files(&ctx, &mut rows, &cfg);
-    scan_old_downloads(&ctx, &mut rows, &cfg);
-
-    let mut seen = HashSet::new();
-    let mut scan = String::new();
-    for r in rows.iter().filter(|r| !r[8].contains(['\t', '\n'])) {
-        if seen.insert(r[8].clone()) {
-            scan.push_str(&r.join("\t"));
-            scan.push('\n');
+        let mut rows = worktrees::rows(&checked, &home, |p| size_bytes(&ctx, p).unwrap_or(0));
+        publish(&rows, &mut out, sink);
+        rows.clear();
+        scan_old_downloads(&ctx, &mut rows, &cfg);
+        scan_sims(&ctx, &mut rows, sims.join().unwrap_or(0));
+        scan_docker(&mut rows, &cfg, docker.join().ok().flatten());
+        publish(&rows, &mut out, sink);
+        if cancel.load(Ordering::Relaxed) {
+            return Err(interrupted());
         }
-    }
-    fs::write(run_dir.join("scan.tsv"), &scan)?;
 
-    let mut map = String::new();
-    if !cfg.skip_map {
-        let min_kb = cfg.map_min_bytes / 1024;
-        for (p, blocks) in &ctx.walk.map {
-            let kb = blocks.div_ceil(2);
-            let Some(s) = p.to_str() else { continue };
-            if kb >= min_kb || s == "/" {
-                map.push_str(&format!("{}\t{s}\n", kb * 1024));
-            }
-        }
-    }
-    fs::write(run_dir.join("map.tsv"), &map)?;
-
-    let stats = util::volume_stats(&mount);
-    let home_bytes = size_bytes(&ctx, Path::new(&home)).unwrap_or(0);
-    let (total, used, free) = stats
-        .as_ref()
-        .map(|s| (s.total, s.used, s.avail))
-        .unwrap_or((0, 0, 0));
-    fs::write(
-        run_dir.join("disk.tsv"),
-        format!(
-            "total\t{total}\nused\t{used}\nfree\t{free}\nhome\t{home_bytes}\nsnapshots\t{}\n",
-            probes.snapshots
-        ),
-    )?;
-    fs::write(run_dir.join("insights.json"), insights.to_string())?;
-    fs::write(
-        run_dir.join("free-before"),
-        format!("{}\n", util::free_bytes()),
-    )?;
-
-    eprintln!("  found {} items", seen.len());
-    let mut stdout = io::stdout().lock();
-    writeln!(stdout, "{}", run_dir.display())?;
-    Ok(0)
+        fs::write(run_dir.join("scan.tsv"), &out.scan)?;
+        let stats = util::volume_stats(&mount);
+        let (total, used, free) = stats
+            .as_ref()
+            .map(|s| (s.total, s.used, s.avail))
+            .unwrap_or((0, 0, 0));
+        fs::write(
+            run_dir.join("disk.tsv"),
+            format!(
+                "total\t{total}\nused\t{used}\nfree\t{free}\nhome\t{home_bytes}\nsnapshots\t{snapshots}\n"
+            ),
+        )?;
+        fs::write(
+            run_dir.join("free-before"),
+            format!("{}\n", util::free_bytes()),
+        )?;
+        eprintln!("  found {} items", out.seen.len());
+        emit(
+            sink,
+            started,
+            "done",
+            json!({"reclaimable": out.reclaimable}),
+        );
+        Ok(())
+    })
 }
 
 fn scan_trash(ctx: &Ctx, rows: &mut Vec<Row>) {
@@ -554,7 +668,7 @@ fn scan_pkg(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, brew_cache: Option<&st
     );
 }
 
-fn scan_xcode(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, sims: usize) {
+fn scan_xcode(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
     let cat = Cat {
         id: "xcode",
         title: "Xcode build data",
@@ -588,7 +702,9 @@ fn scan_xcode(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, sims: usize) {
         "Not recoverable without rebuilding that exact commit.",
         cfg.min_bytes,
     );
+}
 
+fn scan_sims(ctx: &Ctx, rows: &mut Vec<Row>, sims: usize) {
     if sims > 0 {
         let bytes = size_bytes(ctx, &h(ctx, SIM_DEVICES)).unwrap_or(0) / 3;
         let cat = Cat {

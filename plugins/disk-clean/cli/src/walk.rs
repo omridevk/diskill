@@ -5,6 +5,8 @@ use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -64,6 +66,7 @@ pub struct Plan {
     pub parents: HashSet<PathBuf>,
     pub repo_tx: Option<std::sync::mpsc::Sender<PathBuf>>,
     pub days: Vec<i64>,
+    pub cancel: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -75,6 +78,8 @@ pub struct Walk {
     pub artifacts: Vec<PathBuf>,
     pub big_files: Vec<(PathBuf, u64, u64)>,
     pub insights: Insights,
+    pub files: u64,
+    pub bytes: u64,
 }
 
 const NM_TOP: &[&str] = &[
@@ -397,7 +402,17 @@ fn read_dir_bulk(dir: &Path) -> Vec<(OsString, Option<Meta>)> {
     out
 }
 
-fn list(dir: &Path, dev: u64, parallel: bool) -> Vec<Entry> {
+#[derive(Clone)]
+struct Reader {
+    dev: u64,
+    parallel: bool,
+    cancel: Arc<AtomicBool>,
+}
+
+fn list(dir: &Path, reader: &Reader) -> Vec<Entry> {
+    if reader.cancel.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
     read_dir_bulk(dir)
         .into_iter()
         .filter_map(|(name, meta)| {
@@ -406,27 +421,28 @@ fn list(dir: &Path, dev: u64, parallel: bool) -> Vec<Entry> {
                     .ok()
                     .map(|m| meta_of(&m))
             })?;
-            let next = (meta.kind == Kind::Dir && meta.dev == dev)
-                .then(|| descend(dir.join(&name), dev, parallel));
+            let next = (meta.kind == Kind::Dir && meta.dev == reader.dev)
+                .then(|| descend(dir.join(&name), reader));
             Some(Entry { name, meta, next })
         })
         .collect()
 }
 
-fn descend(path: PathBuf, dev: u64, parallel: bool) -> Next {
-    if !parallel {
+fn descend(path: PathBuf, reader: &Reader) -> Next {
+    if !reader.parallel {
         return Next::Read(path);
     }
     let (tx, rx) = sync_channel(1);
+    let reader = reader.clone();
     rayon::spawn(move || {
-        let _ = tx.send(list(&path, dev, true));
+        let _ = tx.send(list(&path, &reader));
     });
     Next::Wait(rx)
 }
 
-fn open(next: Next, dev: u64) -> Vec<Entry> {
+fn open(next: Next, reader: &Reader) -> Vec<Entry> {
     match next {
-        Next::Read(path) => list(&path, dev, false),
+        Next::Read(path) => list(&path, reader),
         Next::Wait(rx) => rx.recv().unwrap_or_default(),
     }
 }
@@ -438,9 +454,14 @@ pub fn walk(
     parallel: bool,
     seen: &mut HashSet<(u64, u64)>,
     out: &mut Walk,
+    progress: &dyn Fn(&Walk, &Path),
 ) -> Option<u64> {
     let root_meta = meta_of(&fs::symlink_metadata(root).ok()?);
-    let dev = root_meta.dev;
+    let reader = Reader {
+        dev: root_meta.dev,
+        parallel,
+        cancel: Arc::clone(&plan.cancel),
+    };
     let threads = std::thread::available_parallelism()
         .map(|n| n.get() * 2)
         .unwrap_or(8);
@@ -455,7 +476,7 @@ pub fn walk(
         None
     };
     let next = (root_meta.kind == Kind::Dir).then(|| match &pool {
-        Some(pool) => pool.install(|| descend(root.to_path_buf(), dev, true)),
+        Some(pool) => pool.install(|| descend(root.to_path_buf(), &reader)),
         None => Next::Read(root.to_path_buf()),
     });
     let root_entry = Entry {
@@ -468,6 +489,7 @@ pub fn walk(
 
     let mut stack: Vec<Frame> = Vec::new();
     let mut total = None;
+    let mut visited = 0u64;
     while let Some((depth, entries)) = pending.last_mut() {
         let depth = *depth;
         let Some(entry) = entries.next() else {
@@ -475,7 +497,16 @@ pub fn walk(
             continue;
         };
         if let Some(next) = entry.next {
-            pending.push((depth + 1, open(next, dev).into_iter()));
+            pending.push((depth + 1, open(next, &reader).into_iter()));
+        }
+        visited += 1;
+        if visited.is_multiple_of(4096) {
+            if plan.cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            if let Some(dir) = stack.last() {
+                progress(out, &dir.path);
+            }
         }
         let meta = entry.meta;
         let file_name = entry.name;
@@ -491,6 +522,8 @@ pub fn walk(
         let counted =
             meta.kind == Kind::Dir || meta.nlink <= 1 || seen.insert((meta.dev, meta.ino));
         let own = if counted { meta.blocks } else { 0 };
+        out.files += u64::from(meta.kind == Kind::File);
+        out.bytes += own * 512;
         let name = file_name.to_str();
         let parent = stack.last();
         let found = classify(plan, parent, name, &meta);
@@ -620,5 +653,6 @@ pub fn size_of(path: &Path) -> Option<u64> {
         false,
         &mut HashSet::new(),
         &mut Walk::default(),
+        &|_, _| {},
     )
 }

@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 
 const REGENERABLE_DIRS: &[&str] = &[
     "node_modules",
@@ -422,11 +422,14 @@ pub struct Checked {
     pub info: Option<Info>,
 }
 
-fn check_repo(repo: &Path, real: &[String]) -> Vec<Checked> {
-    let entries: Vec<Entry> = list_worktrees(repo)
+fn listed_worktrees(repo: &Path) -> Vec<Entry> {
+    list_worktrees(repo)
         .into_iter()
         .filter(|e| e.get("worktree").is_some_and(|p| Path::new(p).is_dir()))
-        .collect();
+        .collect()
+}
+
+fn check_entries(entries: Vec<Entry>, real: &[String]) -> Vec<Checked> {
     let paths: Vec<PathBuf> = entries
         .iter()
         .map(|e| PathBuf::from(&e["worktree"]))
@@ -446,19 +449,28 @@ fn check_repo(repo: &Path, real: &[String]) -> Vec<Checked> {
         .collect()
 }
 
-pub fn check_repos(repos: Receiver<PathBuf>) -> Vec<Checked> {
+pub fn check_repos(repos: Receiver<PathBuf>, listed: Sender<usize>) -> Vec<Checked> {
     let real = real_cwds(&process_cwds());
     let done: Mutex<Vec<(usize, Vec<Checked>)>> = Mutex::new(Vec::new());
     rayon::scope(|s| {
-        for (i, repo) in repos.into_iter().enumerate() {
+        let mut total = 0;
+        let mut seen = HashSet::new();
+        for (i, repo) in repos
+            .into_iter()
+            .filter(|r| seen.insert(r.clone()))
+            .enumerate()
+        {
+            let entries = listed_worktrees(&repo);
+            total += entries.len();
             let (real, done) = (&real, &done);
             s.spawn(move |_| {
-                let checked = check_repo(&repo, real);
+                let checked = check_entries(entries, real);
                 if let Ok(mut d) = done.lock() {
                     d.push((i, checked));
                 }
             });
         }
+        let _ = listed.send(total);
     });
     let mut done = done.into_inner().unwrap_or_default();
     done.sort_by_key(|(i, _)| *i);
