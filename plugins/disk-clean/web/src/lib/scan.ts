@@ -8,13 +8,15 @@ export interface Progress {
 
 type CategoryHead = Omit<Category, 'items' | 'bytes'>
 
+type Timed<T> = T & {elapsed_ms: number}
+
 export type ScanEvent =
-  | {type: 'disk'; data: {total: number; used: number; free: number; snapshots: number}}
-  | {type: 'progress'; data: Progress}
-  | {type: 'item'; data: {category: CategoryHead; item: Item}}
-  | {type: 'walked'; data: {home: number; tree: TreeNode | null; insights: Insights | null}}
-  | {type: 'done'; data: {reclaimable: number}}
-  | {type: 'error'; data: {message: string}}
+  | {type: 'disk'; data: Timed<{total: number; used: number; free: number; snapshots: number}>}
+  | {type: 'progress'; data: Timed<Progress>}
+  | {type: 'item'; data: Timed<{category: CategoryHead; item: Item}>}
+  | {type: 'walked'; data: Timed<{home: number; tree: TreeNode | null; insights: Insights | null; worktrees: number}>}
+  | {type: 'done'; data: Timed<{reclaimable: number}>}
+  | {type: 'error'; data: Timed<{message: string}>}
 
 export interface Scan {
   data: ScanData
@@ -22,11 +24,23 @@ export interface Scan {
   walked: boolean
   done: boolean
   error: string
+  worktrees: number
+  elapsed: number
+  walkedAt: number
 }
 
 export function startScan(loaded: Loaded): Scan {
   const finished = !loaded.live
-  return {data: loaded.data, progress: {files: 0, bytes: 0, dir: ''}, walked: finished, done: finished, error: ''}
+  return {
+    data: loaded.data,
+    progress: {files: 0, bytes: 0, dir: ''},
+    walked: finished,
+    done: finished,
+    error: '',
+    worktrees: 0,
+    elapsed: 0,
+    walkedAt: 0,
+  }
 }
 
 const sum = (items: readonly Item[]) => items.reduce((total, i) => total + i.bytes, 0)
@@ -53,15 +67,21 @@ function withItem(scan: Scan, {category, item}: {category: CategoryHead; item: I
 type Handlers = {[K in ScanEvent['type']]: (scan: Scan, data: Extract<ScanEvent, {type: K}>['data']) => Scan}
 
 const HANDLERS: Handlers = {
-  disk: withData,
-  progress: (scan, progress) => ({...scan, progress}),
+  disk: (scan, {total, used, free, snapshots}) => withData(scan, {total, used, free, snapshots}),
+  progress: (scan, {files, bytes, dir}) => ({...scan, progress: {files, bytes, dir}}),
   item: withItem,
-  walked: (scan, walked) => ({...withData(scan, walked), walked: true}),
+  walked: (scan, {home, tree, insights, worktrees, elapsed_ms}) => ({
+    ...withData(scan, {home, tree, insights}),
+    walked: true,
+    worktrees,
+    walkedAt: elapsed_ms,
+  }),
   done: (scan, {reclaimable}) => ({...withData(scan, {reclaimable}), done: true}),
   error: (scan, {message}) => ({...scan, error: message}),
 }
 
 export function scanReducer(scan: Scan, event: ScanEvent): Scan {
   const handle = HANDLERS[event.type] as (scan: Scan, data: ScanEvent['data']) => Scan
-  return handle(scan, event.data)
+  const next = handle(scan, event.data)
+  return {...next, elapsed: Math.max(next.elapsed, event.data.elapsed_ms)}
 }

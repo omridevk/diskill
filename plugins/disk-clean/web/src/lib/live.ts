@@ -25,7 +25,7 @@ function onMessage(source: EventSourceLike, type: ScanEvent['type'], emit: (even
 function onConnectionError(source: EventSourceLike, emit: (event: ScanEvent) => void) {
   return (message: Event) => {
     if (message instanceof MessageEvent || source.readyState !== CLOSED) return
-    emit({type: 'error', data: {message: 'Lost the connection to the scan'}})
+    emit({type: 'error', data: {message: 'Lost the connection to the scan', elapsed_ms: 0}})
   }
 }
 

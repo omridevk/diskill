@@ -13,19 +13,38 @@ function Legend({color, label, outlined}: {color: string; label: string; outline
   )
 }
 
-export function Summary({data, selection, status}: {data: ScanData; selection: Selection; status: ReactNode}) {
+function LoadingBackdrop() {
+  return null
+}
+
+export function Summary({
+  data,
+  selection,
+  status,
+  hero,
+  scanning,
+}: {
+  data: ScanData
+  selection: Selection
+  status: ReactNode
+  hero: ReactNode
+  scanning: boolean
+}) {
   const sections = new Set(
     data.categories.filter(c => c.items.some(i => selection.isOn(i))).map(c => c.id),
   ).size
   const freeAfter = data.free + selection.exactBytes
   return (
-    <section className="flex items-center gap-7 border-b px-7 py-5">
+    <section className="relative flex items-center gap-7 border-b px-7 py-5">
+      {scanning && <LoadingBackdrop />}
       <DiskDonut used={data.used} selected={selection.exactBytes} free={data.free} size={132} />
       <div className="flex grow flex-col gap-2">
         <div className="text-xs text-muted-foreground">Selected to free</div>
-        <div className="text-5xl leading-none font-bold tracking-tighter tabular-nums">
-          <SpinningBytes bytes={selection.exactBytes} />
-        </div>
+        {hero ?? (
+          <div className="text-5xl leading-none font-bold tracking-tighter tabular-nums">
+            <SpinningBytes bytes={selection.exactBytes} />
+          </div>
+        )}
         <div className="text-[13px] text-muted-foreground">
           {selection.selected.length} items in {sections} sections · free space goes from{' '}
           <b className="font-medium text-foreground">{formatBytes(data.free)}</b> to{' '}

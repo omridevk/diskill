@@ -10,8 +10,8 @@ import {useSelection, type Selection} from '@/lib/selection'
 import {ActionBar} from './components/action-bar'
 import {Cleanup} from './components/cleanup'
 import {Insights} from './components/insights'
-import {LoadingScreen} from './components/loading-screen'
 import {PreviewDialog, type Plan} from './components/preview-dialog'
+import {ScanHero} from './components/scan-hero'
 import {ScanStatus} from './components/scan-status'
 import {SkeletonReveal} from './components/skeleton-reveal'
 import {Storage} from './components/storage'
@@ -49,17 +49,17 @@ function Finished({title, body, approved}: Outcome) {
   )
 }
 
-function useRevealed(scan: Scan) {
+function useHandedOver(scan: Scan) {
   const reduced = useReducedMotion()
   const ready = scan.walked || scan.error !== ''
   const delay = scan.error || reduced ? 0 : GATHER_MS
-  const [revealed, setRevealed] = useState(ready)
+  const [handedOver, setHandedOver] = useState(ready)
   useEffect(() => {
-    if (!ready || revealed) return
-    const timer = setTimeout(() => setRevealed(true), delay)
+    if (!ready || handedOver) return
+    const timer = setTimeout(() => setHandedOver(true), delay)
     return () => clearTimeout(timer)
-  }, [ready, revealed, delay])
-  return revealed
+  }, [ready, handedOver, delay])
+  return handedOver
 }
 
 function Problem({text}: {text: string}) {
@@ -70,8 +70,6 @@ function Problem({text}: {text: string}) {
 function Streamed({live, ready, children}: {live: boolean; ready: boolean; children: ReactNode}) {
   return live ? <SkeletonReveal ready={ready}>{children}</SkeletonReveal> : children
 }
-
-const FADE_IN = 'animate-in fade-in duration-(--duration-very-slow) motion-reduce:animate-none'
 
 function useDecisions(token: string, selection: Selection) {
   const [plan, setPlan] = useState<Plan | null>(null)
@@ -109,7 +107,7 @@ export function App({loaded}: {loaded: Loaded}) {
   const live = loaded.live === true
   const scan = useScan(loaded)
   const {data} = scan
-  const revealed = useRevealed(scan)
+  const handedOver = useHandedOver(scan)
   const selection = useSelection(data.categories)
   const {plan, dialog, setDialog, previewing, done, error, openPreview, approve, cancel} = useDecisions(loaded.token, selection)
   const cleanable = useMemo(
@@ -119,11 +117,10 @@ export function App({loaded}: {loaded: Loaded}) {
   const itemCount = data.categories.reduce((sum, c) => sum + c.items.length, 0)
 
   if (done) return <Finished {...done} />
-  if (!revealed) return <LoadingScreen scan={scan} error={error} onCancel={cancel} />
   const settled = scan.walked || scan.error !== ''
 
   return (
-    <Tabs defaultValue="cleanup" className={`flex h-svh flex-col gap-0 ${live ? FADE_IN : ''}`}>
+    <Tabs defaultValue="cleanup" className="flex h-svh flex-col gap-0">
       <header className="flex items-center gap-4 border-b px-7 py-4">
         <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
           <HardDrive className="size-4" />
@@ -138,7 +135,13 @@ export function App({loaded}: {loaded: Loaded}) {
           <TabsTrigger value="insights">Insights</TabsTrigger>
         </TabsList>
       </header>
-      <Summary data={data} selection={selection} status={live && <ScanStatus scan={scan} />} />
+      <Summary
+        data={data}
+        selection={selection}
+        status={live && <ScanStatus scan={scan} />}
+        hero={live && !handedOver ? <ScanHero scan={scan} /> : undefined}
+        scanning={live && !settled}
+      />
       <Problem text={scan.error && `The scan failed: ${scan.error}. Nothing can be approved`} />
       <Problem text={error && `${error}. Nothing was deleted`} />
       <TabsContent value="cleanup" className="flex min-h-0 flex-col">
