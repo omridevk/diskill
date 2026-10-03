@@ -1,27 +1,28 @@
 import {Activity, Clapperboard} from 'lucide-react'
-import {memo, useCallback, useState, type ReactNode} from 'react'
+import {useVirtualizer} from '@tanstack/react-virtual'
+import {memo, useCallback, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/components/ui/sheet'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatDuration, type Outcome, type CleanupProgress} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
+import type {LogFilter} from '@/lib/list-view'
 import {useReducedMotion} from '@/lib/motion'
 import {CleanupFilm} from './cleanup-film'
 import {SpinningBytes} from './numbers'
 
-type Filter = 'all' | 'removed' | 'problems' | 'commands'
-
-const SHOWN_ROWS = 300
+const LOG_ROW_HEIGHT = 52
+const LOG_OVERSCAN = 10
 const WAITING = 'Approved · Claude is showing the commands in your terminal'
 
-const FILTERS: Record<Filter, (o: Outcome) => boolean> = {
+const FILTERS: Record<LogFilter, (o: Outcome) => boolean> = {
   all: () => true,
   removed: o => o.kind === 'removed',
   problems: o => o.kind === 'failed' || o.kind === 'kept',
   commands: o => o.key.startsWith('cmd:'),
 }
 
-const FILTER_LABEL: Record<Filter, string> = {all: 'All', removed: 'Removed', problems: 'Problems', commands: 'Commands'}
+const FILTER_LABEL: Record<LogFilter, string> = {all: 'All', removed: 'Removed', problems: 'Problems', commands: 'Commands'}
 
 function signedBytes(n: number) {
   return `${n < 0 ? '−' : '+'}${formatBytes(Math.abs(n))}`
@@ -92,9 +93,9 @@ export function ProgressTrack({progress}: {progress: CleanupProgress}) {
   )
 }
 
-export function DetailsButton({onClick}: {onClick: () => void}) {
+export function DetailsButton({onClick, ref}: {onClick: () => void; ref?: Ref<HTMLButtonElement>}) {
   return (
-    <Button variant="outline" aria-haspopup="dialog" onClick={onClick}>
+    <Button ref={ref} variant="outline" aria-haspopup="dialog" onClick={onClick}>
       <Activity /> Details
     </Button>
   )
@@ -149,9 +150,24 @@ function detailOf(outcome: Outcome) {
   return `${formatBytes(outcome.bytes)}${outcome.secs > 0 ? ` in ${outcome.secs.toFixed(1)}s` : ''}`
 }
 
-const Row = memo(function Row({outcome}: {outcome: Outcome}) {
+interface RowProps {
+  outcome: Outcome
+  index: number
+  count: number
+  start: number
+  ref: Ref<HTMLLIElement>
+}
+
+const Row = memo(function Row({outcome, index, count, start, ref}: RowProps) {
   return (
-    <li className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3 border-b border-border/50 px-4 py-2 text-xs">
+    <li
+      ref={ref}
+      data-index={index}
+      aria-setsize={count}
+      aria-posinset={index + 1}
+      className="absolute top-0 left-0 grid w-full grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3 border-b border-border/50 px-4 py-2 text-xs"
+      style={{transform: `translateY(${start}px)`}}
+    >
       <span className="text-muted-foreground tabular-nums">{(outcome.at / 1000).toFixed(1)}s</span>
       <span className="flex min-w-0 flex-col gap-0.5">
         <span className={`font-medium ${KIND_TONE[outcome.kind]}`}>
@@ -164,17 +180,28 @@ const Row = memo(function Row({outcome}: {outcome: Outcome}) {
 })
 
 function Rows({outcomes}: {outcomes: readonly Outcome[]}) {
-  const shown = outcomes.slice(-SHOWN_ROWS).toReversed()
-  if (shown.length === 0) return <p className="px-4 py-6 text-xs text-muted-foreground">Nothing here yet.</p>
+  const scroller = useRef<HTMLDivElement>(null)
+  const newest = (index: number) => outcomes[outcomes.length - 1 - index]
+  const virtualizer = useVirtualizer({
+    count: outcomes.length,
+    getScrollElement: () => scroller.current,
+    estimateSize: () => LOG_ROW_HEIGHT,
+    getItemKey: index => newest(index)?.key ?? index,
+    overscan: LOG_OVERSCAN,
+  })
   return (
-    <>
-      <ol aria-label="Cleanup events" className="flex flex-col">
-        {shown.map(o => (
-          <Row key={o.key} outcome={o} />
-        ))}
-      </ol>
-      {outcomes.length > SHOWN_ROWS && <p className="px-4 py-3 text-xs text-muted-foreground">{outcomes.length - SHOWN_ROWS} older rows not shown</p>}
-    </>
+    <div ref={scroller} className="min-h-0 grow overflow-y-auto border-t">
+      {outcomes.length === 0 ? (
+        <p className="px-4 py-6 text-xs text-muted-foreground">Nothing here yet.</p>
+      ) : (
+        <ol aria-label="Cleanup events" className="relative" style={{height: virtualizer.getTotalSize()}}>
+          {virtualizer.getVirtualItems().map(virtual => {
+            const outcome = newest(virtual.index)
+            return outcome && <Row key={outcome.key} ref={virtualizer.measureElement} outcome={outcome} index={virtual.index} count={outcomes.length} start={virtual.start} />
+          })}
+        </ol>
+      )}
+    </div>
   )
 }
 
@@ -189,14 +216,18 @@ function ProgressPanel({
   open,
   onOpenChange,
   onMovie,
+  log,
+  setLog,
 }: {
   progress: CleanupProgress
   open: boolean
   onOpenChange: (open: boolean) => void
   onMovie: () => void
+  log: LogFilter
+  setLog: (log: LogFilter) => void
 }) {
-  const [filter, setFilter] = useState<Filter>('all')
   const reduced = useReducedMotion()
+  const shown = useMemo(() => progress.outcomes.filter(FILTERS[log]), [progress.outcomes, log])
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="gap-4 data-[side=right]:sm:max-w-md">
@@ -206,17 +237,15 @@ function ProgressPanel({
         </SheetHeader>
         <Stats progress={progress} />
         <div className="flex items-center gap-2 px-4">
-          <ToggleGroup value={[filter]} onValueChange={v => v[0] && setFilter(v[0] as Filter)} variant="outline" size="sm" aria-label="Show">
-            {(Object.keys(FILTER_LABEL) as Filter[]).map(f => (
+          <ToggleGroup value={[log]} onValueChange={v => v[0] && setLog(v[0] as LogFilter)} variant="outline" size="sm" aria-label="Show">
+            {(Object.keys(FILTER_LABEL) as LogFilter[]).map(f => (
               <ToggleGroupItem key={f} value={f}>
                 {FILTER_LABEL[f]}
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
         </div>
-        <div className="min-h-0 grow overflow-y-auto border-t">
-          <Rows outcomes={progress.outcomes.filter(FILTERS[filter])} />
-        </div>
+        <Rows outcomes={shown} />
         {!reduced && (
           <div className="border-t p-4">
             <Button variant="outline" className="w-full" onClick={onMovie}>
@@ -258,16 +287,33 @@ export function ProgressFooter({progress}: {progress: CleanupProgress}) {
   )
 }
 
-export function CleanupTracker({progress, panel, setPanel}: {progress: CleanupProgress; panel: boolean; setPanel: (open: boolean) => void}) {
+export function CleanupTracker({
+  progress,
+  panel,
+  setPanel,
+  log,
+  setLog,
+  returnFocus,
+}: {
+  progress: CleanupProgress
+  panel: boolean
+  setPanel: (open: boolean) => void
+  log: LogFilter
+  setLog: (log: LogFilter) => void
+  returnFocus: RefObject<HTMLButtonElement | null>
+}) {
   const [movie, setMovie] = useState(false)
-  const closeMovie = useCallback(() => setMovie(false), [])
+  const closeMovie = useCallback(() => {
+    setMovie(false)
+    returnFocus.current?.focus()
+  }, [returnFocus])
   const openMovie = () => {
     setPanel(false)
     setMovie(true)
   }
   return (
     <>
-      <ProgressPanel progress={progress} open={panel} onOpenChange={setPanel} onMovie={openMovie} />
+      <ProgressPanel progress={progress} open={panel} onOpenChange={setPanel} onMovie={openMovie} log={log} setLog={setLog} />
       {movie && <CleanupFilm plan={progress.plan} cleanup={progress.cleanup} onClose={closeMovie} />}
     </>
   )

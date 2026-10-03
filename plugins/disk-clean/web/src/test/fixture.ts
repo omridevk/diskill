@@ -2,7 +2,7 @@ import type {Category, Item, Loaded, ScanData} from '@/lib/data'
 
 const GB = 1024 ** 3
 
-function item(path: string, bytes: number, extra: Partial<Item> = {}): Item {
+export function item(path: string, bytes: number, extra: Partial<Item> = {}): Item {
   return {
     path,
     label: path.replace('/Users/you', '~'),
@@ -18,7 +18,7 @@ function item(path: string, bytes: number, extra: Partial<Item> = {}): Item {
   }
 }
 
-function category(id: string, title: string, risk: Category['risk'], items: Item[]): Category {
+export function category(id: string, title: string, risk: Category['risk'], items: Item[]): Category {
   return {id, title, desc: `${title} description`, risk, items, bytes: items.reduce((sum, i) => sum + i.bytes, 0)}
 }
 
@@ -94,3 +94,15 @@ export const cleanupEvents = [
   {type: 'worktree', data: {path: '/Users/you/code/wt', bytes: GB, outcome: 'kept', reason: '1 uncommitted or untracked files', elapsed_ms: 2000}},
   {type: 'done', data: {free_before: 50 * GB, free_after: 53.4 * GB, elapsed_ms: 2500}},
 ] as const
+
+export function bigSection(count: number): Category {
+  const items = Array.from({length: count}, (_, i) =>
+    item(`/Users/you/tmp/item-${String(i).padStart(5, '0')}`, 4096 + ((i * 7919) % 100_000), {age: i % 400, note: i % 3 === 0 ? 'temp file' : ''}),
+  )
+  return category('temp', 'Your macOS temp', 'safe', items)
+}
+
+export function withSection(extra: Category): Loaded {
+  const [first, ...rest] = categories
+  return {data: {...data, categories: first ? [first, extra, ...rest] : [extra]}, token: 'test-token'}
+}

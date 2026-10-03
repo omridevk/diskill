@@ -1,5 +1,5 @@
 import {Loader2, SquareTerminal, Trash2, X} from 'lucide-react'
-import {useEffect, useState, type ReactNode} from 'react'
+import {useEffect, useState, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import type {CleanupProgress} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
@@ -23,10 +23,10 @@ function PreviewLabel({text}: {text: string}) {
   )
 }
 
-function PreviewButton({disabled, previewing, onClick}: {disabled: boolean; previewing: boolean; onClick: () => void}) {
+function PreviewButton({disabled, previewing, onClick, buttonRef}: {disabled: boolean; previewing: boolean; onClick: () => void; buttonRef?: RefObject<HTMLButtonElement | null>}) {
   const label = useTextSwap(previewing ? CHECKING : 'Preview commands')
   return (
-    <Button variant="outline" size="lg" disabled={disabled || previewing} onClick={onClick}>
+    <Button ref={buttonRef} variant="outline" size="lg" className="shrink-0" disabled={disabled} aria-busy={previewing} onClick={previewing ? undefined : onClick}>
       <span className="t-icon-swap" data-state={previewing ? 'b' : 'a'}>
         <SquareTerminal className="t-icon" data-icon="a" />
         <span className="t-icon" data-icon="b">
@@ -75,6 +75,7 @@ function FuseAction({label, doneLabel, icon, background, color, disabled = false
       icon={icon}
       size="sm"
       radius={8}
+      className="shrink-0"
       background={background}
       color={color}
       fuseColor={reduced ? 'transparent' : '#ef4444'}
@@ -97,6 +98,7 @@ export function ActionBar({
   locked,
   progress = null,
   previewing,
+  previewRef,
   onCancel,
   onPreview,
   onApprove,
@@ -105,6 +107,7 @@ export function ActionBar({
   locked: boolean
   progress?: CleanupProgress | null
   previewing: boolean
+  previewRef?: RefObject<HTMLButtonElement | null>
   onCancel: () => void
   onPreview: () => void
   onApprove: () => void
@@ -115,7 +118,7 @@ export function ActionBar({
 
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
-      <div className="flex grow flex-col gap-0.5">
+      <div className="flex min-w-0 grow flex-col gap-0.5">
         <div className="text-sm font-semibold tabular-nums">
           {count} {count === 1 ? 'item' : 'items'} selected · <PopBytes bytes={selection.exactBytes} />
           {selection.apparentBytes > 0 && (
@@ -128,8 +131,9 @@ export function ActionBar({
         </div>
       </div>
       <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />
-      <PreviewButton disabled={disabled} previewing={previewing} onClick={onPreview} />
+      <PreviewButton disabled={disabled} previewing={previewing} onClick={onPreview} buttonRef={previewRef} />
       <FuseAction
+        key={String(disabled)}
         label="Approve and delete"
         doneLabel="Approving"
         icon={<Trash2 />}

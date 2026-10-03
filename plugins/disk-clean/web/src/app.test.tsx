@@ -10,10 +10,10 @@ import {gsap} from 'gsap'
 import {cleanupReducer, filmPlan, NO_CLEANUP, outcomes, totalsOf, type CleanupEvent} from './lib/cleanup'
 import {formatBytes, NO_DATA, type Category, type Loaded} from './lib/data'
 import {cssMs, useTextSwap} from './lib/motion'
-import {scanReducer, startScan, type ScanEvent} from './lib/scan'
-import {NO_PICKS, picksReducer, useSelection} from './lib/selection'
+import {scanBatchReducer, scanReducer, startScan, type ScanEvent} from './lib/scan'
+import {NO_PICKS, outermost, picksReducer, useSelection} from './lib/selection'
 import {squarifyInBounds} from './lib/treemap-tile'
-import {cleanupEvents, fixture} from './test/fixture'
+import {category, cleanupEvents, fixture, item} from './test/fixture'
 import './index.css'
 
 describe('formatBytes', () => {
@@ -256,6 +256,12 @@ describe('live scan reducer', () => {
     expect(fold([disk, {type: 'error', data: {message: 'walk failed', elapsed_ms: 30}}]).error).toBe('walk failed')
   })
 
+  test('a burst of events applied in one pass lands in the same state as one at a time', () => {
+    const rescan: ScanEvent = {type: 'rescan', data: {elapsed_ms: 0}}
+    const events = [disk, ...items, walked, rescan, ...items.toReversed(), ...items, done]
+    expect(scanBatchReducer(startScan(LIVE), events)).toEqual(fold(events))
+  })
+
   test('a finished run starts walked and done', () => {
     expect(startScan(fixture)).toMatchObject({walked: true, done: true, data: fixture.data})
   })
@@ -264,12 +270,13 @@ describe('live scan reducer', () => {
     const appA = items[0]?.type === 'item' ? items[0].data.item : undefined
     if (!appA) throw new Error('fixture has no first item')
     const first = picksReducer(NO_PICKS, {type: 'offer', items: itemsOf(items.slice(0, 2))})
-    expect([...first.on]).toEqual(['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b'])
-    const unticked = picksReducer(first, {type: 'set', items: [appA], value: false})
+    expect(Object.keys(first.on)).toEqual(['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b'])
+    const {[appA.path]: _untick, ...rest} = first.on
+    const unticked = picksReducer(first, {type: 'select', update: rest})
     const replayed = picksReducer(unticked, {type: 'offer', items: itemsOf([...items, ...items])})
-    expect(replayed.on.has(appA.path)).toBe(false)
-    expect(replayed.on.has('/Users/you/Library/Caches/app-d')).toBe(true)
-    expect(replayed.on.has('/Users/you/code/web/node_modules')).toBe(false)
+    expect(replayed.on[appA.path]).toBeUndefined()
+    expect(replayed.on['/Users/you/Library/Caches/app-d']).toBe(true)
+    expect(replayed.on['/Users/you/code/web/node_modules']).toBeUndefined()
   })
 })
 
@@ -553,6 +560,7 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-a')
     expect(fillOf(screen)).toMatch(/^scaleX\(0\.5333/)
     await expect.element(screen.getByText('1 of 4 removed')).toBeVisible()
+    await expect.element(screen.getByRole('progressbar', {name: 'Application caches removed'})).toHaveAttribute('aria-valuenow', '53')
     await expect.element(screen.getByText('removed', {exact: true})).toBeVisible()
     await expect.element(screen.getByText('deleting', {exact: true}).first()).toBeVisible()
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toHaveClass('truncate font-mono text-[12.5px]')
@@ -561,6 +569,7 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
     expect(fillOf(screen)).toBe('scaleX(1)')
     await expect.element(screen.getByText('3 of 4 removed')).toBeVisible()
+    await expect.element(screen.getByRole('progressbar', {name: 'Application caches removed'})).toHaveAttribute('aria-valuenow', '93')
     await expect.element(screen.getByText('not removed: still present after removal: permission denied')).toBeVisible()
     await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
     await expect
@@ -611,6 +620,7 @@ describe('cleanup in the app', () => {
     expect(document.querySelector('[data-film="particles"] canvas')).toBeNull()
     await movie.getByRole('button', {name: 'Close'}).click()
     await expect.element(movie).not.toBeInTheDocument()
+    await expect.element(details(screen)).toHaveFocus()
     expect(document.querySelector('canvas')).toBeNull()
     await barSays(screen, 'Freed 3.5 GB')
   })
@@ -676,6 +686,25 @@ describe('cleanup in the app', () => {
     expect(getComputedStyle(status).color).toBe(getComputedStyle(document.body).color)
   })
 
+  test('the cleanup log only grows, and outcomes already derived are reused, not rebuilt', () => {
+    const plan = filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB)
+    const events = cleanupEvents as readonly CleanupEvent[]
+    const first = cleanupReducer(NO_CLEANUP, events.slice(0, 4))
+    const next = cleanupReducer(first, events.slice(4))
+    expect(next.log.slice(0, first.log.length).every((event, i) => event === first.log[i])).toBe(true)
+    const before = outcomes(plan, first.log)
+    const after = outcomes(plan, next.log)
+    expect(after.slice(0, before.length).every((outcome, i) => outcome === before[i])).toBe(true)
+    expect(outcomes(plan, next.log)).toBe(after)
+    const removed = (path: string): CleanupEvent => ({type: 'removed', data: {path, bytes: 1, secs: 0, elapsed_ms: 1}})
+    const left = cleanupReducer(first, [removed('/left')])
+    const right = cleanupReducer(first, [removed('/right')])
+    expect([left.keys.has('/left'), left.keys.has('/right'), right.keys.has('/right'), right.keys.has('/left'), first.keys.has('/left')]).toEqual([true, false, true, false, false])
+    expect(cleanupReducer(right, [removed('/left')]).log.map(e => ('path' in e.data ? e.data.path : e.type)).slice(-2)).toEqual(['/right', '/left'])
+    expect(cleanupReducer(left, [removed('/left')])).toBe(left)
+    expect(after.map(o => o.key)).toEqual(outcomes(filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB), next.log).map(o => o.key))
+  })
+
   test('a replayed stream adds no rows twice', () => {
     const plan = filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB)
     const events = cleanupEvents as readonly CleanupEvent[]
@@ -683,6 +712,23 @@ describe('cleanup in the app', () => {
     expect(cleanupReducer(once, events)).toBe(once)
     expect(cleanupReducer(NO_CLEANUP, [...events, ...events]).log).toEqual(once.log)
     expect(totalsOf(outcomes(plan, once.log), once.done)).toMatchObject({reclaimed: 3.5 * GB, sections: 1, seconds: 3})
+  })
+
+  test('a new run starts a fresh log: old keys and derived outcomes are not carried over', () => {
+    const plan = filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB)
+    const events = cleanupEvents as readonly CleanupEvent[]
+    const once = cleanupReducer(NO_CLEANUP, events)
+    const before = outcomes(plan, once.log)
+    const [, started, removed] = cleanupEvents
+    const rerun = cleanupReducer(once, [
+      {type: 'started', data: {...started.data, run: 'run-2'}},
+      {type: 'removed', data: {...removed.data}},
+    ])
+    expect(rerun.log.map(e => e.type)).toEqual(['started', 'removed'])
+    expect([rerun.done, rerun.waiting, rerun.keys.has(removed.data.path), rerun.keys.has('/Users/you/code/wt')]).toEqual([null, false, true, false])
+    const after = outcomes(plan, rerun.log)
+    expect(after.map(o => o.key)).toEqual([removed.data.path])
+    expect(after[0]).not.toBe(before[0])
   })
 
   test('freed is the bytes actually removed, and the free-space change is labelled on its own', async () => {
@@ -767,5 +813,100 @@ describe('text swap', () => {
     await screen.rerender(<Swapping text="Preview commands" />)
     await settle(cssMs('--text-swap-dur', 150) * 2)
     await expect.element(screen.getByText('Preview commands')).toHaveStyle({opacity: '1'})
+  })
+})
+
+function press(key: string) {
+  document.body.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true}))
+}
+
+const NESTED: Loaded = {
+  ...fixture,
+  data: {
+    ...fixture.data,
+    categories: [
+      category('worktrees', 'Git worktrees', 'safe', [item('/Users/you/code/wt', 4 * GB)]),
+      category('node', 'node_modules', 'safe', [item('/Users/you/code/wt/node_modules', GB), item('/Users/you/code/app/node_modules', GB)]),
+    ],
+  },
+}
+
+const NAMES: Loaded = {
+  ...fixture,
+  data: {...fixture.data, categories: [category('caches', 'Caches', 'safe', ['cache-10', 'cache-2', 'cache-1', 'Cache-3'].map(name => item(`/Users/you/${name}`, GB)))]},
+}
+
+describe('list fixes from QA', () => {
+  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
+  afterEach(async () => {
+    document.documentElement.style.removeProperty('--fuse-window')
+    vi.restoreAllMocks()
+    await page.viewport(1440, 960)
+  })
+
+  test('REV-3: closing the preview dialog returns focus to Preview commands', async () => {
+    vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({commands: ['rm -rf -- /x'], rejected: [], count: 1, bytes: GB})))
+    const screen = await render(<App loaded={fixture} />)
+    const preview = screen.getByRole('button', {name: 'Preview commands'})
+    await preview.click()
+    await expect.element(screen.getByRole('dialog')).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+    await expect.element(preview).toHaveFocus()
+  })
+
+  test('REV-4: at 1024 px the footer buttons keep their full label and icon', async () => {
+    await page.viewport(1024, 768)
+    const screen = await render(<App loaded={fixture} />)
+    for (const name of ['Cancel', 'Preview commands', 'Approve and delete']) {
+      const button = screen.getByRole('button', {name}).element()
+      expect(button.scrollWidth, name).toBeLessThanOrEqual(button.clientWidth + 1)
+      expect(button.querySelector('svg')?.getBoundingClientRect().width, name).toBeGreaterThanOrEqual(14)
+    }
+  })
+
+  test('REV-5: deselecting everything while Approve is armed never approves', async () => {
+    vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
+    const screen = await render(<App loaded={fixture} />)
+    await screen.getByRole('button', {name: 'Approve and delete'}).click()
+    await expect.element(screen.getByRole('button', {name: 'Undo'})).toHaveStyle(SHOWN)
+    press('d')
+    await expect.element(screen.getByText('0 items selected · 0 B')).toBeVisible()
+    await settle(cssMs('--fuse-window', 300) * 2)
+    expect(window.fetch).not.toHaveBeenCalled()
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
+  })
+
+  test('REV-6: section sizes and counts follow the active filters', async () => {
+    const screen = await render(<App loaded={fixture} />)
+    const caches = screen.getByRole('button', {name: /^Application caches/})
+    await expect.element(caches).toHaveTextContent('Application caches3.8 GB4/4')
+    await screen.getByRole('textbox', {name: 'Filter paths'}).fill('app-a')
+    await expect.element(caches).toHaveTextContent('Application caches2.0 GB1/1')
+    await expect.element(screen.getByRole('button', {name: /^node_modules/})).not.toBeInTheDocument()
+  })
+
+  test('REV-7: name sort is natural and ignores case', async () => {
+    const screen = await render(<App loaded={NAMES} />)
+    await screen.getByRole('combobox', {name: 'Sort'}).click()
+    await screen.getByRole('option', {name: 'Name'}).click()
+    const names = () => [...screen.container.querySelectorAll('[role="row"] [data-label]')].map(el => el.textContent)
+    await expect.poll(names).toEqual(['~/cache-1', '~/cache-2', '~/Cache-3', '~/cache-10'])
+  })
+
+  test('STO-4 / REV-12: a selected path inside another selected path counts once', async () => {
+    const screen = await render(<App loaded={NESTED} />)
+    await expect.element(screen.getByText('3 items selected · 5.0 GB')).toBeVisible()
+    await screen.getByRole('button', {name: /^node_modules/}).click()
+    await screen.getByRole('checkbox', {name: '~/code/app/node_modules'}).click()
+    await expect.element(screen.getByText('2 items selected · 4.0 GB')).toBeVisible()
+    expect(outermost(NESTED.data.categories.flatMap(c => c.items)).map(i => i.path)).toEqual(['/Users/you/code/wt', '/Users/you/code/app/node_modules'])
+  })
+
+  test('the list is a table with its full row count for assistive tech', async () => {
+    const screen = await render(<App loaded={fixture} />)
+    const table = screen.getByRole('table', {name: 'Application caches'})
+    await expect.element(table).toHaveAttribute('aria-rowcount', '5')
+    await expect.element(table.getByRole('row').nth(1)).toHaveAttribute('aria-rowindex', '2')
   })
 })

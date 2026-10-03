@@ -48,12 +48,13 @@ The page has three tabs, a summary strip (disk donut, selected total, scan statu
 
 - **Cleanup** — sections grouped Safe / Review first / Report only, as a **List** (sidebar of
   sections plus a table of the open section) or **Cards** (one card per section); the view is
-  remembered. Each section has a checkbox for all its items. Live search, risk filters
-  (safe / review / report only), minimum-size and minimum-idle filters, sort (size, name, age),
-  only-selected, and keyboard shortcuts (`/` search, `a` select shown, `d` deselect all, `r` reset,
-  `v` switch view). Sections with more than three items get a quick-select row — **all N · idle 90+
-  days · idle 1+ year · none**. Banners warn when selected items are hidden by a filter and when
-  anything marked `review` is selected.
+  remembered. Each section has a checkbox for all its shown items, and its size and counts follow
+  the filters (a path inside another selected path counts once). Live search, risk filters
+  (safe / review / report only), minimum-size and minimum-idle filters, sort (size, natural name
+  order, age), only-selected, and keyboard shortcuts (`/` search, `a` select shown, `d` deselect
+  all, `r` reset, `v` switch view). Sections with more than three items get a quick-select row —
+  **all N · idle 90+ days · idle 1+ year · none**. Banners warn when selected items are hidden by a
+  filter and when anything marked `review` is selected.
 - **Storage** — read-only. A **sunburst** or **treemap** of the whole data volume (click to zoom in,
   breadcrumbs to go back up, white outlines mark folders the Cleanup tab can delete), an inspector
   for the hovered folder, and the reconciliation of the whole disk (home folder + rest of the data

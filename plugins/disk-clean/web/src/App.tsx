@@ -1,9 +1,10 @@
 import {HardDrive} from 'lucide-react'
-import {useMemo, useState, type ReactNode} from 'react'
+import {useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs'
 import {decide, preview} from '@/lib/api'
 import {filmPlan, useCleanupProgress, type CleanupProgress, type FilmPlan} from '@/lib/cleanup'
 import type {Loaded, ScanData} from '@/lib/data'
+import {useListViewAtom, type LogFilter} from '@/lib/list-view'
 import {useScan} from '@/lib/live'
 import type {Scan} from '@/lib/scan'
 import {useShownOnMount} from '@/lib/motion'
@@ -63,7 +64,7 @@ function Status({items, progress, lost}: {items: number; progress: CleanupProgre
   )
 }
 
-function Header({items, progress, lost, onDetails}: {items: number; progress: CleanupProgress | null; lost: boolean; onDetails: () => void}) {
+function Header({items, progress, lost, onDetails, detailsRef}: {items: number; progress: CleanupProgress | null; lost: boolean; onDetails: () => void; detailsRef: RefObject<HTMLButtonElement | null>}) {
   return (
     <header className="relative flex items-center gap-4 border-b px-7 py-4">
       <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
@@ -73,7 +74,7 @@ function Header({items, progress, lost, onDetails}: {items: number; progress: Cl
         <h1 className="text-[15px] font-semibold">Disk Clean</h1>
         <Status items={items} progress={progress} lost={lost} />
       </div>
-      {progress && <DetailsButton onClick={onDetails} />}
+      {progress && <DetailsButton ref={detailsRef} onClick={onDetails} />}
       <TabsList>
         <TabsTrigger value="cleanup">Cleanup</TabsTrigger>
         <TabsTrigger value="storage">Storage</TabsTrigger>
@@ -109,6 +110,7 @@ function useDecisions(token: string, selection: Selection, data: ScanData, appro
   }
   const approve = () => {
     setDialog(false)
+    if (selection.selected.length === 0) return
     run(decide(token, 'approve', selection.selected), () => setFilm(planOf(data, selection)))
   }
   const cancel = () => run(decide(token, 'cancel', []), () => setDone({title: 'Cancelled', body: 'Nothing was deleted. You can close this tab.'}))
@@ -120,17 +122,42 @@ function scanProgressOf(live: boolean, scan: Scan) {
   return {tracking: live || scan.rescans > 0, settled: scan.walked || scan.rescans > 0 || scan.error !== ''}
 }
 
+function ScanSummary({live, scan, selection, progress, approved, onRescan}: {live: boolean; scan: Scan; selection: Selection; progress: CleanupProgress | null; approved: boolean; onRescan: () => void}) {
+  const {tracking, settled} = scanProgressOf(live, scan)
+  const hero = useScanHero(live, scan, selection.exactBytes)
+  return (
+    <Summary
+      data={scan.data}
+      selection={selection}
+      bytes={progress ? progress.freed : hero.bytes}
+      overlay={hero.overlay}
+      counter={tracking && <ScanCounter scan={scan} />}
+      status={
+        <>
+          {tracking && <ScanStatus scan={scan} />}
+          <RescanButton scan={scan} approved={approved} onRescan={onRescan} />
+        </>
+      }
+      scanning={live && !settled}
+      progress={progress}
+    />
+  )
+}
+
 export function App({loaded}: {loaded: Loaded}) {
   const live = loaded.live === true
   const {scan, rescan} = useScan(loaded)
-  const {tracking, settled} = scanProgressOf(live, scan)
+  const {settled} = scanProgressOf(live, scan)
   const {data} = scan
   const selection = useSelection(data.categories, loaded.approved)
-  const hero = useScanHero(live, scan, selection.exactBytes)
   const {plan, dialog, setDialog, previewing, done, film, error, openPreview, approve, cancel} = useDecisions(loaded.token, selection, data, loaded.approved !== undefined)
   const {progress, lost} = useCleanupProgress(loaded.token, film, loaded.openEvents)
   const approved = film !== null
   const [panel, setPanel] = useState(false)
+  const [log, setLog] = useState<LogFilter>('all')
+  const listView = useListViewAtom()
+  const detailsRef = useRef<HTMLButtonElement>(null)
+  const previewRef = useRef<HTMLButtonElement>(null)
   const openDetails = () => setPanel(true)
   const cleanable = useMemo(
     () => new Set(data.categories.flatMap(c => c.items.filter(i => !i.report).map(i => i.path))),
@@ -142,26 +169,12 @@ export function App({loaded}: {loaded: Loaded}) {
 
   return (
     <Tabs defaultValue="cleanup" className="flex h-svh flex-col gap-0">
-      {progress && <CleanupTracker progress={progress} panel={panel} setPanel={setPanel} />}
-      <Header items={itemCount} progress={progress} lost={lost} onDetails={openDetails} />
-      <Summary
-        data={data}
-        selection={selection}
-        bytes={progress ? progress.freed : hero.bytes}
-        overlay={hero.overlay}
-        counter={tracking && <ScanCounter scan={scan} />}
-        status={
-          <>
-            {tracking && <ScanStatus scan={scan} />}
-            <RescanButton scan={scan} approved={approved} onRescan={rescan} />
-          </>
-        }
-        scanning={live && !settled}
-        progress={progress}
-      />
+      {progress && <CleanupTracker progress={progress} panel={panel} setPanel={setPanel} log={log} setLog={setLog} returnFocus={detailsRef} />}
+      <Header items={itemCount} progress={progress} lost={lost} onDetails={openDetails} detailsRef={detailsRef} />
+      <ScanSummary live={live} scan={scan} selection={selection} progress={progress} approved={approved} onRescan={rescan} />
       <Problems scanError={scan.error} error={error} />
       <TabsContent value="cleanup" className="flex min-h-0 flex-col">
-        <Cleanup categories={data.categories} selection={selection} progress={progress} />
+        <Cleanup categories={data.categories} selection={selection} listView={listView} progress={progress} />
       </TabsContent>
       <TabsContent value="storage" className="min-h-0 overflow-auto">
         <Streamed live={live} ready={settled}>
@@ -179,11 +192,12 @@ export function App({loaded}: {loaded: Loaded}) {
         locked={!scan.done || scan.error !== ''}
         progress={progress}
         previewing={previewing}
+        previewRef={previewRef}
         onCancel={cancel}
         onPreview={openPreview}
         onApprove={approve}
       />
-      <PreviewDialog plan={plan} open={dialog} onOpenChange={setDialog} onApprove={approve} />
+      <PreviewDialog plan={plan} open={dialog} onOpenChange={setDialog} onApprove={approve} returnFocus={previewRef} />
     </Tabs>
   )
 }

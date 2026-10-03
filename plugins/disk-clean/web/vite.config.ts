@@ -7,25 +7,72 @@ import {viteSingleFile} from 'vite-plugin-singlefile'
 
 const review = process.env.DISK_CLEAN_REVIEW_URL
 const retina = playwright({contextOptions: {deviceScaleFactor: 2}})
+const VIEWPORT = {width: 1440, height: 960}
+const CHROMIUM = {browser: 'chromium' as const, viewport: VIEWPORT}
+const FIREFOX = {browser: 'firefox' as const, viewport: VIEWPORT}
+const FILM = ['src/film.test.tsx']
+
+interface Instance {
+  browser: 'chromium' | 'firefox'
+  viewport: {width: number; height: number}
+  name?: string
+  include?: string[]
+  provider?: typeof retina
+}
+
+function inBrowsers(project: string, instances: Instance[]) {
+  return {
+    enabled: true,
+    headless: true,
+    provider: playwright(),
+    instances: instances.map(instance => ({...instance, name: `${project} ${instance.name ?? instance.browser}`})),
+  }
+}
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile()],
   resolve: {alias: {'@': fileURLToPath(new URL('./src', import.meta.url))}},
   server: {proxy: review ? {'/preview': review, '/decide': review, '/events': review} : undefined},
-  optimizeDeps: {include: ['@base-ui/react/popover', 'gsap', 'gsap/CustomEase', 'gsap/DrawSVGPlugin', 'gsap/Flip', 'gsap/SplitText', '@gsap/react']},
+  optimizeDeps: {
+    include: [
+      '@base-ui/react/popover',
+      'gsap',
+      'gsap/CustomEase',
+      'gsap/DrawSVGPlugin',
+      'gsap/Flip',
+      'gsap/SplitText',
+      '@gsap/react',
+      '@tanstack/react-store',
+      '@tanstack/react-table',
+      '@tanstack/react-virtual',
+    ],
+  },
   build: {outDir: '../cli/assets', emptyOutDir: false},
   test: {
-    include: ['src/**/*.test.tsx'],
     fileParallelism: false,
-    browser: {
-      enabled: true,
-      headless: true,
-      provider: playwright(),
-      instances: [
-        {browser: 'chromium', viewport: {width: 1440, height: 960}},
-        {browser: 'firefox', viewport: {width: 1440, height: 960}, include: ['src/film.test.tsx'], provider: retina},
-        {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, include: ['src/film.test.tsx'], provider: retina},
-      ],
-    },
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'app',
+          include: ['src/**/*.test.tsx'],
+          exclude: ['src/perf.test.tsx'],
+          browser: inBrowsers('app', [
+            CHROMIUM,
+            {...FIREFOX, include: FILM, provider: retina},
+            {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, include: FILM, provider: retina},
+          ]),
+        },
+      },
+      {
+        extends: true,
+        mode: 'production',
+        define: {'process.env.NODE_ENV': JSON.stringify('production')},
+        cacheDir: 'node_modules/.vite-perf',
+        resolve: {alias: [{find: /^react-dom\/client$/, replacement: 'react-dom/profiling'}]},
+        oxc: {jsx: {runtime: 'automatic', development: false}},
+        test: {name: 'perf', include: ['src/perf.test.tsx'], browser: inBrowsers('perf', [CHROMIUM, FIREFOX])},
+      },
+    ],
   },
 })

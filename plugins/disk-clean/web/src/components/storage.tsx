@@ -12,7 +12,7 @@ import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './c
 import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatBytes, type Category, type ScanData, type TreeNode} from '@/lib/data'
-import type {Selection} from '@/lib/selection'
+import {outermost, sumBytes, type Selection} from '@/lib/selection'
 import {squarifyInBounds} from '@/lib/treemap-tile'
 
 interface Row {
@@ -82,11 +82,11 @@ function cleanupInside(path: string, categories: readonly Category[], selection:
   const prefix = path.endsWith('/') ? path : `${path}/`
   const inside = categories
     .filter(c => c.risk !== 'report')
-    .flatMap(c => c.items.filter(i => i.path === path || i.path.startsWith(prefix)).map(item => ({item, risk: c.risk})))
+    .flatMap(c => c.items.filter(i => i.path === path || i.path.startsWith(prefix)).map(item => ({...item, risk: c.risk})))
   return {
-    bytes: inside.reduce((sum, i) => sum + i.item.bytes, 0),
+    bytes: sumBytes(outermost(inside)),
     count: inside.length,
-    selected: inside.filter(i => selection.isOn(i.item)).reduce((sum, i) => sum + i.item.bytes, 0),
+    selected: sumBytes(outermost(inside.filter(selection.isOn))),
     risk: inside.some(i => i.risk === 'review') ? ('review' as const) : ('safe' as const),
   }
 }
