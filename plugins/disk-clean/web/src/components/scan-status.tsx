@@ -1,4 +1,6 @@
+import {RotateCw} from 'lucide-react'
 import {useEffect, useState} from 'react'
+import {Button} from '@/components/ui/button'
 import type {Scan} from '@/lib/scan'
 import LatticeLoader from './react-bits/lattice-loader'
 
@@ -10,7 +12,7 @@ function statusOf(scan: Scan) {
 }
 
 function phaseOf(scan: Scan) {
-  if (!scan.walked) return 'Walking disk'
+  if (!scan.walked) return scan.rescans > 0 ? 'Rescanning' : 'Walking disk'
   return `Checking ${scan.worktrees} ${scan.worktrees === 1 ? 'worktree' : 'worktrees'}`
 }
 
@@ -43,5 +45,14 @@ export function ScanStatus({scan}: {scan: Scan}) {
       cellSize={4}
       className="text-muted-foreground"
     />
+  )
+}
+
+export function RescanButton({scan, onRescan}: {scan: Scan; onRescan: () => void}) {
+  return (
+    <Button variant="ghost" size="xs" disabled={!scan.done && scan.error === ''} onClick={onRescan}>
+      <RotateCw />
+      Rescan
+    </Button>
   )
 }

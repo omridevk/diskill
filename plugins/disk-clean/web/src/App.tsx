@@ -4,6 +4,7 @@ import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs'
 import {decide, preview} from '@/lib/api'
 import {formatBytes, type Loaded} from '@/lib/data'
 import {useScan} from '@/lib/live'
+import type {Scan} from '@/lib/scan'
 import {cssMs, useReducedMotion, useShownOnMount} from '@/lib/motion'
 import {useSelection, type Selection} from '@/lib/selection'
 import {ActionBar} from './components/action-bar'
@@ -14,7 +15,7 @@ import {BurningFilm} from './components/radiant/burning-film'
 import ParticleText from './components/react-bits/particle-text'
 import Shredder from './components/react-bits/shredder'
 import {ScanCounter, useScanHero} from './components/scan-hero'
-import {ScanStatus} from './components/scan-status'
+import {RescanButton, ScanStatus} from './components/scan-status'
 import {SkeletonReveal} from './components/skeleton-reveal'
 import {Storage} from './components/storage'
 import {Summary} from './components/summary'
@@ -152,9 +153,14 @@ function useDecisions(token: string, selection: Selection) {
   return {plan, dialog, setDialog, previewing, done, error, openPreview, approve, cancel}
 }
 
+function progressOf(live: boolean, scan: Scan) {
+  return {tracking: live || scan.rescans > 0, settled: scan.walked || scan.rescans > 0 || scan.error !== ''}
+}
+
 export function App({loaded}: {loaded: Loaded}) {
   const live = loaded.live === true
-  const scan = useScan(loaded)
+  const {scan, rescan} = useScan(loaded)
+  const {tracking, settled} = progressOf(live, scan)
   const {data} = scan
   const selection = useSelection(data.categories)
   const hero = useScanHero(live, scan, selection.exactBytes)
@@ -166,7 +172,6 @@ export function App({loaded}: {loaded: Loaded}) {
   const itemCount = data.categories.reduce((sum, c) => sum + c.items.length, 0)
 
   if (done) return done.approved ? <Approved {...done} /> : <Finished {...done} />
-  const settled = scan.walked || scan.error !== ''
 
   return (
     <Tabs defaultValue="cleanup" className="flex h-svh flex-col gap-0">
@@ -189,8 +194,13 @@ export function App({loaded}: {loaded: Loaded}) {
         selection={selection}
         bytes={hero.bytes}
         overlay={hero.overlay}
-        counter={live && <ScanCounter scan={scan} />}
-        status={live && <ScanStatus scan={scan} />}
+        counter={tracking && <ScanCounter scan={scan} />}
+        status={
+          <>
+            {tracking && <ScanStatus scan={scan} />}
+            <RescanButton scan={scan} onRescan={rescan} />
+          </>
+        }
         scanning={live && !settled}
       />
       <Problem text={scan.error && `The scan failed: ${scan.error}. Nothing can be approved`} />
@@ -209,6 +219,7 @@ export function App({loaded}: {loaded: Loaded}) {
         </Streamed>
       </TabsContent>
       <ActionBar
+        key={scan.rescans}
         selection={selection}
         locked={!scan.done || scan.error !== ''}
         previewing={previewing}

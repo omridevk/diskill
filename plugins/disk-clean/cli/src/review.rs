@@ -8,7 +8,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 const PAGE: &str = include_str!("../assets/page.html");
@@ -279,11 +279,18 @@ struct Finished {
     scan_lines: Vec<String>,
 }
 
+#[derive(Default)]
+struct Log {
+    generation: u64,
+    events: Vec<String>,
+}
+
 pub struct Live {
     dir: PathBuf,
-    events: Mutex<Vec<String>>,
+    log: Mutex<Log>,
     changed: Condvar,
-    finished: OnceLock<Finished>,
+    finished: Mutex<Option<Arc<Finished>>>,
+    scanning: AtomicBool,
     last_progress: Mutex<Option<Instant>>,
     cancel: Arc<AtomicBool>,
 }
@@ -296,12 +303,29 @@ impl Live {
     fn new(dir: &Path) -> Live {
         Live {
             dir: dir.to_path_buf(),
-            events: Mutex::new(Vec::new()),
+            log: Mutex::default(),
             changed: Condvar::new(),
-            finished: OnceLock::new(),
+            finished: Mutex::new(None),
+            scanning: AtomicBool::new(true),
             last_progress: Mutex::new(None),
             cancel: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn finished(&self) -> Option<Arc<Finished>> {
+        lock(&self.finished).clone()
+    }
+
+    fn restart(&self) {
+        *lock(&self.finished) = None;
+        *lock(&self.last_progress) = None;
+        let mut log = lock(&self.log);
+        log.generation += 1;
+        log.events = vec![format!(
+            "event: rescan\ndata: {}\n\n",
+            json!({"elapsed_ms": 0})
+        )];
+        self.changed.notify_all();
     }
 }
 
@@ -315,12 +339,17 @@ impl Sink for Live {
             *last = Some(Instant::now());
         }
         if event == "done" {
-            let _ = self.finished.set(Finished {
+            *lock(&self.finished) = Some(Arc::new(Finished {
                 categories: load_scan(&self.dir),
                 scan_lines: util::read_lines(&self.dir.join("scan.tsv")),
-            });
+            }));
         }
-        lock(&self.events).push(format!("event: {event}\ndata: {data}\n\n"));
+        let mut log = lock(&self.log);
+        log.events.push(format!("event: {event}\ndata: {data}\n\n"));
+        if event == "done" || event == "error" {
+            self.scanning.store(false, Ordering::SeqCst);
+        }
+        drop(log);
         self.changed.notify_all();
     }
 }
@@ -330,16 +359,21 @@ fn stream_events(out: &mut TcpStream, live: &Live) {
     if out.write_all(head.as_bytes()).is_err() {
         return;
     }
-    let mut sent = 0;
+    let (mut generation, mut sent) = (0, 0);
     loop {
         let batch = {
-            let events = lock(&live.events);
-            let (events, _) = live
+            let log = lock(&live.log);
+            let (log, _) = live
                 .changed
-                .wait_timeout_while(events, HEARTBEAT, |e| e.len() == sent)
+                .wait_timeout_while(log, HEARTBEAT, |l| {
+                    l.generation == generation && l.events.len() == sent
+                })
                 .unwrap_or_else(PoisonError::into_inner);
-            let batch = events[sent..].concat();
-            sent = events.len();
+            if log.generation != generation {
+                (generation, sent) = (log.generation, 0);
+            }
+            let batch = log.events[sent..].concat();
+            sent = log.events.len();
             batch
         };
         let chunk = if batch.is_empty() { ":\n\n" } else { &batch };
@@ -358,7 +392,18 @@ fn query_token(target: &str) -> &str {
         .unwrap_or("")
 }
 
-fn handle(stream: TcpStream, html: &str, token: &str, decided: &mpsc::Sender<Value>, live: &Live) {
+struct Pages {
+    first: String,
+    live: String,
+}
+
+fn handle(
+    stream: TcpStream,
+    pages: &Pages,
+    token: &str,
+    decided: &mpsc::Sender<Value>,
+    live: &Arc<Live>,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let Ok(mut write) = stream.try_clone() else {
         return;
@@ -392,6 +437,11 @@ fn handle(stream: TcpStream, html: &str, token: &str, decided: &mpsc::Sender<Val
             if route == "/favicon.ico" {
                 respond(&mut write, "204 No Content", "text/plain", b"");
             } else if route == "/" {
+                let html = if lock(&live.log).generation > 0 {
+                    &pages.live
+                } else {
+                    &pages.first
+                };
                 respond(
                     &mut write,
                     "200 OK",
@@ -409,7 +459,7 @@ fn handle(stream: TcpStream, html: &str, token: &str, decided: &mpsc::Sender<Val
             }
         }
         "POST" => {
-            if target != "/decide" && target != "/preview" {
+            if !["/decide", "/preview", "/rescan"].contains(&target) {
                 respond(&mut write, "404 Not Found", "text/plain", b"not found");
                 return;
             }
@@ -438,13 +488,27 @@ fn handle(stream: TcpStream, html: &str, token: &str, decided: &mpsc::Sender<Val
                 respond(&mut write, "403 Forbidden", "text/plain", b"forbidden");
                 return;
             }
+            if target == "/rescan" {
+                if live
+                    .scanning
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    respond(&mut write, "409 Conflict", "text/plain", b"scan running");
+                    return;
+                }
+                live.restart();
+                start_scan(Arc::clone(live), decided.clone(), false);
+                respond(&mut write, "202 Accepted", "application/json", b"{}");
+                return;
+            }
             let approve = payload.get("decision").and_then(Value::as_str) == Some("approve");
-            let finished = live.finished.get();
+            let finished = live.finished();
             if finished.is_none() && (target == "/preview" || approve) {
                 respond(&mut write, "409 Conflict", "text/plain", b"scan not done");
                 return;
             }
-            if let (Some(f), "/preview") = (finished, target) {
+            if let (Some(f), "/preview") = (&finished, target) {
                 let items = payload
                     .get("items")
                     .and_then(Value::as_array)
@@ -598,14 +662,21 @@ fn finished_run(dir: &Path) -> Option<(Value, Live)> {
 
 fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<()> {
     let token = token();
-    let html = render(data, &token);
+    let pages = Arc::new(Pages {
+        first: render(data, &token),
+        live: render(&json!({"live": true}), &token),
+    });
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let (html, token, tx, live) =
-                (html.clone(), token.clone(), tx.clone(), Arc::clone(&live));
-            std::thread::spawn(move || handle(stream, &html, &token, &tx, &live));
+            let (pages, token, tx, live) = (
+                Arc::clone(&pages),
+                token.clone(),
+                tx.clone(),
+                Arc::clone(&live),
+            );
+            std::thread::spawn(move || handle(stream, &pages, &token, &tx, &live));
         }
     });
     eprintln!("review UI: {url}");
@@ -639,8 +710,7 @@ fn decide(rx: &mpsc::Receiver<Value>, live: &Live) -> io::Result<(i32, Option<Pa
         .cloned()
         .unwrap_or_default();
     let Some(selection) = live
-        .finished
-        .get()
+        .finished()
         .and_then(|f| selection(&f.categories, &items))
     else {
         eprintln!("no deletable items were selected");
@@ -654,27 +724,18 @@ fn decide(rx: &mpsc::Receiver<Value>, live: &Live) -> io::Result<(i32, Option<Pa
     Ok((0, Some(out)))
 }
 
-fn live_scan() -> io::Result<i32> {
-    let dir = scan::new_run_dir(None)?;
-    let live = Arc::new(Live::new(&dir));
-    let (tx, rx) = mpsc::channel();
-    serve(&json!({"live": true}), Arc::clone(&live), tx.clone())?;
-    let scanning = Arc::clone(&live);
+fn start_scan(live: Arc<Live>, tx: mpsc::Sender<Value>, first: bool) {
     std::thread::spawn(move || {
         let started = Instant::now();
-        match scan::scan(&scanning.dir, &*scanning, Arc::clone(&scanning.cancel)) {
+        match scan::scan(&live.dir, &*live, Arc::clone(&live.cancel)) {
             Ok(()) => {
-                if scanning
-                    .finished
-                    .get()
-                    .is_some_and(|f| f.categories.is_empty())
-                {
+                if first && live.finished().is_some_and(|f| f.categories.is_empty()) {
                     let _ = tx.send(json!({"decision": NOTHING_FOUND}));
                 }
             }
             Err(e) if e.kind() != io::ErrorKind::Interrupted => {
                 let elapsed_ms = started.elapsed().as_millis() as u64;
-                scanning.emit(
+                live.emit(
                     "error",
                     json!({"message": e.to_string(), "elapsed_ms": elapsed_ms}),
                 );
@@ -682,6 +743,14 @@ fn live_scan() -> io::Result<i32> {
             Err(_) => {}
         }
     });
+}
+
+fn live_scan() -> io::Result<i32> {
+    let dir = scan::new_run_dir(None)?;
+    let live = Arc::new(Live::new(&dir));
+    let (tx, rx) = mpsc::channel();
+    serve(&json!({"live": true}), Arc::clone(&live), tx.clone())?;
+    start_scan(Arc::clone(&live), tx, true);
     let (code, selection) = decide(&rx, &live)?;
     println!("{}", dir.display());
     if let Some(path) = selection {

@@ -83,7 +83,8 @@ export function useTextSwap(text: string) {
   const [shown, setShown] = useState(text)
   useEffect(() => {
     const el = ref.current
-    if (text === shown || !el) return
+    if (!el) return
+    if (text === shown) return el.classList.remove('is-exit')
     if (prefersReducedMotion()) return setShown(text)
     el.classList.add('is-exit')
     const timer = setTimeout(() => setShown(text), cssMs('--text-swap-dur', 150))

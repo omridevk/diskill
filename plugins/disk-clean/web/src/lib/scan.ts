@@ -17,6 +17,7 @@ export type ScanEvent =
   | {type: 'walked'; data: Timed<{home: number; tree: TreeNode | null; insights: Insights | null; worktrees: number}>}
   | {type: 'done'; data: Timed<{reclaimable: number}>}
   | {type: 'error'; data: Timed<{message: string}>}
+  | {type: 'rescan'; data: Timed<object>}
 
 export interface Scan {
   data: ScanData
@@ -27,6 +28,8 @@ export interface Scan {
   worktrees: number
   elapsed: number
   walkedAt: number
+  rescans: number
+  reported: ReadonlySet<string> | null
 }
 
 export function startScan(loaded: Loaded): Scan {
@@ -40,6 +43,8 @@ export function startScan(loaded: Loaded): Scan {
     worktrees: 0,
     elapsed: 0,
     walkedAt: 0,
+    rescans: 0,
+    reported: null,
   }
 }
 
@@ -61,7 +66,18 @@ const withData = (scan: Scan, patch: Partial<ScanData>): Scan => ({...scan, data
 
 function withItem(scan: Scan, {category, item}: {category: CategoryHead; item: Item}) {
   const categories = upsert(scan.data.categories, category, item)
-  return withData(scan, {categories, reclaimable: reclaimableOf(categories)})
+  const reported = scan.reported && new Set([...scan.reported, item.path])
+  return {...withData(scan, {categories, reclaimable: reclaimableOf(categories)}), reported}
+}
+
+function onlyReported(categories: readonly Category[], reported: ReadonlySet<string> | null) {
+  if (!reported) return [...categories]
+  return categories
+    .map(c => {
+      const items = c.items.filter(i => reported.has(i.path))
+      return {...c, items, bytes: sum(items)}
+    })
+    .filter(c => c.items.length > 0)
 }
 
 type Handlers = {[K in ScanEvent['type']]: (scan: Scan, data: Extract<ScanEvent, {type: K}>['data']) => Scan}
@@ -76,8 +92,24 @@ const HANDLERS: Handlers = {
     worktrees,
     walkedAt: elapsed_ms,
   }),
-  done: (scan, {reclaimable}) => ({...withData(scan, {reclaimable}), done: true}),
+  done: (scan, {reclaimable}) => ({
+    ...withData(scan, {reclaimable, categories: onlyReported(scan.data.categories, scan.reported)}),
+    done: true,
+    reported: null,
+  }),
   error: (scan, {message}) => ({...scan, error: message}),
+  rescan: scan => ({
+    ...scan,
+    progress: {files: 0, bytes: 0, dir: ''},
+    walked: false,
+    done: false,
+    error: '',
+    worktrees: 0,
+    elapsed: 0,
+    walkedAt: 0,
+    rescans: scan.rescans + 1,
+    reported: new Set(),
+  }),
 }
 
 export function scanReducer(scan: Scan, event: ScanEvent): Scan {

@@ -14,6 +14,10 @@ export function preview(token: string, items: readonly Item[]): Promise<Plan> {
   return post('/preview', body(token, items, {}))
 }
 
+export function rescan(token: string) {
+  return post('/rescan', JSON.stringify({token}))
+}
+
 export function decide(token: string, decision: 'approve' | 'cancel', items: readonly Item[]) {
   return post('/decide', body(token, decision === 'approve' ? items : [], {decision}))
 }

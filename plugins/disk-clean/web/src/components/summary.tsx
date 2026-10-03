@@ -71,7 +71,7 @@ export function Summary({
           <b className="font-medium text-foreground">{formatBytes(data.free)}</b> to{' '}
           <b className="font-medium text-foreground">{formatBytes(freeAfter)}</b> of {formatBytes(data.total)}
         </div>
-        {status && <div className="flex h-5 items-center">{status}</div>}
+        <div className="flex h-5 items-center gap-3">{status}</div>
       </div>
       <div className="flex flex-col gap-2 self-end text-xs text-muted-foreground">
         <Legend color={DISK_COLORS.used} label="Used" />

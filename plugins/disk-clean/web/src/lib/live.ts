@@ -1,8 +1,9 @@
-import {useEffect, useReducer} from 'react'
+import {useEffect, useReducer, useState} from 'react'
+import {rescan as requestRescan} from './api'
 import type {EventSourceLike, Loaded, OpenEvents} from './data'
 import {scanReducer, startScan, type ScanEvent} from './scan'
 
-const TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error']
+const TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan']
 const FINAL = new Set<ScanEvent['type']>(['done', 'error'])
 const CLOSED = 2
 
@@ -36,11 +37,19 @@ function listen(source: EventSourceLike, emit: (event: ScanEvent) => void) {
 
 export function useScan(loaded: Loaded) {
   const [scan, dispatch] = useReducer(scanReducer, loaded, startScan)
+  const [stream, setStream] = useState(loaded.live ? 1 : 0)
   useEffect(() => {
-    if (!loaded.live) return
+    if (stream === 0) return
     const source = (loaded.openEvents ?? openEventSource)(`/events?token=${encodeURIComponent(loaded.token)}`)
     listen(source, dispatch)
     return () => source.close()
-  }, [loaded])
-  return scan
+  }, [loaded, stream])
+  const rescan = () => {
+    dispatch({type: 'rescan', data: {elapsed_ms: 0}})
+    requestRescan(loaded.token).then(
+      () => setStream(n => n + 1),
+      (e: unknown) => dispatch({type: 'error', data: {message: e instanceof Error ? e.message : String(e), elapsed_ms: 0}}),
+    )
+  }
+  return {scan, rescan}
 }

@@ -20,7 +20,7 @@ function ScanOverlay() {
 }
 
 export function useScanHero(live: boolean, scan: Scan, selected: number) {
-  const scanning = live && !scan.walked && scan.error === ''
+  const scanning = live && !scan.walked && scan.error === '' && scan.rescans === 0
   return {bytes: selected, overlay: scanning ? <ScanOverlay /> : null}
 }
 

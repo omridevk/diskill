@@ -7,7 +7,7 @@ import {App} from './App'
 import {ActionBar} from './components/action-bar'
 import {PreviewDialog} from './components/preview-dialog'
 import {formatBytes, NO_DATA, type Category, type Loaded} from './lib/data'
-import {cssMs} from './lib/motion'
+import {cssMs, useTextSwap} from './lib/motion'
 import {scanReducer, startScan, type ScanEvent} from './lib/scan'
 import {NO_PICKS, picksReducer, useSelection} from './lib/selection'
 import {squarifyInBounds} from './lib/treemap-tile'
@@ -291,6 +291,59 @@ describe('live page', () => {
     await expect.element(screen.getByText(/queued for deletion/)).not.toBeInTheDocument()
   })
 
+  test('rescan keeps the view, filters and picks, and replaces the results at done', async () => {
+    vi.spyOn(window, 'fetch').mockImplementation(async () => new Response('{}', {status: 202}))
+    const sources: ReturnType<typeof fakeEventSource>[] = []
+    const openEvents = () => {
+      const fake = fakeEventSource()
+      sources.push(fake)
+      return fake.source
+    }
+    const send = (event: ScanEvent) => sources.at(-1)?.send(event)
+    const screen = await render(<App loaded={{...LIVE, openEvents}} />)
+    for (const event of [disk, ...items, walked, done]) send(event)
+    await expect.element(screen.getByText('Scan complete')).toBeVisible()
+    await screen.getByText('~/Library/Caches/app-a').click()
+    await screen.getByRole('textbox', {name: 'Filter paths'}).fill('Library')
+    await screen.getByRole('button', {name: 'Card view'}).click()
+    await expect.element(screen.getByText('3 items selected · 1.8 GB')).toBeVisible()
+
+    await screen.getByRole('button', {name: 'Rescan'}).click()
+    await expect.element(screen.getByText('Rescanning')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Rescan'})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
+    await expect.element(screen.getByText('Scanning your disk…')).not.toBeInTheDocument()
+    expect(window.fetch).toHaveBeenCalledWith('/rescan', expect.objectContaining({body: JSON.stringify({token: 'test-token'})}))
+    await expect.poll(() => sources.length).toBe(2)
+    const appE = {...fixture.data.categories[0]!.items[0]!, path: '/Users/you/Library/Caches/app-e', label: '~/Library/Caches/app-e', bytes: GB}
+    const rescanned = items.filter(e => e.type !== 'item' || e.data.item.path !== '/Users/you/Library/Caches/app-d')
+    send({type: 'rescan', data: {elapsed_ms: 0}})
+    for (const event of [disk, ...rescanned, {type: 'item', data: {category: categoryOf(fixture.data.categories[0]!.items[0]!.path), item: appE, elapsed_ms: 900}} as const, walked]) send(event)
+    await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
+    send(done)
+    await expect.element(screen.getByText('Scan complete')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Card view'})).toHaveAttribute('aria-pressed', 'true')
+    await expect.element(screen.getByRole('textbox', {name: 'Filter paths'})).toHaveValue('Library')
+    await screen.getByRole('button', {name: 'List view'}).click()
+    await expect.element(screen.getByText('~/Library/Caches/app-d')).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('checkbox', {name: /app-e/})).toBeChecked()
+    await expect.element(screen.getByRole('checkbox', {name: /app-a/})).not.toBeChecked()
+    await expect.element(screen.getByText('3 items selected · 2.5 GB')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeEnabled()
+
+    await screen.getByRole('tab', {name: 'Storage'}).click()
+    await screen.getByRole('button', {name: 'Treemap'}).click()
+    await screen.getByRole('button', {name: 'Rescan'}).click()
+    await expect.poll(() => sources.length).toBe(3)
+    for (const event of [{type: 'rescan', data: {elapsed_ms: 0}} as const, disk, ...rescanned, walked, done]) send(event)
+    await expect.element(screen.getByText('Scan complete')).toBeVisible()
+    await expect.element(screen.getByRole('tab', {name: 'Storage'})).toHaveAttribute('aria-selected', 'true')
+    await expect.element(screen.getByRole('button', {name: 'Treemap'})).toHaveAttribute('aria-pressed', 'true')
+    await expect.element(screen.getByText('2 items selected · 1.5 GB')).toBeVisible()
+    vi.restoreAllMocks()
+  })
+
   test('a scan error shows and keeps approve locked', async () => {
     const {source, send} = fakeEventSource()
     const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
@@ -403,5 +456,24 @@ describe('effects', () => {
     const textFrame = frameOf(particles())
     await settle(300)
     expect(frameOf(particles())).toBe(textFrame)
+  })
+})
+
+function Swapping({text}: {text: string}) {
+  const label = useTextSwap(text)
+  return (
+    <span ref={label.ref} className="t-text-swap">
+      {label.shown}
+    </span>
+  )
+}
+
+describe('text swap', () => {
+  test('text that flips back before the swap finishes stays visible', async () => {
+    const screen = await render(<Swapping text="Preview commands" />)
+    await screen.rerender(<Swapping text="Checking…" />)
+    await screen.rerender(<Swapping text="Preview commands" />)
+    await settle(cssMs('--text-swap-dur', 150) * 2)
+    await expect.element(screen.getByText('Preview commands')).toHaveStyle({opacity: '1'})
   })
 })

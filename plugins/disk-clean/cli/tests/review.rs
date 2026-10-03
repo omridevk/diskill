@@ -222,12 +222,21 @@ fn clean_disk_render(data: &Value) -> String {
 }
 
 fn events(port: u16, token: &str, until: &str) -> Vec<(String, Value)> {
+    read_until(&mut open_events(port, token), until)
+}
+
+fn open_events(port: u16, token: &str) -> BufReader<TcpStream> {
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     write!(s, "GET /events?token={token} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
     let mut reader = BufReader::new(s);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
     assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+    reader
+}
+
+fn read_until(reader: &mut BufReader<TcpStream>, until: &str) -> Vec<(String, Value)> {
+    let mut line = String::new();
     let mut out = Vec::new();
     let mut name = String::new();
     loop {
@@ -281,35 +290,7 @@ fn review_without_run_dir_streams_the_scan() {
         .arg(&docker)
         .status()
         .unwrap();
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .arg("review")
-        .env("HOME", &home)
-        .env("PATH", path)
-        .env("DISK_CLEAN_SKIP_MAP", "1")
-        .env("DISK_CLEAN_NO_BROWSER", "1")
-        .env("DISK_CLEAN_MIN_BYTES", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stderr = BufReader::new(child.stderr.take().unwrap());
-    let url = loop {
-        let mut line = String::new();
-        assert!(stderr.read_line(&mut line).unwrap() > 0, "no url line");
-        if let Some(url) = line.trim().strip_prefix("review UI: ") {
-            break url.to_string();
-        }
-    };
-    std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
-    let port: u16 = url
-        .trim_end_matches('/')
-        .rsplit(':')
-        .next()
-        .unwrap()
-        .parse()
-        .unwrap();
+    let (mut child, port, token) = spawn_live(&home, &bin);
 
     let (status, page) = request(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_string());
     assert_eq!(status, 200);
@@ -322,11 +303,7 @@ fn review_without_run_dir_streams_the_scan() {
         serde_json::from_str::<Value>(json).unwrap(),
         serde_json::json!({"live": true})
     );
-    let token = page
-        .split_once(r#"<meta name="disk-clean-token" content=""#)
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(token, _)| token.to_string())
-        .expect("token meta");
+    assert!(page.contains(&token));
     assert_eq!(
         request(
             port,
@@ -437,4 +414,161 @@ fn review_without_run_dir_streams_the_scan() {
     assert_eq!(Path::new(lines[1]), run.join("selection.json"));
     let sel = fs::read_to_string(run.join("selection.json")).unwrap();
     assert!(sel.contains(cache.to_str().unwrap()));
+}
+
+fn spawn_live(home: &Path, bin: &Path) -> (std::process::Child, u16, String) {
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        .arg("review")
+        .env("HOME", home)
+        .env("PATH", path)
+        .env("DISK_CLEAN_SKIP_MAP", "1")
+        .env("DISK_CLEAN_NO_BROWSER", "1")
+        .env("DISK_CLEAN_MIN_BYTES", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let url = loop {
+        let mut line = String::new();
+        assert!(stderr.read_line(&mut line).unwrap() > 0, "no url line");
+        if let Some(url) = line.trim().strip_prefix("review UI: ") {
+            break url.to_string();
+        }
+    };
+    std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+    let port: u16 = url
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (_, page) = request(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_string());
+    let token = page
+        .split_once(r#"<meta name="disk-clean-token" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(token, _)| token.to_string())
+        .expect("token meta");
+    (child, port, token)
+}
+
+#[test]
+fn rescan_restarts_the_scan_in_place() {
+    let t = common::temp_dir("rescan");
+    let home = t.0.join("home");
+    let bin = t.0.join("bin");
+    let gate = t.0.join("gate");
+    let old = home.join("Library/Caches/old");
+    let new = home.join("Library/Caches/new");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("blob"), vec![7u8; 64 * 1024]).unwrap();
+    fs::create_dir_all(&bin).unwrap();
+    let docker = bin.join("docker");
+    fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
+            gate.display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&docker)
+        .status()
+        .unwrap();
+    let (mut child, port, token) = spawn_live(&home, &bin);
+    let rescan = |token: &str| post_to(port, "/rescan", &format!(r#"{{"token": "{token}"}}"#));
+    let preview = || {
+        post_to(
+            port,
+            "/preview",
+            &format!(r#"{{"token": "{token}", "items": []}}"#),
+        )
+    };
+
+    assert_eq!(rescan("wrong"), 403);
+    assert_eq!(rescan(&token), 409, "a scan is running");
+    let mut stream = open_events(port, &token);
+    fs::write(&gate, "").unwrap();
+    let first = read_until(&mut stream, "done");
+    assert_eq!(preview(), 200);
+
+    fs::remove_file(&gate).unwrap();
+    fs::remove_dir_all(&old).unwrap();
+    fs::create_dir_all(&new).unwrap();
+    fs::write(new.join("blob"), vec![7u8; 64 * 1024]).unwrap();
+    assert_eq!(rescan(&token), 202);
+    assert_eq!(rescan(&token), 409, "the rescan is running");
+    let head = read_until(&mut stream, "rescan");
+    assert_eq!(
+        head.len(),
+        1,
+        "nothing of the old scan is sent again: {head:?}"
+    );
+    assert_eq!(head[0].1["elapsed_ms"], 0);
+    assert_eq!(preview(), 409);
+    assert_eq!(
+        post_to(
+            port,
+            "/decide",
+            &format!(r#"{{"token": "{token}", "decision": "approve", "items": []}}"#)
+        ),
+        409
+    );
+    fs::write(&gate, "").unwrap();
+    let second = read_until(&mut stream, "done");
+    assert_eq!(second[0].0, "disk");
+    assert_eq!(second.iter().filter(|(n, _)| n == "done").count(), 1);
+    let paths = |events: &[(String, Value)]| -> Vec<String> {
+        events
+            .iter()
+            .filter(|(n, _)| n == "item")
+            .filter_map(|(_, d)| d["item"]["path"].as_str().map(String::from))
+            .collect()
+    };
+    assert!(paths(&first).contains(&old.display().to_string()));
+    assert!(paths(&second).contains(&new.display().to_string()));
+    assert!(!paths(&second).contains(&old.display().to_string()));
+    let mut last = 0;
+    for (name, data) in &second {
+        let ms = data["elapsed_ms"].as_u64().unwrap();
+        assert!(ms >= last, "{name} went back in time");
+        last = ms;
+    }
+
+    let replay = events(port, &token, "done");
+    assert_eq!(
+        replay[0].0, "rescan",
+        "a reconnect replays only the current scan"
+    );
+    assert_eq!(replay[1..], second[..]);
+    assert_eq!(preview(), 200);
+
+    let approve = format!(
+        r#"{{"token": "{token}", "decision": "approve", "items": [{{"path": "{}", "category": "caches"}}, {{"path": "{}", "category": "caches"}}]}}"#,
+        old.display(),
+        new.display()
+    );
+    assert_eq!(post_to(port, "/decide", &approve), 200);
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    let run = Path::new(stdout.lines().next().unwrap());
+    let sel: Value =
+        serde_json::from_str(&fs::read_to_string(run.join("selection.json")).unwrap()).unwrap();
+    let chosen: Vec<&str> = sel["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(chosen, [new.to_str().unwrap()]);
 }
