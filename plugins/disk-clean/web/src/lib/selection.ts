@@ -49,9 +49,13 @@ export function picksReducer(picks: Picks, action: PickAction): Picks {
   return {...picks, on: new Set(preselected(action.items))}
 }
 
-export function useSelection(categories: readonly Category[]): Selection {
+function startPicks(items: readonly Item[], chosen?: readonly string[]): Picks {
+  return chosen ? {on: new Set(chosen), offered: new Set(items.map(i => i.path))} : offer(NO_PICKS, items)
+}
+
+export function useSelection(categories: readonly Category[], chosen?: readonly string[]): Selection {
   const all = useMemo(() => categories.flatMap(c => c.items).filter(pickable), [categories])
-  const [picks, dispatch] = useReducer(picksReducer, all, items => offer(NO_PICKS, items))
+  const [picks, dispatch] = useReducer(picksReducer, all, items => startPicks(items, chosen))
   if (all.some(i => !picks.offered.has(i.path))) dispatch({type: 'offer', items: all})
   const riskOf = useMemo(() => new Map(categories.flatMap(c => c.items.map(i => [i.path, c.risk] as const))), [categories])
 

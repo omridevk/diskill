@@ -604,17 +604,10 @@
   .t-backdrop { transition: none !important; }
 }
 
-/* Cleanup film: GSAP drives the motion (src/lib/film.ts); these are its tokens and static layers. */
+/* Cleanup film: GSAP drives the motion (src/lib/film.ts); these are its tokens. */
 :root {
   --gather-dur: 1600ms;
-  --film-opacity: 0.8;
   --film-fade-dur: 1000ms;
-}
-.t-film {
-  opacity: var(--film-opacity);
-}
-.t-film-scrim {
-  background: radial-gradient(ellipse 46% 36% at 50% 50%, rgb(10 10 10 / 0.85), rgb(10 10 10 / 0.6) 45%, rgb(10 10 10 / 0) 100%);
 }
 .t-credits {
   mask-image: linear-gradient(transparent, black 18%, black 82%, transparent);

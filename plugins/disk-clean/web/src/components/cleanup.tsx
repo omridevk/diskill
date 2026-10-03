@@ -7,6 +7,7 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
+import type {Outcome, CleanupProgress} from '@/lib/cleanup'
 import {formatBytes, isExact, RISK_LABEL, type Category, type Item, type Risk} from '@/lib/data'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {sectionState, type Selection} from '@/lib/selection'
@@ -86,7 +87,7 @@ function sortItems(items: Item[], sort: Sort) {
   return items.toSorted(by[sort])
 }
 
-function SectionCheckbox({category, selection}: {category: Category; selection: Selection}) {
+function SectionCheckbox({category, selection, locked}: {category: Category; selection: Selection; locked: boolean}) {
   const state = sectionState(category, selection)
   if (category.risk === 'report' || state.items.length === 0) return null
   return (
@@ -94,14 +95,23 @@ function SectionCheckbox({category, selection}: {category: Category; selection: 
       aria-label={`Select all in ${category.title}`}
       checked={state.all}
       indeterminate={state.some}
+      disabled={locked}
       onCheckedChange={() => selection.set(state.items, !state.all)}
       className="mt-0.5"
     />
   )
 }
 
-function pickedLabel(category: Category, selection: Selection) {
+function removedLabel(category: Category, progress: CleanupProgress) {
+  const approved = category.items.filter(i => progress.plan.items.has(i.path))
+  if (approved.length === 0) return 'not approved'
+  const removed = approved.filter(i => progress.byKey.get(i.path)?.kind === 'removed').length
+  return `${removed} of ${approved.length} removed`
+}
+
+function pickedLabel(category: Category, selection: Selection, progress: CleanupProgress | null) {
   if (category.risk === 'report') return `${category.items.length} listed`
+  if (progress) return removedLabel(category, progress)
   const state = sectionState(category, selection)
   return `${state.picked}/${state.items.length}`
 }
@@ -148,7 +158,32 @@ interface Group {
   bytes: number
 }
 
-function ItemTable({items, selection, section}: {items: Item[]; selection: Selection; section: string}) {
+const OUTCOME_TEXT: Record<Outcome['kind'], [string, string]> = {
+  removed: ['removed', 'text-muted-foreground'],
+  ran: ['ran', 'text-muted-foreground'],
+  kept: ['kept', 'text-amber-300'],
+  failed: ['not removed', 'text-red-300'],
+}
+
+function pendingText(progress: CleanupProgress) {
+  if (progress.cleanup.done) return 'not run'
+  return progress.cleanup.started ? 'deleting' : 'queued'
+}
+
+function ItemStatus({item, progress}: {item: Item; progress: CleanupProgress}) {
+  const outcome = progress.byKey.get(item.path)
+  if (!outcome) return <span className="text-xs text-muted-foreground">{pendingText(progress)}</span>
+  const [text, tone] = OUTCOME_TEXT[outcome.kind]
+  return <span className={`text-xs ${tone}`}>{outcome.reason ? `${text}: ${outcome.reason}` : text}</span>
+}
+
+function rowTone(item: Item, on: boolean, progress: CleanupProgress | null) {
+  if (!progress) return on ? 'bg-blue-400/[0.07]' : 'hover:bg-muted/40'
+  if (!progress.plan.items.has(item.path)) return 'opacity-40'
+  return progress.byKey.get(item.path)?.kind === 'removed' ? 'opacity-60 [&_[data-label]]:line-through' : ''
+}
+
+function ItemTable({items, selection, section, progress}: {items: Item[]; selection: Selection; section: string; progress: CleanupProgress | null}) {
   const reveal = useReveal(section)
   return (
     <div ref={reveal} data-open="true" className="t-panel-slide grow overflow-auto px-3 py-1">
@@ -163,12 +198,15 @@ function ItemTable({items, selection, section}: {items: Item[]; selection: Selec
         return (
           <label
             key={item.path}
-            className={`grid cursor-pointer grid-cols-[36px_minmax(0,1fr)_80px_96px] items-center gap-x-3 rounded-lg px-3 py-2 ${STATE_MOTION} ${on ? 'bg-blue-400/[0.07]' : 'hover:bg-muted/40'}`}
+            className={`grid grid-cols-[36px_minmax(0,1fr)_80px_96px] items-center gap-x-3 rounded-lg px-3 py-2 ${progress ? '' : 'cursor-pointer'} ${STATE_MOTION} ${rowTone(item, on, progress)}`}
           >
-            <Checkbox checked={on} disabled={item.report} onCheckedChange={value => selection.set([item], value)} />
+            <Checkbox checked={on} disabled={item.report || progress !== null} onCheckedChange={value => selection.set([item], value)} />
             <span className="flex min-w-0 flex-col gap-0.5">
-              <span className="truncate font-mono text-[12.5px]">{item.label}</span>
+              <span data-label className="truncate font-mono text-[12.5px]">
+                {item.label}
+              </span>
               {item.note && <span className="truncate text-xs text-muted-foreground">{item.note}</span>}
+              {progress?.plan.items.has(item.path) && <ItemStatus item={item} progress={progress} />}
             </span>
             <span className={`text-right text-xs tabular-nums ${item.age !== null && item.age >= 90 ? 'text-amber-300' : 'text-muted-foreground'}`}>
               {item.age === null ? '' : item.age === 0 ? 'today' : `${item.age}d`}
@@ -183,7 +221,7 @@ function ItemTable({items, selection, section}: {items: Item[]; selection: Selec
   )
 }
 
-function ListView({groups, selection, active, onActive}: {groups: Group[]; selection: Selection; active: string; onActive: (id: string) => void}) {
+function ListView({groups, selection, active, onActive, progress}: {groups: Group[]; selection: Selection; active: string; onActive: (id: string) => void; progress: CleanupProgress | null}) {
   const ordered = GROUPS.flatMap(([, risk]) => groups.filter(g => g.category.risk === risk))
   const current = ordered.find(g => g.category.id === active) ?? ordered[0]
   const max = Math.max(1, ...groups.map(g => g.category.bytes))
@@ -205,7 +243,7 @@ function ListView({groups, selection, active, onActive}: {groups: Group[]; selec
                     key={category.id}
                     className={`flex items-start gap-2.5 rounded-lg border p-2.5 ${STATE_MOTION} ${isActive ? 'border-zinc-700 bg-zinc-900' : lit ? 'border-blue-400/35 bg-blue-400/5' : 'border-transparent'}`}
                   >
-                    <SectionCheckbox category={category} selection={selection} />
+                    <SectionCheckbox category={category} selection={selection} locked={progress !== null} />
                     <button type="button" onClick={() => onActive(category.id)} className="flex grow flex-col gap-1.5 text-left">
                       <span className="flex w-full items-baseline gap-2">
                         <span className="grow text-[13px] font-medium">{category.title}</span>
@@ -218,7 +256,7 @@ function ListView({groups, selection, active, onActive}: {groups: Group[]; selec
                             style={{width: `${Math.max(2, (category.bytes / max) * 100)}%`}}
                           />
                         </span>
-                        <span className="text-[11px] text-muted-foreground">{pickedLabel(category, selection)}</span>
+                        <span className="text-[11px] text-muted-foreground">{pickedLabel(category, selection, progress)}</span>
                       </span>
                     </button>
                   </div>
@@ -240,9 +278,9 @@ function ListView({groups, selection, active, onActive}: {groups: Group[]; selec
               </span>
             </div>
             <p className="text-[13px] text-muted-foreground">{current.category.desc}</p>
-            <QuickSelect items={current.items} selection={selection} />
+            {!progress && <QuickSelect items={current.items} selection={selection} />}
           </div>
-          <ItemTable items={current.items} selection={selection} section={current.category.id} />
+          <ItemTable items={current.items} selection={selection} section={current.category.id} progress={progress} />
         </main>
       )}
     </div>
@@ -260,7 +298,7 @@ function LearnChevron() {
   )
 }
 
-function CardsView({groups, selection, onOpen}: {groups: Group[]; selection: Selection; onOpen: (id: string) => void}) {
+function CardsView({groups, selection, onOpen, progress}: {groups: Group[]; selection: Selection; onOpen: (id: string) => void; progress: CleanupProgress | null}) {
   return (
     <div className="flex min-h-0 grow flex-col gap-5 overflow-auto px-7 py-5">
       {GROUPS.map(([label, risk]) => {
@@ -278,13 +316,13 @@ function CardsView({groups, selection, onOpen}: {groups: Group[]; selection: Sel
                     className={`flex flex-col gap-3 rounded-xl border p-4 ${STATE_MOTION} ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'}`}
                   >
                     <div className="flex items-center gap-2.5">
-                      <SectionCheckbox category={category} selection={selection} />
+                      <SectionCheckbox category={category} selection={selection} locked={progress !== null} />
                       <span className="grow text-sm font-medium">{category.title}</span>
                       <Badge className={RISK_BADGE[category.risk]}>{RISK_LABEL[category.risk]}</Badge>
                     </div>
                     <div className="flex items-baseline gap-2">
                       <span className="text-2xl font-semibold tracking-tight tabular-nums">{formatBytes(category.bytes)}</span>
-                      <span className="text-xs text-muted-foreground">{pickedLabel(category, selection)}</span>
+                      <span className="text-xs text-muted-foreground">{pickedLabel(category, selection, progress)}</span>
                     </div>
                     <p className="grow text-xs leading-relaxed text-muted-foreground">{category.desc}</p>
                     <Button variant="link" size="xs" className="t-learn self-start px-0" onClick={() => onOpen(category.id)}>
@@ -455,7 +493,9 @@ function groupItems(categories: Category[], filters: Filters, selection: Selecti
     .filter(g => g.items.length > 0)
 }
 
-export function Cleanup({categories, selection}: {categories: Category[]; selection: Selection}) {
+const LOCKED_KEYS = new Set(['a', 'd', 'r'])
+
+export function Cleanup({categories, selection, progress = null}: {categories: Category[]; selection: Selection; progress?: CleanupProgress | null}) {
   const [filters, setFilters] = useState(NO_FILTERS)
   const [view, setView] = useStoredView()
   const [active, setActive] = useState('')
@@ -464,13 +504,14 @@ export function Cleanup({categories, selection}: {categories: Category[]; select
   const groups = useMemo(() => groupItems(categories, filters, selection), [categories, filters, selection])
   const shown = new Set(groups.flatMap(g => g.items.map(i => i.path)))
 
-  useShortcuts({
+  const shortcuts: Record<string, () => void> = {
     '/': () => search.current?.focus(),
     a: () => selection.set(groups.flatMap(g => g.items), true),
     d: () => selection.set(categories.flatMap(c => c.items), false),
     r: () => selection.reset(),
     v: () => setView(view === 'list' ? 'cards' : 'list'),
-  })
+  }
+  useShortcuts(progress ? Object.fromEntries(Object.entries(shortcuts).filter(([key]) => !LOCKED_KEYS.has(key))) : shortcuts)
 
   const open = (id: string) => {
     setActive(id)
@@ -485,9 +526,9 @@ export function Cleanup({categories, selection}: {categories: Category[]; select
         </Button>
       </div>
     ) : view === 'list' ? (
-      <ListView groups={groups} selection={selection} active={active} onActive={setActive} />
+      <ListView groups={groups} selection={selection} active={active} onActive={setActive} progress={progress} />
     ) : (
-      <CardsView groups={groups} selection={selection} onOpen={open} />
+      <CardsView groups={groups} selection={selection} onOpen={open} progress={progress} />
     )
 
   return (

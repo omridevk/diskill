@@ -1,5 +1,5 @@
-import {Loader2, SquareTerminal, Trash2} from 'lucide-react'
-import {useEffect, useState} from 'react'
+import {Loader2, SquareTerminal, Trash2, X} from 'lucide-react'
+import {useEffect, useState, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
 import {formatBytes} from '@/lib/data'
 import {cssMs, useReducedMotion, useTextSwap} from '@/lib/motion'
@@ -50,39 +50,51 @@ function useCountdown(running: boolean, ms: number) {
   return Math.ceil(left / 1000)
 }
 
-function ApproveButton({disabled, onApprove}: {disabled: boolean; onApprove: () => void}) {
+interface FuseAction {
+  label: string
+  doneLabel: string
+  icon: ReactNode
+  background: string
+  color: string
+  disabled: boolean
+  onCommit: () => void
+}
+
+function FuseAction({label, doneLabel, icon, background, color, disabled, onCommit}: FuseAction) {
   const reduced = useReducedMotion()
   const undoWindow = cssMs('--fuse-window', 4000)
   const [armed, setArmed] = useState(false)
   const seconds = useCountdown(armed && reduced, undoWindow)
   return (
     <FuseButton
-      label="Approve and delete"
+      label={label}
       undoLabel={reduced ? `Undo (${seconds}s)` : 'Undo'}
-      doneLabel="Approving"
-      icon={<Trash2 />}
+      doneLabel={doneLabel}
+      icon={icon}
       size="sm"
       radius={8}
-      background="var(--primary)"
-      color="var(--primary-foreground)"
+      background={background}
+      color={color}
       fuseColor={reduced ? 'transparent' : '#ef4444'}
       fuseThickness={2}
       undoWindow={undoWindow}
       commitOn="fuseEnd"
       disabled={disabled}
-      onCommit={onApprove}
+      onCommit={onCommit}
       onPhaseChange={phase => setArmed(phase === 'armed')}
     />
   )
 }
 
-function hint(locked: boolean) {
-  return locked ? ' · Preview and Approve unlock when the scan finishes' : ' · Approve gives you a few seconds to undo'
+function hint(locked: boolean, approved: boolean) {
+  if (approved) return ' · Approved: the deletion runs in the background'
+  return locked ? ' · Preview and Approve unlock when the scan finishes' : ' · Approve and Cancel give you a few seconds to undo'
 }
 
 export function ActionBar({
   selection,
   locked,
+  approved = false,
   previewing,
   onCancel,
   onPreview,
@@ -90,16 +102,17 @@ export function ActionBar({
 }: {
   selection: Selection
   locked: boolean
+  approved?: boolean
   previewing: boolean
   onCancel: () => void
   onPreview: () => void
   onApprove: () => void
 }) {
   const count = selection.selected.length
-  const disabled = count === 0 || locked
+  const disabled = count === 0 || locked || approved
 
   return (
-    <footer data-review="actions" className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
+    <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex grow flex-col gap-0.5">
         <div className="text-sm font-semibold tabular-nums">
           {count} {count === 1 ? 'item' : 'items'} selected · <PopBytes bytes={selection.exactBytes} />
@@ -109,14 +122,20 @@ export function ActionBar({
         </div>
         <div className="text-xs text-muted-foreground">
           Permanent delete, not to the Trash · worktrees are re-checked right before removal
-          {hint(locked)}
+          {hint(locked, approved)}
         </div>
       </div>
-      <Button variant="ghost" size="lg" onClick={onCancel}>
-        Cancel
-      </Button>
+      <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" disabled={approved} onCommit={onCancel} />
       <PreviewButton disabled={disabled} previewing={previewing} onClick={onPreview} />
-      <ApproveButton disabled={disabled} onApprove={onApprove} />
+      <FuseAction
+        label="Approve and delete"
+        doneLabel="Approving"
+        icon={<Trash2 />}
+        background="var(--primary)"
+        color="var(--primary-foreground)"
+        disabled={disabled}
+        onCommit={onApprove}
+      />
     </footer>
   )
 }

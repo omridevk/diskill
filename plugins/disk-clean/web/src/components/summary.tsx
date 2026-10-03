@@ -1,4 +1,5 @@
 import {useEffect, useState, type ReactNode} from 'react'
+import type {CleanupProgress} from '@/lib/cleanup'
 import {formatBytes, type ScanData} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
 import type {Selection} from '@/lib/selection'
@@ -32,6 +33,22 @@ function LoadingBackdrop({scanning}: {scanning: boolean}) {
   )
 }
 
+function diskFigures(data: ScanData, selection: Selection, progress: CleanupProgress | null) {
+  if (!progress) return {used: data.used, pending: selection.exactBytes, before: data.free, after: data.free + selection.exactBytes, free: data.free}
+  const free = progress.free ?? data.free
+  const pending = progress.cleanup.done ? 0 : Math.max(0, progress.plan.approved - progress.freed)
+  return {used: Math.max(0, data.total - free), pending, before: progress.cleanup.started?.free ?? data.free, after: free, free}
+}
+
+function FreeSpace({before, after, total, live}: {before: number; after: number; total: number; live: boolean}) {
+  return (
+    <>
+      free space {live ? 'was' : 'goes from'} <b className="font-medium text-foreground">{formatBytes(before)}</b>
+      {live ? ', now' : ' to'} <b className="font-medium text-foreground">{formatBytes(after)}</b> of {formatBytes(total)}
+    </>
+  )
+}
+
 export function Summary({
   data,
   selection,
@@ -40,6 +57,7 @@ export function Summary({
   counter,
   status,
   scanning,
+  progress = null,
 }: {
   data: ScanData
   selection: Selection
@@ -48,28 +66,28 @@ export function Summary({
   counter: ReactNode
   status: ReactNode
   scanning: boolean
+  progress?: CleanupProgress | null
 }) {
   const sections = new Set(
     data.categories.filter(c => c.items.some(i => selection.isOn(i))).map(c => c.id),
   ).size
-  const freeAfter = data.free + selection.exactBytes
+  const disk = diskFigures(data, selection, progress)
   return (
-    <section data-review="top" className="relative isolate flex items-center gap-7 border-b px-7 py-5">
+    <section className="relative isolate flex items-center gap-7 border-b px-7 py-5">
       <LoadingBackdrop scanning={scanning} />
-      <DiskDonut used={data.used} selected={selection.exactBytes} free={data.free} total={data.total} size={132} />
+      <DiskDonut used={disk.used} selected={disk.pending} free={disk.free} total={data.total} size={132} />
       <div className="flex grow flex-col gap-2">
-        <div className="text-xs text-muted-foreground">Selected to free</div>
+        <div className="text-xs text-muted-foreground">{progress ? 'Freed' : 'Selected to free'}</div>
         <div className="relative h-12 text-5xl leading-none font-bold tracking-tighter tabular-nums">
-          <div data-flip-id="approved-total" className={overlay ? 'invisible w-fit' : 'w-fit'}>
+          <div className={overlay ? 'invisible w-fit' : 'w-fit'}>
             <SpinningBytes bytes={bytes} />
           </div>
           {overlay}
         </div>
         {counter}
         <div className="text-[13px] text-muted-foreground">
-          {selection.selected.length} items in {sections} sections · free space goes from{' '}
-          <b className="font-medium text-foreground">{formatBytes(data.free)}</b> to{' '}
-          <b className="font-medium text-foreground">{formatBytes(freeAfter)}</b> of {formatBytes(data.total)}
+          {selection.selected.length} items in {sections} sections ·{' '}
+          <FreeSpace before={disk.before} after={disk.after} total={data.total} live={progress !== null} />
         </div>
         <div className="flex h-5 items-center gap-3">{status}</div>
       </div>

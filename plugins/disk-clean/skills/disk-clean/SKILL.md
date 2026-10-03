@@ -62,10 +62,13 @@ The page has three tabs, a summary strip (disk donut, selected total, scan statu
   validation code `clean` uses. Worktree safety checks are not repeated here; `clean` re-runs them
   right before each removal.
 - **Approve and delete** (footer) — starts a few-second undo window (a burning fuse; Undo or Escape
-  cancels). The approval is sent only when the window runs out. The page then stays open and shows
-  the cleanup as it happens once stage 3 starts: each item leaving the disk, the reclaimed total and
-  free space from real measurements, anything kept or not removed with its reason, and a summary of
-  what was actually freed at the end. A small read-only helper keeps serving the page after `review`
+  cancels). The approval is sent only when the window runs out. Cancel has the same undo window.
+  After approval the page stays on the review app with a progress bar at the top: first "Claude is
+  showing the commands in your terminal" (the dry run below), then the real deletion once stage 3
+  starts (freed bytes, items done, current path), then what was actually freed. Clicking the bar opens
+  a live log of every removal, kept worktree, failure (with its reason) and command; the cleanup list
+  marks each approved row as it goes. A "Watch the movie" button there plays the cleanup film on
+  demand. A reload keeps the bar and log. A small read-only helper keeps serving the page after `review`
   exits; it never deletes anything and stops on its own a minute after the tab is closed or the
   cleanup finished.
 

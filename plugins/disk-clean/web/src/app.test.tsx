@@ -504,16 +504,31 @@ function sendRaw(source: EventTarget, type: string, data: object) {
   source.dispatchEvent(new MessageEvent(type, {data: JSON.stringify(data)}))
 }
 
-async function approveIntoFilm() {
+function sendAll(source: EventTarget, events: readonly {type: string; data: object}[]) {
+  for (const event of events) sendRaw(source, event.type, event.data)
+}
+
+const bar = (screen: Awaited<ReturnType<typeof render>>) => screen.getByRole('button', {name: /^(Approved|Deleting|Freed|Reconnecting)/})
+
+function barSays(screen: Awaited<ReturnType<typeof render>>, text: string) {
+  return expect.poll(() => bar(screen).element().textContent).toContain(text)
+}
+
+function fillOf(screen: Awaited<ReturnType<typeof render>>) {
+  const fill = screen.container.querySelector('[aria-haspopup="dialog"] > span[aria-hidden]')
+  return fill instanceof HTMLElement ? fill.style.transform : ''
+}
+
+async function approveInApp() {
   vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
   const {source} = fakeEventSource()
   const screen = await render(<App loaded={{...fixture, openEvents: () => source}} />)
   await screen.getByRole('button', {name: 'Approve and delete'}).click()
-  await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).not.toBeInTheDocument()
+  await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
   return {screen, source}
 }
 
-describe('cleanup film', () => {
+describe('cleanup in the app', () => {
   beforeEach(() => {
     document.documentElement.style.setProperty('--fuse-window', '300ms')
     gsap.globalTimeline.timeScale(20)
@@ -525,50 +540,142 @@ describe('cleanup film', () => {
     await emulateReducedMotion('no-preference')
   })
 
-  test('plays the live cleanup: counter ends at the real reclaimed figure, problems keep their reasons, the finale settles', async () => {
-    const {screen, source} = await approveIntoFilm()
+  test('approve hands back to Claude, then the bar, list and panel follow the real deletion', async () => {
+    const {screen, source} = await approveInApp()
     sendRaw(source, 'done', {reclaimable: 7 * GB, elapsed_ms: 9500})
-    await expect.element(screen.getByText('approved for deletion')).toBeVisible()
-    for (const event of cleanupEvents.slice(0, 3)) sendRaw(source, event.type, event.data)
-    await expect.element(screen.getByText('Application caches')).toBeVisible()
-    expect(screen.container.querySelector('[data-film="finale"]')).toBeNull()
-    for (const event of cleanupEvents.slice(3)) sendRaw(source, event.type, event.data)
-    await expect.element(screen.getByRole('heading', {name: 'You freed'})).toBeVisible()
+    sendRaw(source, 'waiting', {})
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: 'Preview commands'})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: 'Rescan'})).toBeDisabled()
+    await expect.element(screen.getByRole('checkbox', {name: 'Select all in Application caches'})).toBeDisabled()
+    await expect.element(screen.getByText('Selected to free')).not.toBeInTheDocument()
+    expect(screen.container.querySelectorAll('[data-film]')).toHaveLength(0)
+
+    sendAll(source, cleanupEvents.slice(1, 3))
+    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-a')
+    expect(fillOf(screen)).toMatch(/^scaleX\(0\.5333/)
+    await expect.element(screen.getByText('1 of 4 removed')).toBeVisible()
+    await expect.element(screen.getByText('removed', {exact: true})).toBeVisible()
+    await expect.element(screen.getByText('deleting', {exact: true}).first()).toBeVisible()
+    await expect.element(screen.getByText('~/Library/Caches/app-a')).toHaveClass('truncate font-mono text-[12.5px]')
+
+    sendAll(source, cleanupEvents.slice(3))
+    await barSays(screen, 'Freed 3.4 GB · 3 removed · 1 kept · 1 not removed')
+    expect(fillOf(screen)).toBe('scaleX(1)')
+    await expect.element(screen.getByText('3 of 4 removed')).toBeVisible()
+    await expect.element(screen.getByText('not removed: still present after removal: permission denied')).toBeVisible()
+    await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
+    expect(source.readyState).toBe(2)
+
+    await bar(screen).click()
+    const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
+    await expect.element(panel).toBeVisible()
+    const rows = panel.getByRole('list', {name: 'Cleanup events'}).getByRole('listitem')
+    await expect.element(rows.first()).toHaveTextContent('2.0sKept /Users/you/code/wt1 uncommitted or untracked files')
+    await expect.element(rows.nth(1)).toHaveTextContent('1.6sNot removed ~/Library/Caches/app-dstill present after removal: permission denied')
+    await expect.element(rows.nth(4)).toHaveTextContent('0.9sRemoved ~/Library/Caches/app-a2.0 GB in 1.0s')
+    await panel.getByRole('button', {name: 'Problems'}).click()
+    await expect.poll(() => rows.elements().length).toBe(2)
+    await panel.getByRole('button', {name: 'Removed'}).click()
+    await expect.poll(() => rows.elements().length).toBe(3)
+    await panel.getByRole('button', {name: 'Commands'}).click()
+    await expect.element(panel.getByText('Nothing here yet.')).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(panel).not.toBeInTheDocument()
+    await expect.element(bar(screen)).toHaveFocus()
+  })
+
+  test('the movie opens on demand, keeps up with the stream and closes back to the app', async () => {
+    const {screen, source} = await approveInApp()
+    sendAll(source, cleanupEvents.slice(0, 3))
+    await barSays(screen, 'Deleting ·')
+    await bar(screen).click()
+    await screen.getByRole('button', {name: 'Watch the movie'}).click()
+    const movie = screen.getByRole('dialog', {name: 'Cleanup movie'})
+    await expect.element(movie.getByText('Application caches')).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(movie).not.toBeInTheDocument()
+    sendAll(source, cleanupEvents.slice(3, 6))
+    await barSays(screen, 'Deleting · 3.5 GB of 3.8 GB · 3 of 5')
+    await bar(screen).click()
+    await screen.getByRole('button', {name: 'Watch the movie'}).click()
+    sendAll(source, cleanupEvents.slice(6))
+    await expect.element(movie.getByRole('heading', {name: 'You freed'})).toBeVisible()
     const freed = screen.container.querySelector('[data-film="freed"]')
     if (!freed) throw new Error('no finale figure')
     await expect.element(page.elementLocator(freed)).toHaveTextContent(formatBytes(3.4 * GB))
-    await expect.element(page.elementLocator(freed)).toHaveStyle({opacity: '1'})
     await expect.poll(() => screen.container.querySelector('[data-film="counter"]')?.textContent).toBe(formatBytes(3.4 * GB))
-    await expect.element(screen.getByText('still present after removal: permission denied').first()).toBeInTheDocument()
-    await expect.element(screen.getByText('1 uncommitted or untracked files').first()).toBeInTheDocument()
-    expect(source.readyState).toBe(2)
-    await expect.poll(() => (screen.container.querySelector('[data-film]') as HTMLElement | null)?.closest('[data-settled]'), {timeout: 10_000}).not.toBeNull()
-    expect(screen.container.querySelector('.t-shimmer')).toBeNull()
+    await expect.element(movie.getByText('still present after removal: permission denied').first()).toBeInTheDocument()
+    await expect.poll(() => screen.container.querySelector('[data-film]')?.closest('[data-settled]'), {timeout: 10_000}).not.toBeNull()
     expect(screen.container.querySelector('[data-film="particles"] canvas')).toBeNull()
+    await movie.getByRole('button', {name: 'Close'}).click()
+    await expect.element(movie).not.toBeInTheDocument()
+    expect(document.querySelector('canvas')).toBeNull()
+    await barSays(screen, 'Freed 3.4 GB')
   })
 
-  test('a replayed stream adds no beats twice', () => {
+  test('a lost connection says so until the stream comes back', async () => {
+    const {screen, source} = await approveInApp()
+    sendAll(source, cleanupEvents.slice(0, 3))
+    source.readyState = 0
+    source.dispatchEvent(new Event('error'))
+    await barSays(screen, 'Reconnecting…')
+    source.readyState = 1
+    source.dispatchEvent(new Event('open'))
+    await barSays(screen, 'Deleting ·')
+  })
+
+  test('a reload during the cleanup lands back in the app with the bar and panel', async () => {
+    const {source} = fakeEventSource()
+    const approved = ['/Users/you/Library/Caches/app-a', '/Users/you/code/web/node_modules']
+    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} />)
+    await expect.element(screen.getByRole('checkbox', {name: /node_modules/})).toBeChecked()
+    await expect.element(screen.getByRole('checkbox', {name: /app-b/})).not.toBeChecked()
+    sendAll(source, cleanupEvents.slice(0, 3))
+    await barSays(screen, 'Deleting · 2.0 GB of 5.0 GB · 1 of 5')
+    await bar(screen).click()
+    await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'}).getByText('Removed ~/Library/Caches/app-a')).toBeVisible()
+  })
+
+  test('reduced motion keeps the bar and panel and offers no movie', async () => {
+    await emulateReducedMotion('reduce')
+    const {screen, source} = await approveInApp()
+    sendAll(source, cleanupEvents)
+    await barSays(screen, 'Freed 3.4 GB · 3 removed · 1 kept · 1 not removed')
+    await bar(screen).click()
+    await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'})).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Watch the movie'})).not.toBeInTheDocument()
+    expect(document.querySelector('canvas')).toBeNull()
+  })
+
+  test('a replayed stream adds no rows twice', () => {
     const plan = filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB)
-    const fold = (events: readonly (typeof cleanupEvents)[number][]) => events.reduce((c, e) => cleanupReducer(c, e as CleanupEvent), NO_CLEANUP)
-    const once = fold(cleanupEvents)
-    expect(fold([...cleanupEvents, ...cleanupEvents]).log).toEqual(once.log)
+    const events = cleanupEvents as readonly CleanupEvent[]
+    const once = cleanupReducer(NO_CLEANUP, events)
+    expect(cleanupReducer(once, events)).toBe(once)
+    expect(cleanupReducer(NO_CLEANUP, [...events, ...events]).log).toEqual(once.log)
     expect(totalsOf(outcomes(plan, once.log), once.done)).toMatchObject({reclaimed: 3.4 * GB, sections: 1, seconds: 3})
   })
+})
 
-  test('reduced motion renders the static live list and the final numbers', async () => {
-    await emulateReducedMotion('reduce')
-    const {screen, source} = await approveIntoFilm()
-    sendRaw(source, 'waiting', {})
-    await expect.element(screen.getByRole('heading', {name: 'Waiting for the deletion to start'})).toBeVisible()
-    for (const event of cleanupEvents.slice(1, 3)) sendRaw(source, event.type, event.data)
-    await expect.element(screen.getByText('Removed ~/Library/Caches/app-a 2.0 GB')).toBeVisible()
-    await expect.element(screen.getByLabelText('Reclaimed')).toHaveTextContent('2.0 GB')
-    for (const event of cleanupEvents.slice(3)) sendRaw(source, event.type, event.data)
-    await expect.element(screen.getByText('Not removed: ~/Library/Caches/app-d, still present after removal: permission denied')).toBeVisible()
-    await expect.element(screen.getByText('Kept: /Users/you/code/wt, 1 uncommitted or untracked files')).toBeVisible()
-    await expect.element(screen.getByRole('heading', {name: 'You freed'})).toBeVisible()
-    await expect.element(screen.getByLabelText('Reclaimed')).toHaveTextContent(formatBytes(3.4 * GB))
-    expect(screen.container.querySelector('canvas')).toBeNull()
+describe('cancel', () => {
+  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
+  afterEach(() => {
+    document.documentElement.style.removeProperty('--fuse-window')
+    vi.restoreAllMocks()
+  })
+
+  test('cancel has an undo window, and only a burnt-out fuse cancels', async () => {
+    vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
+    const screen = await render(<App loaded={fixture} />)
+    const cancel = screen.getByRole('button', {name: 'Cancel'})
+    await cancel.click()
+    await screen.getByRole('button', {name: 'Undo'}).click()
+    await expect.element(cancel).toHaveStyle(SHOWN)
+    expect(window.fetch).not.toHaveBeenCalled()
+    await cancel.click()
+    await expect.element(screen.getByRole('heading', {name: 'Cancelled'})).toBeVisible()
+    expect(window.fetch).toHaveBeenCalledWith('/decide', expect.objectContaining({body: expect.stringContaining('"decision":"cancel"')}))
   })
 })
 

@@ -1,5 +1,5 @@
-import {useEffect, useReducer} from 'react'
-import type {Category, Item, OpenEvents} from './data'
+import {useEffect, useMemo, useReducer, useState} from 'react'
+import type {Category, EventSourceLike, Item, OpenEvents} from './data'
 import {messageData, openEventSource} from './live'
 
 type Timed<T> = T & {elapsed_ms: number}
@@ -43,36 +43,68 @@ function keyOf(event: CleanupEvent) {
   }
 }
 
-export function cleanupReducer(cleanup: Cleanup, event: CleanupEvent): Cleanup {
-  const key = keyOf(event)
-  if (cleanup.keys.has(key)) return cleanup
-  const next = {...cleanup, log: [...cleanup.log, event], keys: new Set([...cleanup.keys, key])}
-  if (event.type === 'started') return {...next, started: event.data}
-  if (event.type === 'done') return {...next, done: event.data}
-  if (event.type === 'free' && event.data.elapsed_ms >= (cleanup.free?.elapsed_ms ?? 0)) return {...next, free: event.data}
-  return next
+export function cleanupReducer(cleanup: Cleanup, events: readonly CleanupEvent[]): Cleanup {
+  const log = [...cleanup.log]
+  const keys = new Set(cleanup.keys)
+  let {started, done, free} = cleanup
+  for (const event of events) {
+    const key = keyOf(event)
+    if (keys.has(key)) continue
+    keys.add(key)
+    log.push(event)
+    if (event.type === 'started') started = event.data
+    if (event.type === 'done') done = event.data
+    if (event.type === 'free' && event.data.elapsed_ms >= (free?.elapsed_ms ?? 0)) free = event.data
+  }
+  return log.length === cleanup.log.length ? cleanup : {log, keys, started, done, free}
 }
 
 function isWorkerDone(type: CleanupEvent['type'], data: unknown) {
   return type !== 'done' || (typeof data === 'object' && data !== null && 'reclaimed' in data)
 }
 
-export function useCleanup(token: string, active: boolean, openEvents: OpenEvents = openEventSource) {
+const CONNECTING = 0
+
+function listenCleanup(source: EventSourceLike, take: (event: CleanupEvent) => void, setLost: (lost: boolean) => void) {
+  for (const type of TYPES) {
+    source.addEventListener(type, message => {
+      const data = messageData(message)
+      if (data === null || !isWorkerDone(type, data)) return
+      setLost(false)
+      take({type, data} as CleanupEvent)
+      if (type === 'done') source.close()
+    })
+  }
+  source.addEventListener('open', () => setLost(false))
+  source.addEventListener('error', message => {
+    if (!(message instanceof MessageEvent) && source.readyState === CONNECTING) setLost(true)
+  })
+}
+
+function useCleanup(token: string, active: boolean, openEvents: OpenEvents = openEventSource) {
   const [cleanup, dispatch] = useReducer(cleanupReducer, NO_CLEANUP)
+  const [lost, setLost] = useState(false)
   useEffect(() => {
     if (!active) return
-    const source = openEvents(`/events?token=${encodeURIComponent(token)}`)
-    for (const type of TYPES) {
-      source.addEventListener(type, message => {
-        const data = messageData(message)
-        if (data === null || !isWorkerDone(type, data)) return
-        dispatch({type, data} as CleanupEvent)
-        if (type === 'done') source.close()
-      })
+    let queue: CleanupEvent[] = []
+    let frame = 0
+    const flush = () => {
+      frame = 0
+      dispatch(queue)
+      queue = []
     }
-    return () => source.close()
+    const take = (event: CleanupEvent) => {
+      queue.push(event)
+      if (frame === 0) frame = requestAnimationFrame(flush)
+    }
+    const source = openEvents(`/events?token=${encodeURIComponent(token)}`)
+    listenCleanup(source, take, setLost)
+    return () => {
+      cancelAnimationFrame(frame)
+      source.close()
+    }
   }, [token, active, openEvents])
-  return cleanup
+  return {cleanup, lost}
 }
 
 export interface Planned {
@@ -126,6 +158,8 @@ export interface Outcome {
   bytes: number
   section: string
   reason: string
+  at: number
+  secs: number
 }
 
 function planned(plan: FilmPlan, key: string, bytes: number, label = key): Pick<Outcome, 'label' | 'bytes' | 'section'> {
@@ -133,7 +167,7 @@ function planned(plan: FilmPlan, key: string, bytes: number, label = key): Pick<
   return {label: known?.label ?? label, bytes: known?.bytes ?? bytes, section: known?.section ?? ''}
 }
 
-export function outcomeOf(plan: FilmPlan, event: CleanupEvent): Outcome | null {
+function described(plan: FilmPlan, event: CleanupEvent): Omit<Outcome, 'at' | 'secs'> | null {
   switch (event.type) {
     case 'removed':
       return {kind: 'removed', key: event.data.path, reason: '', ...planned(plan, event.data.path, event.data.bytes)}
@@ -156,8 +190,51 @@ export function outcomeOf(plan: FilmPlan, event: CleanupEvent): Outcome | null {
   }
 }
 
+export function outcomeOf(plan: FilmPlan, event: CleanupEvent): Outcome | null {
+  const outcome = described(plan, event)
+  if (!outcome) return null
+  return {...outcome, at: 'elapsed_ms' in event.data ? event.data.elapsed_ms : 0, secs: event.type === 'removed' ? event.data.secs : 0}
+}
+
 export function outcomes(plan: FilmPlan, log: readonly CleanupEvent[]) {
   return log.flatMap(e => outcomeOf(plan, e) ?? [])
+}
+
+function useOutcomes(plan: FilmPlan | null, log: readonly CleanupEvent[]) {
+  const cache = useMemo(() => new WeakMap<CleanupEvent, Outcome | null>(), [plan])
+  return useMemo(() => {
+    if (!plan) return []
+    return log.flatMap(e => {
+      if (!cache.has(e)) cache.set(e, outcomeOf(plan, e))
+      return cache.get(e) ?? []
+    })
+  }, [plan, log, cache])
+}
+
+export interface CleanupProgress {
+  plan: FilmPlan
+  cleanup: Cleanup
+  outcomes: readonly Outcome[]
+  byKey: ReadonlyMap<string, Outcome>
+  freed: number
+  count: number
+  total: number
+  free: number | null
+}
+
+function progressOf(plan: FilmPlan, cleanup: Cleanup, all: readonly Outcome[]): CleanupProgress {
+  const started = cleanup.started
+  const removed = all.filter(o => o.kind === 'removed').reduce((sum, o) => sum + o.bytes, 0)
+  return {
+    plan,
+    cleanup,
+    outcomes: all,
+    byKey: new Map(all.map(o => [o.key, o])),
+    freed: cleanup.done ? Math.max(0, cleanup.done.reclaimed) : removed,
+    count: all.length,
+    total: started ? started.paths + started.worktrees + started.commands : plan.items.size,
+    free: cleanup.done?.free_after ?? cleanup.free?.free ?? started?.free ?? null,
+  }
 }
 
 export interface Totals {
@@ -181,4 +258,16 @@ export function totalsOf(all: readonly Outcome[], done: Of<'done'> | null): Tota
     reclaimed: Math.max(0, done?.reclaimed ?? removed.reduce((sum, o) => sum + o.bytes, 0)),
     seconds: Math.round((done?.elapsed_ms ?? 0) / 1000),
   }
+}
+
+export function formatDuration(seconds: number) {
+  const m = Math.floor(seconds / 60)
+  return m > 0 ? `${m}m ${seconds % 60}s` : `${seconds}s`
+}
+
+export function useCleanupProgress(token: string, plan: FilmPlan | null, openEvents?: OpenEvents) {
+  const {cleanup, lost} = useCleanup(token, plan !== null, openEvents)
+  const all = useOutcomes(plan, cleanup.log)
+  const progress = useMemo(() => plan && progressOf(plan, cleanup, all), [plan, cleanup, all])
+  return {progress, lost}
 }

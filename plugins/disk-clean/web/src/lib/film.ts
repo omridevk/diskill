@@ -1,14 +1,13 @@
 import {gsap} from 'gsap'
 import {CustomEase} from 'gsap/CustomEase'
 import {DrawSVGPlugin} from 'gsap/DrawSVGPlugin'
-import {Flip} from 'gsap/Flip'
 import {SplitText} from 'gsap/SplitText'
 import {useGSAP} from '@gsap/react'
 import {outcomeOf, type Cleanup, type CleanupEvent, type FilmPlan, type Outcome} from './cleanup'
 import {formatBytes} from './data'
 import {cssMs, cssValue} from './motion'
 
-gsap.registerPlugin(useGSAP, Flip, SplitText, DrawSVGPlugin, CustomEase)
+gsap.registerPlugin(useGSAP, SplitText, DrawSVGPlugin, CustomEase)
 
 const POOL = 8
 const STACK = 6
@@ -19,6 +18,7 @@ const TICK = 0.6
 const SHRED = 1.4
 const WAIT_HOLD = 1.5
 const CREDITS_SPEED = 60
+const WRITE_EVERY_MS = 50
 
 export interface Tokens {
   fast: number
@@ -57,7 +57,6 @@ export interface Setters {
   shred: (outcome: Outcome | null) => void
   particles: (on: boolean) => void
   running: (on: boolean) => void
-  covered: () => void
 }
 
 interface Point {
@@ -89,6 +88,7 @@ export interface Film {
   ready: boolean
   flood: boolean
   started: boolean
+  counting: boolean
   finished: boolean
   onTail: () => void
   onReady: () => void
@@ -117,15 +117,25 @@ function offset(el: Element | null, from: Point): Point {
   return {x: c.x - from.x, y: c.y - from.y}
 }
 
+function throttledText(el: HTMLElement, text: () => string) {
+  let last = -Infinity
+  const write = () => {
+    const next = text()
+    if (el.textContent !== next) el.textContent = next
+  }
+  const onUpdate = () => {
+    const now = performance.now()
+    if (now - last < WRITE_EVERY_MS) return
+    last = now
+    write()
+  }
+  return {onUpdate, onComplete: write}
+}
+
 function ticker(film: Film, el: HTMLElement | null, from: number, to: number, at: number, duration = TICK) {
   if (!el || from === to) return
   const value = {v: from}
-  film.tl.fromTo(
-    value,
-    {v: from},
-    {v: to, duration, ease: 'power3.out', onUpdate: () => void (el.textContent = formatBytes(value.v))},
-    at,
-  )
+  film.tl.fromTo(value, {v: from}, {v: to, duration, ease: 'power3.out', ...throttledText(el, () => formatBytes(value.v))}, at)
 }
 
 function draw(film: Film, el: Element | null | undefined, from: string, to: string, at: number) {
@@ -204,8 +214,25 @@ function freeBeat(film: Film, at: number) {
   ticker(film, part(film, 'free'), from, gauges.free, at, film.tokens.verySlow)
 }
 
+function countingBeat(film: Film, at: number) {
+  const {fast, medium, verySlow} = film.tokens
+  const hero = part(film, 'total')
+  const slot = part(film, 'of-total')
+  film.counting = true
+  film.tl.fromTo(part(film, 'caption'), {opacity: 1, y: 0}, {opacity: 0, y: -8, duration: medium, ease: 'smooth-out'}, at)
+  if (hero && slot) {
+    const travel = offset(slot, centre(hero))
+    const scale = slot.getBoundingClientRect().height / hero.getBoundingClientRect().height
+    film.tl.fromTo(hero, {x: 0, y: 0, scale: 1, opacity: 1}, {x: travel.x, y: travel.y, scale, duration: verySlow, ease: 'power3.inOut'}, at)
+    film.tl.to(hero, {opacity: 0, duration: 0.15}, at + verySlow - 0.15)
+    film.tl.fromTo(slot, {opacity: 0}, {opacity: 1, duration: 0.15}, at + verySlow - 0.15)
+  }
+  film.tl.fromTo(part(film, 'counter-box'), {opacity: 0, y: 8}, {opacity: 1, y: 0, duration: verySlow, ease: 'smooth-out'}, at + fast)
+}
+
 function gauges(film: Film, touched: Outcome[], at: number) {
   const bytes = touched.filter(o => o.kind === 'removed').reduce((sum, o) => sum + o.bytes, 0)
+  if (bytes > 0 && !film.counting) countingBeat(film, at)
   ticker(film, part(film, 'counter'), film.gauges.reclaimed, film.gauges.reclaimed + bytes, at)
   film.gauges.reclaimed += bytes
   const sections = [...new Set(touched.map(o => o.section).filter(Boolean))]
@@ -338,23 +365,13 @@ function measure(film: Film) {
 
 function startedBeat(film: Film, free: number) {
   const at = film.tl.duration()
-  const {fast, medium, verySlow, stagger} = film.tokens
-  const hero = part(film, 'total')
-  const slot = part(film, 'of-total')
+  const {medium, verySlow, stagger} = film.tokens
   film.started = true
   film.gauges.startFree = free
   film.gauges.shownFree = free
-  film.tl.fromTo([part(film, 'caption'), part(film, 'waiting')], {opacity: 1, y: 0}, {opacity: 0, y: -8, duration: medium, ease: 'smooth-out'}, at)
+  film.tl.fromTo(part(film, 'waiting'), {opacity: 1, y: 0}, {opacity: 0, y: -8, duration: medium, ease: 'smooth-out'}, at)
   film.tl.fromTo(part(film, 'stage'), {autoAlpha: 0}, {autoAlpha: 1, duration: 0.01}, at)
   measure(film)
-  if (hero && slot) {
-    const travel = offset(slot, centre(hero))
-    const scale = slot.getBoundingClientRect().height / hero.getBoundingClientRect().height
-    film.tl.fromTo(hero, {x: 0, y: 0, scale: 1, opacity: 1}, {x: travel.x, y: travel.y, scale, duration: verySlow, ease: 'power3.inOut'}, at)
-    film.tl.to(hero, {opacity: 0, duration: 0.15}, at + verySlow - 0.15)
-    film.tl.fromTo(slot, {opacity: 0}, {opacity: 1, duration: 0.15}, at + verySlow - 0.15)
-  }
-  film.tl.fromTo(part(film, 'counter-box'), {opacity: 0, y: 8}, {opacity: 1, y: 0, duration: verySlow, ease: 'smooth-out'}, at + fast)
   const rows = all(film, '[data-film="build"]')
   film.tl.fromTo(rows, {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: verySlow, ease: 'smooth-out', stagger: Math.min(stagger, 0.4 / Math.max(1, rows.length))}, at)
   film.tl.set(all(film, '[data-part="arc"], [data-part="check"]'), {drawSVG: '0% 0%'}, at)
@@ -391,6 +408,7 @@ function finaleBeat(film: Film, reclaimed: number) {
   film.gauges.reclaimed = reclaimed
   const exit = start + TICK
   const leaving = all(film, '[data-film="leave"]')
+  if (!film.counting) tl.to([part(film, 'total'), part(film, 'caption')], {autoAlpha: 0, duration: tokens.medium, ease: 'smooth-out'}, exit)
   tl.fromTo(leaving, {opacity: 1, y: 0, filter: 'blur(0px)'}, {opacity: 0, y: -8, filter: 'blur(2px)', duration: tokens.medium, ease: 'smooth-out', stagger: 0.03}, exit)
   tl.fromTo(part(film, 'film'), {opacity: 1}, {opacity: 0.45 / 0.8, duration: tokens.filmFade, ease: 'power1.out'}, exit)
   tl.call(film.set.running, [false], exit + tokens.filmFade)
@@ -417,7 +435,7 @@ function finaleBeat(film: Film, reclaimed: number) {
   for (const value of all(film, '[data-ticker]')) {
     const to = Number(value.dataset.ticker)
     const count = {v: 0}
-    tl.fromTo(count, {v: 0}, {v: to, duration: 0.8, ease: 'power3.out', onUpdate: () => void (value.textContent = String(Math.round(count.v)))}, stats)
+    tl.fromTo(count, {v: 0}, {v: to, duration: 0.8, ease: 'power3.out', ...throttledText(value, () => String(Math.round(count.v)))}, stats)
   }
   const statsEnd = stats + tokens.verySlow + tokens.stagger * tiles.length
   tl.fromTo(part(film, 'replay'), {autoAlpha: 0}, {autoAlpha: 1, duration: tokens.fast, ease: 'smooth-out'}, statsEnd)
@@ -470,32 +488,15 @@ export function pump(film: Film | null, cleanup: Cleanup, fromTail = false) {
   film.tl.play()
 }
 
-function originAt(target: Point) {
-  return (_: number, el: Element) => {
-    const r = el.getBoundingClientRect()
-    return `${target.x - r.left}px ${target.y - r.top}px`
-  }
-}
-
-function approveAct(film: Film) {
+function openingAct(film: Film) {
   const {tokens} = film
   const act = gsap.timeline({onComplete: () => film.onReady()})
-  const hero = part(film, 'total')
-  const source = [...document.querySelectorAll('[data-flip-id="approved-total"]')].find(el => !film.root.contains(el))
-  const review = ['actions', 'content', 'top'].flatMap(name => [...document.querySelectorAll(`[data-review="${name}"]`)])
-  const target = centre(source ?? hero ?? film.root)
-  act.fromTo(review, {opacity: 1, scale: 1, filter: 'blur(0px)'}, {opacity: 0, scale: 0.96, filter: 'blur(3px)', duration: tokens.slow, ease: 'smooth-out', stagger: tokens.stagger, transformOrigin: originAt(target)}, 0)
-  act.call(film.set.covered, [], tokens.slow + tokens.stagger * 2)
   act.fromTo(part(film, 'backdrop'), {opacity: 0}, {opacity: 1, duration: tokens.filmFade, ease: 'power1.out'}, 0)
-  if (source && hero) {
-    const state = Flip.getState(source)
-    gsap.set(source, {opacity: 0})
-    act.add(Flip.from(state, {targets: hero, scale: true, duration: 0.6, ease: 'power3.inOut'}), 0)
-  }
+  act.fromTo(part(film, 'total'), {opacity: 0, scale: 0.96}, {opacity: 1, scale: 1, duration: tokens.verySlow, ease: 'smooth-out'}, 0)
   const caption = part(film, 'caption')
   if (caption) {
     const lines = SplitText.create(caption, {type: 'lines'}).lines
-    act.fromTo(lines, {opacity: 0, y: 12, filter: 'blur(3px)'}, {opacity: 1, y: 0, filter: 'blur(0px)', duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, 0.6)
+    act.fromTo(lines, {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, tokens.fast)
   }
 }
 
@@ -517,11 +518,12 @@ export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTa
     ready: false,
     flood: false,
     started: false,
+    counting: false,
     finished: false,
     onTail,
     onReady,
   }
-  approveAct(film)
+  openingAct(film)
   return film
 }
 

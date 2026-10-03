@@ -165,6 +165,12 @@ void main() {
   col = mix(col, col * vec3(0.92, 0.98, 1.08), 0.15);
   col = col / (1.0 + col * 0.2);
   col = pow(max(col, 0.0), vec3(0.95));
+
+  vec3 page = vec3(0.039);
+  col = mix(page, col, 0.8);
+  float d = length((uv - 0.5) / vec2(0.46, 0.36));
+  float scrim = d < 0.45 ? mix(0.85, 0.6, d / 0.45) : mix(0.6, 0.0, clamp((d - 0.45) / 0.55, 0.0, 1.0));
+  col = mix(col, page, scrim);
   gl_FragColor = vec4(col, 1.0);
 }`
 
@@ -172,6 +178,7 @@ const BURN_SPEED = 0.25
 const EMBER_GLOW = 1.0
 const START_SECONDS = 5
 const STILL_SECONDS = 24
+const RENDER_SCALE = 0.5
 
 function compile(gl: WebGLRenderingContext, type: number, source: string) {
   const shader = gl.createShader(type)
@@ -221,8 +228,11 @@ function createBurningFilm(canvas: HTMLCanvasElement): Renderer | null {
 
   return {
     resize: (width, height, dpr) => {
-      canvas.width = Math.max(1, Math.round(width * dpr))
-      canvas.height = Math.max(1, Math.round(height * dpr))
+      const w = Math.max(1, Math.round(width * dpr))
+      const h = Math.max(1, Math.round(height * dpr))
+      if (canvas.width === w && canvas.height === h) return
+      canvas.width = w
+      canvas.height = h
       gl.viewport(0, 0, canvas.width, canvas.height)
       gl.uniform2f(resolution, canvas.width, canvas.height)
     },
@@ -237,7 +247,7 @@ function createBurningFilm(canvas: HTMLCanvasElement): Renderer | null {
 }
 
 export function BurningFilm({className, running = true}: {className?: string; running?: boolean}) {
-  const {host, failed} = useCanvasRenderer(createBurningFilm, 1, running)
+  const {host, failed} = useCanvasRenderer(createBurningFilm, RENDER_SCALE, running)
   if (failed) return null
   return <div ref={host} aria-hidden className={className} />
 }

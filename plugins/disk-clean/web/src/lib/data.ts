@@ -63,6 +63,7 @@ export interface Loaded {
   data: ScanData
   token: string
   live?: boolean
+  approved?: string[]
   openEvents?: OpenEvents
 }
 
@@ -79,8 +80,9 @@ export async function load(): Promise<Loaded> {
   const text = document.getElementById('disk-clean-data')?.textContent ?? ''
   const token = document.querySelector<HTMLMetaElement>('meta[name="disk-clean-token"]')?.content ?? ''
   if (import.meta.env.DEV && text.trim() === '__DATA__') return loadDev()
-  const parsed: ScanData | {live: true} = JSON.parse(text)
-  return 'live' in parsed ? {data: NO_DATA, token, live: true} : {data: parsed, token}
+  const parsed: ScanData | {live: true} | (ScanData & {approved: true; selection: string[]}) = JSON.parse(text)
+  if ('live' in parsed) return {data: NO_DATA, token, live: true}
+  return 'approved' in parsed ? {data: parsed, token, approved: parsed.selection} : {data: parsed, token}
 }
 
 const UNITS = ['KB', 'MB', 'GB', 'TB']

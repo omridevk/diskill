@@ -48,9 +48,9 @@ export function ScanStatus({scan}: {scan: Scan}) {
   )
 }
 
-export function RescanButton({scan, onRescan}: {scan: Scan; onRescan: () => void}) {
+export function RescanButton({scan, locked, onRescan}: {scan: Scan; locked: boolean; onRescan: () => void}) {
   return (
-    <Button variant="ghost" size="xs" disabled={!scan.done && scan.error === ''} onClick={onRescan}>
+    <Button variant="ghost" size="xs" disabled={locked || (!scan.done && scan.error === '')} onClick={onRescan}>
       <RotateCw />
       Rescan
     </Button>
