@@ -53,6 +53,7 @@ interface ShredderProps<T extends ShredderItem> {
   stripWidth?: number
   curl?: number
   autoAnimate?: boolean
+  autoDelay?: number
   loop?: boolean
   loopAfterDelete?: boolean
   dragTilt?: number
@@ -366,6 +367,7 @@ const Shredder = <T extends ShredderItem>({
   stripWidth = 10,
   curl = 1,
   autoAnimate = false,
+  autoDelay = 900,
   loop = false,
   loopAfterDelete = false,
   dragTilt = 6,
@@ -1126,7 +1128,7 @@ const Shredder = <T extends ShredderItem>({
       return null
     }
     const play = async () => {
-      await wait(900)
+      await wait(autoDelay)
       while (alive) {
         while (alive && !idle()) await wait(120)
         if (!alive) break

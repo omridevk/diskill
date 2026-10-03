@@ -99,7 +99,7 @@ export function ActionBar({
   const disabled = count === 0 || locked
 
   return (
-    <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
+    <footer data-review="actions" className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex grow flex-col gap-0.5">
         <div className="text-sm font-semibold tabular-nums">
           {count} {count === 1 ? 'item' : 'items'} selected · <PopBytes bytes={selection.exactBytes} />

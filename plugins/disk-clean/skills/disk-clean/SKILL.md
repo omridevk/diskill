@@ -62,7 +62,12 @@ The page has three tabs, a summary strip (disk donut, selected total, scan statu
   validation code `clean` uses. Worktree safety checks are not repeated here; `clean` re-runs them
   right before each removal.
 - **Approve and delete** (footer) — starts a few-second undo window (a burning fuse; Undo or Escape
-  cancels). The approval is sent only when the window runs out.
+  cancels). The approval is sent only when the window runs out. The page then stays open and shows
+  the cleanup as it happens once stage 3 starts: each item leaving the disk, the reclaimed total and
+  free space from real measurements, anything kept or not removed with its reason, and a summary of
+  what was actually freed at the end. A small read-only helper keeps serving the page after `review`
+  exits; it never deletes anything and stops on its own a minute after the tab is closed or the
+  cleanup finished.
 
 Exit codes: `0` approved (`$RUN_DIR/selection.json` written), `3` nothing found,
 `4` timed out after 30 minutes, `5` cancelled or empty selection.
@@ -88,7 +93,8 @@ tail -20 "$RUN_DIR/clean.log"; cat "$RUN_DIR/status" 2>/dev/null
 ```
 
 `status` reads `pending` while running and `done` when finished. The tail of the log reports
-free space before and after.
+free space before and after. The review tab shows the same run live (from `$RUN_DIR/clean.events`),
+so the user can watch it there instead of waiting on the terminal.
 
 ## What the scan covers
 

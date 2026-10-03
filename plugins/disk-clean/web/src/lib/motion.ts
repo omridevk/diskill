@@ -16,7 +16,7 @@ export function useReducedMotion() {
   return useSyncExternalStore(onReducedMotionChange, prefersReducedMotion)
 }
 
-function cssValue(name: string) {
+export function cssValue(name: string) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 }
 

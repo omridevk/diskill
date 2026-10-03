@@ -236,8 +236,8 @@ function createBurningFilm(canvas: HTMLCanvasElement): Renderer | null {
   }
 }
 
-export function BurningFilm({className}: {className?: string}) {
-  const {host, failed} = useCanvasRenderer(createBurningFilm)
+export function BurningFilm({className, running = true}: {className?: string; running?: boolean}) {
+  const {host, failed} = useCanvasRenderer(createBurningFilm, 1, running)
   if (failed) return null
   return <div ref={host} aria-hidden className={className} />
 }

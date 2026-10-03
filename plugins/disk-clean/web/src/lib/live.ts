@@ -7,11 +7,16 @@ const TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done'
 const FINAL = new Set<ScanEvent['type']>(['done', 'error'])
 const CLOSED = 2
 
-const openEventSource: OpenEvents = url => new EventSource(url)
+export const openEventSource: OpenEvents = url => new EventSource(url)
+
+export function messageData(message: Event): unknown {
+  if (!(message instanceof MessageEvent) || typeof message.data !== 'string') return null
+  return JSON.parse(message.data)
+}
 
 function toEvent(type: ScanEvent['type'], message: Event) {
-  if (!(message instanceof MessageEvent) || typeof message.data !== 'string') return null
-  return {type, data: JSON.parse(message.data)} as ScanEvent
+  const data = messageData(message)
+  return data === null ? null : ({type, data} as ScanEvent)
 }
 
 function onMessage(source: EventSourceLike, type: ScanEvent['type'], emit: (event: ScanEvent) => void) {

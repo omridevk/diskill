@@ -11,6 +11,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile()],
   resolve: {alias: {'@': fileURLToPath(new URL('./src', import.meta.url))}},
   server: {proxy: review ? {'/preview': review, '/decide': review, '/events': review} : undefined},
+  optimizeDeps: {include: ['gsap', 'gsap/CustomEase', 'gsap/DrawSVGPlugin', 'gsap/Flip', 'gsap/SplitText', '@gsap/react']},
   build: {outDir: '../cli/assets', emptyOutDir: false},
   test: {
     include: ['src/**/*.test.tsx'],

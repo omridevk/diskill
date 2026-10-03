@@ -62,9 +62,15 @@ function mountCanvas(host: HTMLElement) {
   return canvas
 }
 
-export function useCanvasRenderer(create: CreateRenderer, scale = 1) {
+interface Mounted {
+  canvas: HTMLCanvasElement
+  renderer: Renderer
+}
+
+export function useCanvasRenderer(create: CreateRenderer, scale = 1, running = true) {
   const host = useRef<HTMLDivElement>(null)
   const reduced = useReducedMotion()
+  const [mounted, setMounted] = useState<Mounted | null>(null)
   const [failed, setFailed] = useState(false)
   useEffect(() => {
     if (!host.current) return
@@ -74,12 +80,17 @@ export function useCanvasRenderer(create: CreateRenderer, scale = 1) {
       canvas.remove()
       return setFailed(true)
     }
-    const stop = reduced ? drawStill(canvas, renderer, scale) : runLoop(canvas, renderer, scale)
+    setMounted({canvas, renderer})
     return () => {
-      stop()
+      setMounted(null)
       renderer.dispose()
       canvas.remove()
     }
-  }, [create, reduced, scale])
+  }, [create])
+  useEffect(() => {
+    if (!mounted) return
+    const {canvas, renderer} = mounted
+    return reduced || !running ? drawStill(canvas, renderer, scale) : runLoop(canvas, renderer, scale)
+  }, [mounted, reduced, running, scale])
   return {host, failed}
 }

@@ -6,6 +6,8 @@ import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {ActionBar} from './components/action-bar'
 import {PreviewDialog} from './components/preview-dialog'
+import {gsap} from 'gsap'
+import {cleanupReducer, filmPlan, NO_CLEANUP, outcomes, totalsOf, type CleanupEvent} from './lib/cleanup'
 import {formatBytes, NO_DATA, type Category, type Loaded} from './lib/data'
 import {cssMs, useTextSwap} from './lib/motion'
 import {scanReducer, startScan, type ScanEvent} from './lib/scan'
@@ -307,7 +309,7 @@ describe('live page', () => {
     await expect.element(screen.getByRole('button', {name: 'Undo'})).toHaveStyle(SHOWN)
     await userEvent.keyboard('{Escape}')
     await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toHaveStyle(SHOWN)
-    await expect.element(screen.getByText(/queued for deletion/)).not.toBeInTheDocument()
+    await expect.element(screen.getByText(/approved for deletion/)).not.toBeInTheDocument()
   })
 
   test('rescan keeps the view, filters and picks, and replaces the results at done', async () => {
@@ -408,13 +410,6 @@ describe('approve fuse', () => {
 
 const backdrop = (container: HTMLElement) => container.querySelector('.t-backdrop canvas')
 
-async function approveFixture() {
-  vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
-  const screen = await render(<App loaded={fixture} />)
-  await screen.getByRole('button', {name: 'Approve and delete'}).click()
-  return screen
-}
-
 function emulateReducedMotion(value: 'reduce' | 'no-preference') {
   return cdp().send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value}]})
 }
@@ -446,14 +441,6 @@ describe('effects', () => {
     await expect.poll(() => backdrop(screen.container)).toBeNull()
   })
 
-  test('the approved screen gathers the approved size into a labelled particle canvas', async () => {
-    const screen = await approveFixture()
-    const size = screen.getByRole('img', {name: '3.8 GB'})
-    await expect.element(size).toBeVisible()
-    expect(size.element().querySelector('canvas')).toBeInstanceOf(HTMLCanvasElement)
-    await expect.element(screen.getByRole('heading', {name: 'queued for deletion'})).toBeInTheDocument()
-  })
-
   test('reduced motion draws one still frame of each effect', async () => {
     await emulateReducedMotion('reduce')
     const {source, send} = fakeEventSource()
@@ -466,15 +453,90 @@ describe('effects', () => {
     send(walked)
     await expect.poll(() => backdrop(live.container)).toBeNull()
     await live.unmount()
+  })
+})
 
-    const screen = await approveFixture()
-    const size = screen.getByRole('img', {name: '3.8 GB'})
-    await expect.element(size).toBeVisible()
-    const particles = () => size.element().querySelector('canvas')
-    await settle(500)
-    const textFrame = frameOf(particles())
-    await settle(300)
-    expect(frameOf(particles())).toBe(textFrame)
+const cleanupEvents = [
+  {type: 'waiting', data: {}},
+  {type: 'started', data: {free: 50 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 3.75 * GB, elapsed_ms: 0}},
+  {type: 'removed', data: {path: '/Users/you/Library/Caches/app-a', bytes: 2 * GB, secs: 1, elapsed_ms: 900}},
+  {type: 'free', data: {free: 52 * GB, elapsed_ms: 1000}},
+  {type: 'removed', data: {path: '/Users/you/Library/Caches/app-b', bytes: GB, secs: 1, elapsed_ms: 1400}},
+  {type: 'removed', data: {path: '/Users/you/Library/Caches/app-c', bytes: 0.5 * GB, secs: 1, elapsed_ms: 1500}},
+  {type: 'failed', data: {path: '/Users/you/Library/Caches/app-d', bytes: 0.25 * GB, reason: 'still present after removal: permission denied', elapsed_ms: 1600}},
+  {type: 'worktree', data: {path: '/Users/you/code/wt', bytes: GB, outcome: 'kept', reason: '1 uncommitted or untracked files', elapsed_ms: 2000}},
+  {type: 'done', data: {free_before: 50 * GB, free_after: 53.4 * GB, reclaimed: 3.4 * GB, elapsed_ms: 2500}},
+] as const
+
+function sendRaw(source: EventTarget, type: string, data: object) {
+  source.dispatchEvent(new MessageEvent(type, {data: JSON.stringify(data)}))
+}
+
+async function approveIntoFilm() {
+  vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
+  const {source} = fakeEventSource()
+  const screen = await render(<App loaded={{...fixture, openEvents: () => source}} />)
+  await screen.getByRole('button', {name: 'Approve and delete'}).click()
+  await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).not.toBeInTheDocument()
+  return {screen, source}
+}
+
+describe('cleanup film', () => {
+  beforeEach(() => {
+    document.documentElement.style.setProperty('--fuse-window', '300ms')
+    gsap.globalTimeline.timeScale(20)
+  })
+  afterEach(async () => {
+    document.documentElement.style.removeProperty('--fuse-window')
+    gsap.globalTimeline.timeScale(1)
+    vi.restoreAllMocks()
+    await emulateReducedMotion('no-preference')
+  })
+
+  test('plays the live cleanup: counter ends at the real reclaimed figure, problems keep their reasons, the finale settles', async () => {
+    const {screen, source} = await approveIntoFilm()
+    sendRaw(source, 'done', {reclaimable: 7 * GB, elapsed_ms: 9500})
+    await expect.element(screen.getByText('approved for deletion')).toBeVisible()
+    for (const event of cleanupEvents.slice(0, 3)) sendRaw(source, event.type, event.data)
+    await expect.element(screen.getByText('Application caches')).toBeVisible()
+    expect(screen.container.querySelector('[data-film="finale"]')).toBeNull()
+    for (const event of cleanupEvents.slice(3)) sendRaw(source, event.type, event.data)
+    await expect.element(screen.getByRole('heading', {name: 'You freed'})).toBeVisible()
+    const freed = screen.container.querySelector('[data-film="freed"]')
+    if (!freed) throw new Error('no finale figure')
+    await expect.element(page.elementLocator(freed)).toHaveTextContent(formatBytes(3.4 * GB))
+    await expect.element(page.elementLocator(freed)).toHaveStyle({opacity: '1'})
+    await expect.poll(() => screen.container.querySelector('[data-film="counter"]')?.textContent).toBe(formatBytes(3.4 * GB))
+    await expect.element(screen.getByText('still present after removal: permission denied').first()).toBeInTheDocument()
+    await expect.element(screen.getByText('1 uncommitted or untracked files').first()).toBeInTheDocument()
+    expect(source.readyState).toBe(2)
+    await expect.poll(() => (screen.container.querySelector('[data-film]') as HTMLElement | null)?.closest('[data-settled]'), {timeout: 10_000}).not.toBeNull()
+    expect(screen.container.querySelector('.t-shimmer')).toBeNull()
+    expect(screen.container.querySelector('[data-film="particles"] canvas')).toBeNull()
+  })
+
+  test('a replayed stream adds no beats twice', () => {
+    const plan = filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB)
+    const fold = (events: readonly (typeof cleanupEvents)[number][]) => events.reduce((c, e) => cleanupReducer(c, e as CleanupEvent), NO_CLEANUP)
+    const once = fold(cleanupEvents)
+    expect(fold([...cleanupEvents, ...cleanupEvents]).log).toEqual(once.log)
+    expect(totalsOf(outcomes(plan, once.log), once.done)).toMatchObject({reclaimed: 3.4 * GB, sections: 1, seconds: 3})
+  })
+
+  test('reduced motion renders the static live list and the final numbers', async () => {
+    await emulateReducedMotion('reduce')
+    const {screen, source} = await approveIntoFilm()
+    sendRaw(source, 'waiting', {})
+    await expect.element(screen.getByRole('heading', {name: 'Waiting for the deletion to start'})).toBeVisible()
+    for (const event of cleanupEvents.slice(1, 3)) sendRaw(source, event.type, event.data)
+    await expect.element(screen.getByText('Removed ~/Library/Caches/app-a 2.0 GB')).toBeVisible()
+    await expect.element(screen.getByLabelText('Reclaimed')).toHaveTextContent('2.0 GB')
+    for (const event of cleanupEvents.slice(3)) sendRaw(source, event.type, event.data)
+    await expect.element(screen.getByText('Not removed: ~/Library/Caches/app-d, still present after removal: permission denied')).toBeVisible()
+    await expect.element(screen.getByText('Kept: /Users/you/code/wt, 1 uncommitted or untracked files')).toBeVisible()
+    await expect.element(screen.getByRole('heading', {name: 'You freed'})).toBeVisible()
+    await expect.element(screen.getByLabelText('Reclaimed')).toHaveTextContent(formatBytes(3.4 * GB))
+    expect(screen.container.querySelector('canvas')).toBeNull()
   })
 })
 
