@@ -76,9 +76,12 @@ a finished run) plus the token meta.
 - Approve: React Bits Fuse Button replaces the two-click confirm. Pressing Approve starts an undo
   window (fuse burning, label "Undo", Escape undoes); `/decide approve` is sent only when the fuse
   runs out. Swap its Hugeicons for lucide. Reduced motion: static countdown text.
-- One Radiant shader (MIT, radiant-shaders.com, WebGL or Canvas 2D, picked by the user) as the
-  backdrop of the summary strip during the scan only; paused when the tab is hidden, a static frame
-  under reduced motion, faded out on `walked`.
+- Radiant Flow Field (MIT, Canvas 2D) as the backdrop of the summary strip during the walk only;
+  paused when the tab is hidden or offscreen, a static frame under reduced motion, faded out on
+  `walked`.
+- Approved screen: Radiant Burning Film (WebGL, cold grey-blue) behind React Bits ParticleText
+  gathering the approved size, then the six largest approved labels run once through the React Bits
+  Shredder. Reduced motion: still frames, no shredder.
 - Connection lost: reconnect with EventSource defaults; the replay makes it idempotent (items keyed
   by path).
 
