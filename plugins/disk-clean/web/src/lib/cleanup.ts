@@ -19,15 +19,16 @@ export type CleanupEvent =
 type Of<K extends CleanupEvent['type']> = Extract<CleanupEvent, {type: K}>['data']
 
 export interface Cleanup {
-  log: CleanupEvent[]
-  keys: ReadonlySet<string>
+  log: readonly CleanupEvent[]
+  seen: ReadonlyMap<string, number>
+  waiting: boolean
   started: Of<'started'> | null
   done: Of<'done'> | null
   free: Of<'free'> | null
   abandoned: Of<'abandoned'> | null
 }
 
-export const NO_CLEANUP: Cleanup = {log: [], keys: new Set(), started: null, done: null, free: null, abandoned: null}
+export const NO_CLEANUP: Cleanup = {log: [], seen: new Map(), waiting: false, started: null, done: null, free: null, abandoned: null}
 
 const TYPES: CleanupEvent['type'][] = ['waiting', 'started', 'removed', 'failed', 'kept', 'worktree', 'command', 'free', 'done', 'abandoned']
 const FINAL = new Set<CleanupEvent['type']>(['done', 'abandoned'])
@@ -48,40 +49,47 @@ function keyOf(event: CleanupEvent) {
   }
 }
 
+function seenIn(cleanup: Cleanup) {
+  return cleanup.log.length === 0 ? new Map<string, number>() : (cleanup.seen as Map<string, number>)
+}
+
 function isNewRun(cleanup: Cleanup, event: CleanupEvent) {
   return event.type === 'started' && cleanup.started !== null && cleanup.started.run !== event.data.run
 }
 
-function stateOf(cleanup: Cleanup, event: CleanupEvent): Partial<Cleanup> {
+function absorb(cleanup: Cleanup, event: CleanupEvent): Cleanup {
   switch (event.type) {
+    case 'waiting':
+      return {...cleanup, waiting: true}
     case 'started':
-      return {started: event.data}
+      return {...cleanup, started: event.data}
     case 'done':
-      return {done: event.data}
+      return {...cleanup, done: event.data}
     case 'abandoned':
-      return {abandoned: event.data}
+      return {...cleanup, abandoned: event.data}
     case 'free':
-      return event.data.elapsed_ms >= (cleanup.free?.elapsed_ms ?? 0) ? {free: event.data} : {}
+      return event.data.elapsed_ms >= (cleanup.free?.elapsed_ms ?? 0) ? {...cleanup, free: event.data} : cleanup
     default:
-      return {}
+      return cleanup
   }
 }
 
-const copyOf = (cleanup: Cleanup) => ({...cleanup, log: [...cleanup.log], keys: new Set(cleanup.keys)})
-
 export function cleanupReducer(cleanup: Cleanup, events: readonly CleanupEvent[]): Cleanup {
-  let next = copyOf(cleanup)
-  let changed = false
-  for (const event of events) {
-    if (isNewRun(next, event)) next = copyOf(NO_CLEANUP)
+  const seen = seenIn(cleanup)
+  const length = cleanup.log.length
+  const added: CleanupEvent[] = []
+  const batch = new Set<string>()
+  let next = cleanup
+  for (const [index, event] of events.entries()) {
+    if (isNewRun(next, event)) return cleanupReducer(NO_CLEANUP, events.slice(index))
     const key = keyOf(event)
-    if (next.keys.has(key)) continue
-    next.keys.add(key)
-    next.log.push(event)
-    Object.assign(next, stateOf(next, event))
-    changed = true
+    if ((seen.get(key) ?? length) < length || batch.has(key)) continue
+    batch.add(key)
+    seen.set(key, length + added.length)
+    added.push(event)
+    next = absorb(next, event)
   }
-  return changed ? next : cleanup
+  return added.length === 0 ? cleanup : {...next, log: cleanup.log.concat(added), seen}
 }
 
 function isWorkerDone(type: CleanupEvent['type'], data: unknown) {
@@ -210,7 +218,7 @@ function described(plan: FilmPlan, event: CleanupEvent): Omit<Outcome, 'at' | 's
     case 'command': {
       const key = `cmd:${event.data.id}`
       const failed = event.data.status !== 'ok'
-      return {kind: failed ? 'failed' : 'ran', key, reason: failed ? `${event.data.label} failed` : '', ...planned(plan, key, 0, event.data.label)}
+      return {kind: failed ? 'failed' : 'ran', key, reason: failed ? 'the command exited with an error' : '', ...planned(plan, key, 0, event.data.label)}
     }
     default:
       return null
@@ -227,7 +235,7 @@ export function outcomes(plan: FilmPlan, log: readonly CleanupEvent[]) {
   return log.flatMap(e => outcomeOf(plan, e) ?? [])
 }
 
-function useOutcomes(plan: FilmPlan | null, log: readonly CleanupEvent[]) {
+export function useOutcomes(plan: FilmPlan | null, log: readonly CleanupEvent[]) {
   const cache = useMemo(() => new WeakMap<CleanupEvent, Outcome | null>(), [plan])
   return useMemo(() => {
     if (!plan) return []

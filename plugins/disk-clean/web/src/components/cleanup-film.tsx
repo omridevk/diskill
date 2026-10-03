@@ -1,10 +1,12 @@
+import {Dialog as DialogPrimitive} from '@base-ui/react/dialog'
 import {useGSAP} from '@gsap/react'
-import {X} from 'lucide-react'
-import {useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode} from 'react'
+import {ChevronDown, X} from 'lucide-react'
+import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
-import {formatDuration, outcomes, totalsOf, type Cleanup, type FilmPlan, type Outcome, type Totals} from '@/lib/cleanup'
+import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
+import {formatDuration, totalsOf, useOutcomes, type Cleanup, type FilmPlan, type Outcome, type Totals} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
-import {createFilm, pump, type Film as FilmState} from '@/lib/film'
+import {createFilm, gaugeOf, pump, type Film as FilmState, type ParticlePhase} from '@/lib/film'
 import {cssMs} from '@/lib/motion'
 import {DISK_COLORS} from './disk-donut'
 import {BurningFilm} from './radiant/burning-film'
@@ -14,16 +16,14 @@ import Shredder from './react-bits/shredder'
 const WAITING = 'Waiting for the deletion to start'
 const CARDS = 8
 const SHRED_FALL = 90
-const REPLAY_SPEED = 1.5
 const PARTICLE_STAGGER = 420
+const PARTICLE_SCATTER = 110
+const FIGURE_FONT = {family: "'Geist Variable'", size: 96, weight: 700}
+const FIGURE = `${FIGURE_FONT.weight} ${FIGURE_FONT.size}px ${FIGURE_FONT.family}`
 
 interface FilmProps {
   plan: FilmPlan
   cleanup: Cleanup
-}
-
-function scaleOf(total: number, free: number) {
-  return total > 0 ? Math.max(0, total - free) / total : 0
 }
 
 function bySection(plan: FilmPlan, removed: readonly Outcome[]) {
@@ -33,53 +33,62 @@ function bySection(plan: FilmPlan, removed: readonly Outcome[]) {
     .filter(group => group.items.length > 0)
 }
 
-function Bar({label, used, freed, children}: {label: string; used: number; freed?: {from: number; to: number}; children?: ReactNode}) {
+interface GaugeProps {
+  root: string
+  used: string
+  freed?: string
+  total: number
+  before: number
+  now: number
+  enlarged: boolean
+  children: ReactNode
+}
+
+function Gauge({root, used, freed, total, before, now, enlarged, children}: GaugeProps) {
+  const gauge = gaugeOf(total, before, now)
+  const whole = gaugeOf(total, before, before).used
   return (
-    <div className="flex w-full items-center gap-3 text-xs text-muted-foreground">
-      <span className="w-10 text-left">{label}</span>
-      <div className="relative h-2.5 grow rounded-full" style={{background: DISK_COLORS.free}}>
-        {freed && <div className="absolute inset-0 origin-left rounded-full" style={{background: DISK_COLORS.selected, transform: `scaleX(${freed.from})`}} />}
-        <div
-          data-film={freed ? 'after-used' : undefined}
-          data-from={freed?.from}
-          data-to={freed?.to}
-          className="absolute inset-0 origin-left rounded-full"
-          style={{background: DISK_COLORS.used, transform: `scaleX(${freed ? freed.to : used})`}}
-        />
-        {children}
+    <div data-film={root} className="flex w-full max-w-xl min-w-0 flex-col gap-2.5 rounded-xl border border-white/10 bg-zinc-950 px-5 py-4">
+      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm">{children}</div>
+      <div className="relative h-2.5 overflow-hidden rounded-full" style={{background: DISK_COLORS.free}}>
+        <div data-film={freed} className="absolute inset-0 origin-left" style={{background: DISK_COLORS.selected, transform: `scaleX(${whole})`}} />
+        <div data-film={used} data-from={whole} data-to={gauge.rest} className="absolute inset-0 origin-left" style={{background: DISK_COLORS.used, transform: `scaleX(${gauge.rest})`}} />
       </div>
+      {enlarged && <span className="text-xs text-muted-foreground">The freed part is too small to see at true scale, so it is drawn larger.</span>}
     </div>
   )
 }
 
-function Bars({plan, done, reclaimed}: {plan: FilmPlan; done: NonNullable<Cleanup['done']>; reclaimed: number}) {
-  const before = scaleOf(plan.total, done.free_before)
-  const after = scaleOf(plan.total, done.free_after)
+function FinaleGauge({plan, done, freed}: {plan: FilmPlan; done: NonNullable<Cleanup['done']>; freed: number}) {
+  const before = done.free_before
+  const {enlarged} = gaugeOf(plan.total, before, before + freed)
   return (
-    <div data-film="bars" className="flex w-full max-w-xl flex-col gap-2">
-      <Bar label="before" used={before} />
-      <Bar label="after" used={after} freed={{from: before, to: after}}>
-        <svg
-          data-film="bracket"
-          aria-hidden
-          className="absolute -top-3 h-2 overflow-visible"
-          style={{left: `${after * 100}%`, width: `${Math.max(0, before - after) * 100}%`}}
-          viewBox="0 0 100 8"
-          preserveAspectRatio="none"
-        >
-          <path d="M0 8V0H100V8" fill="none" stroke={DISK_COLORS.selected} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-        </svg>
-      </Bar>
-      <div className="text-xs text-muted-foreground">
-        free space {formatBytes(done.free_before)} → {formatBytes(done.free_after)} · {formatBytes(reclaimed)} back
-      </div>
-    </div>
+    <Gauge root="bars" used="gauge-after" total={plan.total} before={before} now={before + freed} enlarged={enlarged}>
+      <span className="font-semibold text-sky-300 tabular-nums">{formatBytes(freed)} removed</span>
+      <span className="text-muted-foreground tabular-nums">
+        free space {formatBytes(before)} → {formatBytes(done.free_after)}
+      </span>
+    </Gauge>
   )
 }
+
+function StageGauge({plan, startFree}: {plan: FilmPlan; startFree: number}) {
+  const {enlarged} = gaugeOf(plan.total, startFree, startFree + plan.approved)
+  return (
+    <Gauge root="build" used="gauge-used" freed="gauge-freed" total={plan.total} before={startFree} now={startFree} enlarged={enlarged}>
+      <span className="text-muted-foreground">Free space</span>
+      <span className="font-medium tabular-nums">
+        {formatBytes(startFree)} → <span data-film="free">{formatBytes(startFree)}</span>
+      </span>
+    </Gauge>
+  )
+}
+
+const TILE = 'flex min-w-0 flex-col gap-1 rounded-lg border border-white/10 bg-zinc-900/70 px-4 py-3 text-left'
 
 function Tile({label, children}: {label: string; children: ReactNode}) {
   return (
-    <div data-film="tile" className="flex min-w-0 flex-col gap-1 rounded-lg border border-white/10 bg-zinc-900/70 px-4 py-3 text-left">
+    <div data-film="tile" className={TILE}>
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="truncate text-lg font-semibold tabular-nums">{children}</span>
     </div>
@@ -87,23 +96,34 @@ function Tile({label, children}: {label: string; children: ReactNode}) {
 }
 
 function ProblemTile({label, rows}: {label: string; rows: readonly Outcome[]}) {
+  if (rows.length === 0) return <Tile label={label}>0</Tile>
   return (
-    <details data-film="tile" className="min-w-0 rounded-lg border border-white/10 bg-zinc-900/70 px-4 py-3 text-left">
-      <summary className="flex cursor-pointer list-none flex-col gap-1">
-        <span className="text-xs text-muted-foreground">{label}</span>
+    <Popover>
+      <PopoverTrigger
+        data-film="tile"
+        className={`${TILE} group cursor-pointer outline-none hover:border-white/25 hover:bg-zinc-800/70 focus-visible:ring-2 focus-visible:ring-ring/50 data-[popup-open]:border-white/25`}
+      >
+        <span className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+          {label}
+          <span className="flex items-center gap-0.5 text-foreground">
+            show <ChevronDown className="size-3.5 transition-transform duration-(--duration-fast) group-data-[popup-open]:rotate-180 motion-reduce:transition-none" />
+          </span>
+        </span>
         <span data-ticker={rows.length} className="text-lg font-semibold tabular-nums">
           {rows.length}
         </span>
-      </summary>
-      <ul className="mt-2 flex flex-col gap-1 text-xs">
-        {rows.map(o => (
-          <li key={o.key} className="flex flex-col">
-            <span className="truncate font-mono">{o.label}</span>
-            <span className="text-muted-foreground">{o.reason}</span>
-          </li>
-        ))}
-      </ul>
-    </details>
+      </PopoverTrigger>
+      <PopoverContent side="top" aria-label={label} className="max-h-72 w-96 overflow-y-auto">
+        <ul className="flex flex-col gap-2 text-xs">
+          {rows.map(o => (
+            <li key={o.key} className="flex min-w-0 flex-col gap-0.5">
+              <span className="truncate font-mono">{o.label}</span>
+              <span className="text-muted-foreground">{o.reason}</span>
+            </li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -174,8 +194,9 @@ function Card() {
 }
 
 function Tray({title, rows}: {title: string; rows: readonly Outcome[]}) {
+  if (rows.length === 0) return null
   return (
-    <div data-film="build" className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
       <span className="text-xs font-semibold tracking-wide text-zinc-300 uppercase">{title}</span>
       <ul className="flex flex-col gap-1.5">
         {rows.map(o => (
@@ -222,118 +243,182 @@ function Slot({shred}: {shred: Outcome | null}) {
   )
 }
 
-function Stage({plan, cleanup, shred}: {plan: FilmPlan; cleanup: Cleanup; shred: Outcome | null}) {
-  const all = useMemo(() => outcomes(plan, cleanup.log), [plan, cleanup.log])
+function Stage({plan, all, startFree, shred}: {plan: FilmPlan; all: readonly Outcome[]; startFree: number; shred: Outcome | null}) {
   const kept = all.filter(o => o.kind === 'kept')
   const failed = all.filter(o => o.kind === 'failed')
   const commands = all.filter(o => o.key.startsWith('cmd:'))
-  const startFree = cleanup.started?.free ?? 0
   return (
-    <div data-film="stage" className="invisible absolute inset-0 grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)] grid-rows-[1fr_auto] gap-x-10 gap-y-6 p-12">
-      <ol data-film="leave" className="flex flex-col gap-3 self-center rounded-xl border border-white/10 bg-zinc-950 p-5">
-        {plan.sections.map(s => (
-          <li key={s.id} data-film="build" className="flex min-w-0 items-center gap-3">
-            <div data-section={s.id} className="flex min-w-0 grow items-center gap-3">
-              <Ring />
-              <span className="truncate text-sm">{s.title}</span>
-              <span data-part="left" className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
-                {formatBytes(s.bytes)}
-              </span>
-            </div>
-          </li>
-        ))}
-      </ol>
-      <div className="flex flex-col items-center justify-center gap-8">
-        <div data-film="leave">
-          <div data-film="counter-box" className="flex flex-col items-center gap-1 opacity-0">
-            <output data-film="counter" aria-label="Reclaimed" className="inline-block min-w-[7ch] text-center text-7xl leading-none font-bold tracking-tighter tabular-nums [contain:layout_paint]">
-              0 B
-            </output>
-            <div className="text-sm text-muted-foreground">
-              of{' '}
-              <span data-film="of-total" className="inline-block font-medium text-foreground opacity-0">
-                {formatBytes(plan.approved)}
-              </span>{' '}
-              approved
-            </div>
-          </div>
-        </div>
-        <div data-film="leave" className="flex w-full justify-center">
-          <Slot shred={shred} />
-        </div>
-      </div>
-      <div data-film="leave" className="flex flex-col gap-6 self-center rounded-xl border border-white/10 bg-zinc-950 p-5">
-        <Tray title="Kept" rows={kept} />
-        <Tray title="Not removed" rows={failed} />
-      </div>
-      <div data-film="leave" className="col-span-3 flex flex-col gap-3 rounded-xl border border-white/10 bg-zinc-950 px-5 py-4">
-        <ul className="flex flex-col gap-1">
-          {commands.map(o => (
-            <li key={o.key} data-film="command" data-key={o.key} className="flex items-center gap-2 font-mono text-xs opacity-0">
-              <span className="text-muted-foreground">$</span>
-              <span data-part="label">{o.label}</span>
-              <svg data-part="status" viewBox="0 0 24 24" aria-label={o.kind === 'failed' ? 'failed' : 'ok'} className={`size-3.5 ${o.kind === 'failed' ? 'text-red-300' : 'text-sky-300'}`}>
-                <path d={o.kind === 'failed' ? 'M18 6 6 18M6 6l12 12' : 'M20 6 9 17l-5-5'} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-              </svg>
+    <div data-film="stage" className="invisible absolute inset-0 p-12">
+      <div className="mx-auto grid h-full max-w-6xl grid-cols-[minmax(0,1fr)_minmax(440px,1.4fr)_minmax(0,1fr)] grid-rows-[1fr_auto] gap-x-8 gap-y-6">
+        <ol data-film="leave" className="flex min-w-0 flex-col gap-3 self-center rounded-xl border border-white/10 bg-zinc-950 p-5">
+          {plan.sections.map(s => (
+            <li key={s.id} data-film="build" className="flex min-w-0 items-center gap-3">
+              <div data-section={s.id} className="flex min-w-0 grow items-center gap-3">
+                <Ring />
+                <span className="truncate text-sm">{s.title}</span>
+                <span data-part="left" className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+                  {formatBytes(s.bytes)}
+                </span>
+              </div>
             </li>
           ))}
-        </ul>
-        <div data-film="build" className="flex items-center gap-3 text-xs text-muted-foreground">
-          <span>disk</span>
-          <div className="relative h-2 grow overflow-hidden rounded-full" style={{background: DISK_COLORS.free}}>
-            <div data-film="freed-bar" className="absolute inset-0 origin-left" style={{background: DISK_COLORS.selected}} />
-            <div data-film="used" className="absolute inset-0 origin-left" style={{background: DISK_COLORS.used}} />
+        </ol>
+        <div className="flex min-w-0 flex-col items-center justify-center gap-8">
+          <div data-film="leave">
+            <div data-film="counter-box" className="flex flex-col items-center gap-1 opacity-0">
+              <output data-film="counter" aria-label="Freed" className="inline-block min-w-[7ch] text-center text-7xl leading-none font-bold tracking-tighter tabular-nums [contain:layout_paint]">
+                0 B
+              </output>
+              <div className="text-sm text-muted-foreground">
+                of{' '}
+                <span data-film="of-total" className="inline-block font-medium text-foreground opacity-0">
+                  {formatBytes(plan.approved)}
+                </span>{' '}
+                approved
+              </div>
+            </div>
           </div>
-          <span className="shrink-0">
-            free <span data-film="free" className="tabular-nums">{formatBytes(startFree)}</span>
-          </span>
+          <div data-film="leave" className="flex w-full justify-center">
+            <Slot shred={shred} />
+          </div>
+        </div>
+        <div className="flex min-w-0 flex-col justify-center">
+          {kept.length + failed.length > 0 && (
+            <div data-film="trays" className="flex flex-col gap-6 rounded-xl border border-white/10 bg-zinc-950 p-5 opacity-0">
+              <Tray title="Kept" rows={kept} />
+              <Tray title="Not removed" rows={failed} />
+            </div>
+          )}
+        </div>
+        <div data-film="leave" className="col-span-3 flex min-w-0 flex-col items-center gap-3">
+          {commands.length > 0 && (
+            <ul className="flex w-full max-w-xl flex-col gap-1 rounded-xl border border-white/10 bg-zinc-950 px-5 py-3">
+              {commands.map(o => (
+                <li key={o.key} data-film="command" data-key={o.key} className="flex items-center gap-2 font-mono text-xs opacity-0">
+                  <span className="text-muted-foreground">$</span>
+                  <span data-part="label">{o.label}</span>
+                  <svg data-part="status" viewBox="0 0 24 24" aria-label={o.kind === 'failed' ? 'failed' : 'ok'} className={`size-3.5 ${o.kind === 'failed' ? 'text-red-300' : 'text-sky-300'}`}>
+                    <path d={o.kind === 'failed' ? 'M18 6 6 18M6 6l12 12' : 'M20 6 9 17l-5-5'} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                  </svg>
+                </li>
+              ))}
+            </ul>
+          )}
+          <StageGauge plan={plan} startFree={startFree} />
         </div>
       </div>
     </div>
   )
 }
 
-function Particles({text, speed}: {text: string; speed: number}) {
+function inkOffset(text: string) {
+  const context = document.createElement('canvas').getContext('2d')
+  if (!context) return {x: 0, y: 0}
+  context.font = FIGURE
+  const m = context.measureText(text)
+  const left = Math.ceil(m.actualBoundingBoxLeft)
+  const right = Math.ceil(m.actualBoundingBoxRight)
+  const ascent = Math.ceil(m.actualBoundingBoxAscent)
+  const descent = Math.ceil(m.actualBoundingBoxDescent)
+  return {
+    x: (3 * left + right - m.width + 1) / 2,
+    y: (m.fontBoundingBoxAscent - m.fontBoundingBoxDescent - ascent + descent + 1) / 2,
+  }
+}
+
+function useInkOffset(text: string) {
+  const [offset, setOffset] = useState<{x: number; y: number; at: number} | null>(null)
+  useEffect(() => {
+    let live = true
+    document.fonts.load(FIGURE, text).then(() => live && setOffset({...inkOffset(text), at: performance.now()}))
+    return () => {
+      live = false
+    }
+  }, [text])
+  return offset
+}
+
+function useLanding(landing: boolean, mounted: number | null, onLanded: () => void) {
+  useEffect(() => {
+    if (!landing || mounted === null) return
+    const landsAt = mounted + cssMs('--gather-dur', 1600) + cssMs('--duration-medium', 350)
+    const timer = setTimeout(onLanded, Math.max(0, landsAt - performance.now()))
+    return () => clearTimeout(timer)
+  }, [landing, mounted, onLanded])
+}
+
+function Particles({text, landing, onLanded}: {text: string; landing: boolean; onLanded: () => void}) {
   const gather = cssMs('--gather-dur', 1600)
+  const offset = useInkOffset(text)
+  useLanding(landing, offset?.at ?? null, onLanded)
+  if (!offset) return null
   return (
     <ParticleText
       text={text}
-      fontFamily="'Geist Variable'"
-      fontSize={96}
-      fontWeight={700}
+      fontFamily={FIGURE_FONT.family}
+      fontSize={FIGURE_FONT.size}
+      fontWeight={FIGURE_FONT.weight}
       particleSize={2.2}
       density={2}
       color="#f5f8ff"
       highlightColor="#a9c8f0"
       glow={false}
-      gatherDuration={(gather - PARTICLE_STAGGER) / speed}
-      stagger={PARTICLE_STAGGER / speed}
-      style={{minHeight: 0, height: 320}}
+      gatherDuration={gather - PARTICLE_STAGGER}
+      stagger={PARTICLE_STAGGER}
+      scatter={PARTICLE_SCATTER}
+      style={{minHeight: 0, height: 320, transform: `translate(${offset.x}px, ${offset.y}px)`}}
     />
   )
 }
 
-function Finale({plan, cleanup, particles, speed, onReplay}: {plan: FilmPlan; cleanup: Cleanup; particles: boolean; speed: number; onReplay: () => void}) {
-  const totals = totalsOf(outcomes(plan, cleanup.log), cleanup.done)
-  if (!cleanup.done) return null
+interface FinaleProps {
+  plan: FilmPlan
+  done: NonNullable<Cleanup['done']>
+  all: readonly Outcome[]
+  particles: ParticlePhase
+  onLanded: () => void
+  onReplay: () => void
+}
+
+function emptyHeading(totals: Totals, all: readonly Outcome[]) {
+  if (totals.failed.length + totals.kept.length > 0) return 'Nothing could be removed'
+  return all.some(o => o.kind === 'ran') ? 'The cleanup commands ran' : 'Nothing was removed'
+}
+
+function emptySummary(totals: Totals, all: readonly Outcome[]) {
+  const ran = all.filter(o => o.kind === 'ran').length
+  const parts = [totals.failed.length > 0 && `${totals.failed.length} not removed`, totals.kept.length > 0 && `${totals.kept.length} kept`, ran > 0 && `${ran} ${ran === 1 ? 'command' : 'commands'} ran`]
+  return parts.filter(Boolean).join(' · ') || 'The cleanup had nothing to do'
+}
+
+function Finale({plan, done, all, particles, onLanded, onReplay}: FinaleProps) {
+  const totals = useMemo(() => totalsOf(all, done), [all, done])
+  const freed = totals.removed.reduce((sum, o) => sum + o.bytes, 0)
+  const empty = totals.removed.length === 0
   return (
     <div data-film="finale" className="invisible absolute inset-0 overflow-y-auto">
-      <div className="mx-auto flex max-w-3xl flex-col items-center gap-8 px-6 py-14 text-center">
+      <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
         <h2 data-film="freed-heading" className="text-2xl font-semibold tracking-tight">
-          You freed
+          {empty ? emptyHeading(totals, all) : 'You freed'}
         </h2>
-        <div className="relative grid h-24 w-full place-items-center">
-          <div data-film="freed" className="text-[96px] leading-none font-bold tabular-nums opacity-0">
-            {formatBytes(totals.reclaimed)}
+        <div className="relative grid min-h-24 w-full place-items-center">
+          <div data-film="freed" className={empty ? 'text-lg text-muted-foreground opacity-0' : 'text-[96px] leading-none font-bold opacity-0'}>
+            {empty ? emptySummary(totals, all) : formatBytes(freed)}
           </div>
           <div data-film="particles" aria-hidden className="pointer-events-none absolute inset-x-0 -top-28 h-[320px]">
-            {particles && <Particles text={formatBytes(totals.reclaimed)} speed={speed} />}
+            {particles !== 'off' && <Particles text={formatBytes(freed)} landing={particles === 'landing'} onLanded={onLanded} />}
           </div>
         </div>
-        <Bars plan={plan} done={cleanup.done} reclaimed={totals.reclaimed} />
+        <FinaleGauge plan={plan} done={done} freed={freed} />
         <Tiles totals={totals} />
-        <div data-film="credits" className="t-credits h-64 w-full overflow-hidden opacity-0">
-          <ol data-film="credits-list" className="flex flex-col gap-4 pt-24 pb-24">
+        <div
+          data-film="credits"
+          tabIndex={0}
+          role="region"
+          aria-label="Everything removed"
+          className="t-credits h-56 w-full overflow-y-auto overscroll-contain rounded-md opacity-0 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <ol className="flex flex-col gap-4 pt-20 pb-20">
             <CreditList plan={plan} totals={totals} />
           </ol>
         </div>
@@ -345,16 +430,14 @@ function Finale({plan, cleanup, particles, speed, onReplay}: {plan: FilmPlan; cl
   )
 }
 
-function useFilm(plan: FilmPlan, cleanup: Cleanup, speed: number) {
-  const root = useRef<HTMLDivElement>(null)
+function useFilm(container: HTMLElement | null, plan: FilmPlan, cleanup: Cleanup, running: (on: boolean) => void) {
   const latest = useRef(cleanup)
   const film = useRef<FilmState | null>(null)
   const [shred, setShred] = useState<Outcome | null>(null)
-  const [particles, setParticles] = useState(false)
-  const [running, setRunning] = useState(true)
+  const [particles, setParticles] = useState<ParticlePhase>('off')
   const {contextSafe} = useGSAP(
     (_, contextSafe) => {
-      if (!root.current || !contextSafe) return
+      if (!container || !contextSafe) return
       const tail = contextSafe(() => pump(film.current, latest.current, true))
       const ready = contextSafe(() => {
         if (film.current) film.current.ready = true
@@ -366,30 +449,33 @@ function useFilm(plan: FilmPlan, cleanup: Cleanup, speed: number) {
         current.flood = latest.current.log.length > current.processed
         pump(current, latest.current)
       })
-      film.current = createFilm(root.current, plan, {shred: setShred, particles: setParticles, running: setRunning}, tail, ready, speed)
+      film.current = createFilm(container, plan, {shred: setShred, particles: setParticles, running}, tail, ready)
       film.current.backlog = latest.current.log.length
       document.addEventListener('visibilitychange', visible)
       return () => document.removeEventListener('visibilitychange', visible)
     },
-    {scope: root},
+    {dependencies: [container]},
   )
   useLayoutEffect(() => {
     latest.current = cleanup
     contextSafe(() => pump(film.current, cleanup))()
   }, [cleanup, contextSafe])
-  return {root, shred, particles, running}
+  const landed = useCallback(() => void film.current?.tl.play(), [])
+  return {shred, particles, landed}
 }
 
-function Take({plan, cleanup, speed, onReplay}: FilmProps & {speed: number; onReplay: () => void}) {
-  const {root, shred, particles, running} = useFilm(plan, cleanup, speed)
-  const waiting = cleanup.keys.has('waiting') && !cleanup.started
+interface TakeProps extends FilmProps {
+  container: HTMLElement | null
+  running: (on: boolean) => void
+  onReplay: () => void
+}
+
+function Take({container, plan, cleanup, running, onReplay}: TakeProps) {
+  const {shred, particles, landed} = useFilm(container, plan, cleanup, running)
+  const all = useOutcomes(plan, cleanup.log)
+  const waiting = cleanup.waiting && !cleanup.started
   return (
-    <div ref={root} className="fixed inset-0 isolate z-50 overflow-hidden text-foreground">
-      <div data-film="backdrop" className="absolute inset-0 -z-10 bg-background opacity-0">
-        <div data-film="film" className="absolute inset-0">
-          <BurningFilm running={running} className="absolute inset-0" />
-        </div>
-      </div>
+    <>
       <section className="absolute inset-x-0 top-[34%] flex flex-col items-center gap-4 text-center">
         <div data-film="total" className="text-[96px] leading-none font-bold tracking-tighter tabular-nums">
           {formatBytes(plan.approved)}
@@ -404,37 +490,45 @@ function Take({plan, cleanup, speed, onReplay}: FilmProps & {speed: number; onRe
           <span className={waiting ? 't-pulse' : undefined}>{WAITING}</span>
         </p>
       </section>
-      <Stage plan={plan} cleanup={cleanup} shred={shred} />
-      <Finale plan={plan} cleanup={cleanup} particles={particles} speed={speed} onReplay={onReplay} />
-    </div>
+      <Stage plan={plan} all={all} startFree={cleanup.started?.free ?? cleanup.done?.free_before ?? 0} shred={shred} />
+      {cleanup.done && <Finale plan={plan} done={cleanup.done} all={all} particles={particles} onLanded={landed} onReplay={onReplay} />}
+    </>
   )
 }
 
 function Film({plan, cleanup, onReplay}: FilmProps & {onReplay: () => void}) {
   const [take, setTake] = useState(0)
+  const [running, setRunning] = useState(true)
+  const [container, setContainer] = useState<HTMLDivElement | null>(null)
   const replay = () => {
+    setRunning(true)
     setTake(take + 1)
     onReplay()
   }
-  return <Take key={take} plan={plan} cleanup={cleanup} speed={take === 0 ? 1 : REPLAY_SPEED} onReplay={replay} />
+  return (
+    <div ref={setContainer} className="fixed inset-0 isolate overflow-hidden text-foreground">
+      <div data-film="backdrop" className="absolute inset-0 -z-10 bg-background opacity-0">
+        <div data-film="film" className="absolute inset-0">
+          <BurningFilm running={running} className="absolute inset-0" />
+        </div>
+      </div>
+      <Take key={take} container={container} plan={plan} cleanup={cleanup} running={setRunning} onReplay={replay} />
+    </div>
+  )
 }
 
 export function CleanupFilm({plan, cleanup, onClose}: {plan: FilmPlan; cleanup: Cleanup; onClose: () => void}) {
   const close = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    close.current?.focus()
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
   return (
-    <div role="dialog" aria-modal="true" aria-label="Cleanup movie" className="fixed inset-0 z-50">
-      <Film plan={plan} cleanup={cleanup} onReplay={() => close.current?.focus()} />
-      <Button ref={close} variant="secondary" size="sm" className="absolute top-4 right-4 z-[60]" onClick={onClose}>
-        <X /> Close
-      </Button>
-    </div>
+    <DialogPrimitive.Root open onOpenChange={open => !open && onClose()}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Popup aria-label="Cleanup movie" initialFocus={close} className="fixed inset-0 z-50 outline-none">
+          <Film plan={plan} cleanup={cleanup} onReplay={() => close.current?.focus()} />
+          <DialogPrimitive.Close render={<Button ref={close} variant="secondary" size="sm" className="absolute top-4 right-4 z-10" />}>
+            <X /> Close
+          </DialogPrimitive.Close>
+        </DialogPrimitive.Popup>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   )
 }
