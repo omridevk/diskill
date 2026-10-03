@@ -143,6 +143,15 @@ pub fn is_trusted_post(req: &Request) -> bool {
             .is_none_or(|o| o.eq_ignore_ascii_case(&own_origin))
 }
 
+pub fn is_own_origin_post(req: &Request, port: u16) -> bool {
+    is_local_host(req, port)
+        && req.json
+        && req
+            .origin
+            .as_deref()
+            .is_some_and(|o| o.eq_ignore_ascii_case(&format!("http://{}", req.host)))
+}
+
 pub fn client_gone(stream: &TcpStream) -> bool {
     if stream.set_nonblocking(true).is_err() {
         return true;
@@ -184,7 +193,7 @@ pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-pub const POST_ROUTES: [&str; 3] = ["/decide", "/preview", "/rescan"];
+pub const POST_ROUTES: [&str; 5] = ["/decide", "/preview", "/rescan", "/undo", "/free"];
 
 pub fn is_page_route(route: &str) -> bool {
     route.starts_with('/') && route != "/events" && !POST_ROUTES.contains(&route)

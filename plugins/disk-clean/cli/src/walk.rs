@@ -65,6 +65,7 @@ pub struct Plan {
     pub big_bytes: u64,
     pub exact: HashSet<PathBuf>,
     pub parents: HashSet<PathBuf>,
+    pub held: PathBuf,
     pub repo_tx: Option<std::sync::mpsc::Sender<PathBuf>>,
     pub days: Vec<i64>,
     pub cancel: Arc<AtomicBool>,
@@ -682,7 +683,7 @@ pub fn walk(
 
         if meta.kind == Kind::Dir {
             let path = path_of(parent);
-            let mut home = found.home;
+            let mut home = found.home.filter(|_| path != plan.held);
             let mut ins = parent.and_then(|p| {
                 p.ins
                     .map(|i| insights::enter(&mut out.insights, i, &p.path, &file_name))

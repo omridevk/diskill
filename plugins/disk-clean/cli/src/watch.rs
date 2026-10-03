@@ -1,4 +1,5 @@
 use crate::clean;
+use crate::hold;
 use crate::http::{self, constant_eq, query_token, refuse, respond};
 use crate::review::approved_page;
 use crate::util;
@@ -8,6 +9,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -62,7 +64,7 @@ fn complete_lines(pending: &mut Vec<u8>) -> String {
         };
         if let Some(name) = event.get("event").and_then(Value::as_str)
             && !name.is_empty()
-            && name.bytes().all(|b| b.is_ascii_lowercase())
+            && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
         {
             chunk.push_str(&sse(name, line));
         }
@@ -128,7 +130,67 @@ fn stream_events(out: &mut TcpStream, path: &Path) {
     }
 }
 
-fn handle(mut write: TcpStream, port: u16, token: &str, dir: &Path, clients: &Mutex<Clients>) {
+fn start_job(name: &'static str, dir: &Path, busy: &Arc<AtomicBool>) -> &'static str {
+    let home = util::home();
+    let Some(held) = hold::held_dir(&home, dir) else {
+        return "404 Not Found";
+    };
+    let Ok(Some(lock)) = hold::lock(&held, 1) else {
+        return "409 Conflict";
+    };
+    busy.store(true, Ordering::SeqCst);
+    let (dir, busy) = (dir.to_path_buf(), Arc::clone(busy));
+    std::thread::spawn(move || {
+        if let Err(e) = hold::run_job(name, &dir, &held, &home) {
+            eprintln!("disk-clean {name}: {e}");
+        }
+        drop(lock);
+        busy.store(false, Ordering::SeqCst);
+    });
+    "202 Accepted"
+}
+
+fn post_job(
+    write: &mut TcpStream,
+    req: &http::Request,
+    port: u16,
+    token: &str,
+    dir: &Path,
+    busy: &Arc<AtomicBool>,
+) {
+    let name = match req.target.as_str() {
+        "/undo" => "undo",
+        "/free" => "free",
+        _ => return respond(write, "405 Method Not Allowed", "text/plain", b"read only"),
+    };
+    if !http::is_own_origin_post(req, port) {
+        return refuse(write, "403 Forbidden");
+    }
+    let sent = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(Value::Object(body)) => body
+            .get("token")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        _ => return refuse(write, "400 Bad Request"),
+    };
+    if !constant_eq(sent.as_bytes(), token.as_bytes()) {
+        return refuse(write, "403 Forbidden");
+    }
+    match start_job(name, dir, busy) {
+        "202 Accepted" => respond(write, "202 Accepted", "application/json", b"{}"),
+        status => refuse(write, status),
+    }
+}
+
+fn handle(
+    mut write: TcpStream,
+    port: u16,
+    token: &str,
+    dir: &Path,
+    clients: &Mutex<Clients>,
+    busy: &Arc<AtomicBool>,
+) {
     let req = match http::read_request(&mut write) {
         Ok(req) => req,
         Err(Some(status)) => return refuse(&mut write, status),
@@ -139,7 +201,9 @@ fn handle(mut write: TcpStream, port: u16, token: &str, dir: &Path, clients: &Mu
     }
     let target = req.target.as_str();
     let route = target.split('?').next().unwrap_or("");
-    if req.method != "GET" {
+    if req.method == "POST" {
+        post_job(&mut write, &req, port, token, dir, busy);
+    } else if req.method != "GET" {
         respond(
             &mut write,
             "405 Method Not Allowed",
@@ -186,10 +250,11 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
         open: 0,
         last: began,
     }));
-    let (served, accepted) = (dir.clone(), Arc::clone(&clients));
+    let busy = Arc::new(AtomicBool::new(false));
+    let (served, accepted, working) = (dir.clone(), Arc::clone(&clients), Arc::clone(&busy));
     std::thread::spawn(move || {
         http::serve(listener, move |stream| {
-            handle(stream, port, &token, &served, &accepted)
+            handle(stream, port, &token, &served, &accepted, &working)
         });
     });
     let mut closing: Option<Instant> = None;
@@ -209,6 +274,9 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
             let c = lock(&clients);
             c.open == 0 && c.last.elapsed() >= idle
         };
+        if busy.load(Ordering::SeqCst) {
+            continue;
+        }
         if up >= most
             || closing.is_some_and(|t| t.elapsed() >= CLOSING_GRACE)
             || (status == "done" && idle_now)

@@ -166,10 +166,9 @@ fn review_serves_page_and_writes_selection() {
     );
     assert_eq!(status, 200);
     let plan: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        plan["commands"],
-        serde_json::json!(["docker system prune -f"])
-    );
+    assert_eq!(plan["final"], serde_json::json!(["docker system prune -f"]));
+    assert_eq!(plan["final_count"], 1);
+    assert_eq!(plan["hold"], serde_json::json!([]));
     assert_eq!(plan["rejected"][0]["path"], format!("{h}/Library/Caches/a"));
     assert_eq!(plan["rejected"][0]["reason"], "already gone");
     assert_eq!(plan["count"], 1);
@@ -235,6 +234,7 @@ fn review_exits_3_when_nothing_found() {
     fs::write(run.join("scan.tsv"), "").unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["review", &run.to_string_lossy()])
+        .env("HOME", &t.0)
         .env("DISK_CLEAN_NO_BROWSER", "1")
         .output()
         .unwrap();

@@ -1,4 +1,5 @@
 use crate::clean;
+use crate::hold;
 use crate::http::{self, constant_eq, query_token, refuse, respond};
 use crate::scan::{self, Sink};
 use crate::util;
@@ -18,6 +19,7 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(15);
 const PROBE_EVERY: Duration = Duration::from_secs(1);
 const NOTHING_FOUND: &str = "nothing-found";
+const REVIEW_POSTS: [&str; 3] = ["/decide", "/preview", "/rescan"];
 
 #[derive(Serialize, Clone)]
 pub struct Item {
@@ -460,7 +462,7 @@ fn handle(
             }
         }
         "POST" => {
-            if !http::POST_ROUTES.contains(&target) {
+            if !REVIEW_POSTS.contains(&target) {
                 return refuse(&mut stream, "404 Not Found");
             }
             if !http::is_trusted_post(&req) {
@@ -503,7 +505,7 @@ fn handle(
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                let body = preview(&f.categories, &f.index, &items).to_string();
+                let body = preview(&f.categories, &f.index, &items, &live.dir).to_string();
                 respond(&mut stream, "200 OK", "application/json", body.as_bytes());
                 return;
             }
@@ -561,7 +563,12 @@ pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
     Some(json!({"items": chosen, "total_bytes": total}))
 }
 
-pub fn preview(categories: &[Category], index: &clean::ScanIndex, items: &[Value]) -> Value {
+pub fn preview(
+    categories: &[Category],
+    index: &clean::ScanIndex,
+    items: &[Value],
+    run_dir: &Path,
+) -> Value {
     let chosen = selection(categories, items)
         .and_then(|s| s.get("items").and_then(Value::as_array).cloned())
         .unwrap_or_default();
@@ -571,8 +578,27 @@ pub fn preview(categories: &[Category], index: &clean::ScanIndex, items: &[Value
         .iter()
         .map(|(reason, path)| json!({"reason": reason, "path": path}))
         .collect();
+    let targets = hold::planned_targets(&util::home(), run_dir, plan.rm.len());
+    let hold: Vec<Value> = plan
+        .rm
+        .iter()
+        .zip(&targets)
+        .map(|(path, held)| json!({"path": path, "bytes": plan.size_of(path), "held": held}))
+        .collect();
+    let undoable: Vec<&String> = plan
+        .worktrees
+        .iter()
+        .chain(&plan.frees)
+        .chain(&plan.cmds)
+        .collect();
+    let hold_bytes: i64 = plan.rm.iter().map(|p| plan.size_of(p)).sum();
     json!({
-        "commands": plan.commands(),
+        "hold": hold,
+        "hold_bytes": hold_bytes,
+        "hold_until": util::now() + hold::hold_days() * 86_400,
+        "final": plan.final_steps(),
+        "final_bytes": undoable.iter().map(|k| plan.size_of(k)).sum::<i64>(),
+        "final_count": undoable.len(),
         "rejected": rejected,
         "count": plan.count(),
         "bytes": plan.bytes,

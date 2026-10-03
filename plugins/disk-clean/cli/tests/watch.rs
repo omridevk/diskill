@@ -20,6 +20,7 @@ fn free_port() -> u16 {
 fn watch(run: &Path, port: u16, env: &[(&str, &str)]) -> Child {
     Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["watch", &run.to_string_lossy()])
+        .env("HOME", run.parent().unwrap())
         .env("DISK_CLEAN_WATCH_TOKEN", TOKEN)
         .env("DISK_CLEAN_WATCH_PORT", port.to_string())
         .envs(env.iter().copied())
@@ -230,8 +231,10 @@ fn watch_gives_up_when_clean_never_starts_or_runs_too_long() {
 
 #[test]
 fn watch_needs_its_token_and_port() {
+    let t = common::temp_dir("watch-usage");
     let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["watch", "/nonexistent"])
+        .env("HOME", &t.0)
         .env_remove("DISK_CLEAN_WATCH_TOKEN")
         .output()
         .unwrap();

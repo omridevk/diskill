@@ -213,3 +213,18 @@ pub fn spawn_detached(cmd: &mut Command) -> io::Result<Child> {
     }
     cmd.spawn()
 }
+
+pub fn in_parallel<T: Sync>(items: &[T], workers: usize, each: impl Fn(&T) + Sync) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..workers.max(1) {
+            s.spawn(|| {
+                while let Some(item) =
+                    items.get(next.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+                {
+                    each(item);
+                }
+            });
+        }
+    });
+}

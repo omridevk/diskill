@@ -1,3 +1,4 @@
+use crate::hold;
 use crate::util;
 use crate::worktrees;
 use serde_json::{Value, json};
@@ -87,22 +88,32 @@ fn shell_line(program: &str, args: &[&str]) -> String {
 pub struct Plan {
     pub rm: Vec<String>,
     pub worktrees: Vec<String>,
+    pub frees: Vec<String>,
     pub cmds: Vec<String>,
     pub rejected: Vec<(String, String)>,
     pub bytes: i64,
+    pub sizes: HashMap<String, i64>,
 }
 
 impl Plan {
     pub fn count(&self) -> usize {
-        self.rm.len() + self.worktrees.len() + self.cmds.len()
+        self.rm.len() + self.worktrees.len() + self.frees.len() + self.cmds.len()
     }
 
-    pub fn commands(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .rm
+    pub fn size_of(&self, key: &str) -> i64 {
+        self.sizes.get(key).copied().unwrap_or(0)
+    }
+
+    pub fn hold_lines(&self, targets: &[String]) -> Vec<String> {
+        self.rm
             .iter()
-            .map(|p| format!("delete {}", shell_quote(p)))
-            .collect();
+            .zip(targets)
+            .map(|(path, held)| format!("mv -- {} {}", shell_quote(path), shell_quote(held)))
+            .collect()
+    }
+
+    pub fn final_steps(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
         let mut repos: Vec<String> = Vec::new();
         for path in &self.worktrees {
             match worktrees::owning_repo(Path::new(path)) {
@@ -126,6 +137,11 @@ impl Plan {
             repos
                 .iter()
                 .map(|repo| shell_line("git", &["-C", repo, "worktree", "prune"])),
+        );
+        out.extend(
+            self.frees
+                .iter()
+                .map(|p| format!("delete {}", shell_quote(p))),
         );
         out.extend(
             self.cmds
@@ -184,8 +200,10 @@ pub fn plan(index: &ScanIndex, items: &[Value]) -> Plan {
         match action {
             "cmd" => plan.cmds.push(value.to_string()),
             "worktree" => plan.worktrees.push(value.to_string()),
+            "free" => plan.frees.push(value.to_string()),
             _ => plan.rm.push(value.to_string()),
         }
+        plan.sizes.insert(value.to_string(), bytes);
         plan.bytes += bytes;
     }
     plan
@@ -215,6 +233,9 @@ fn rm_rejection(
     }
     if fs::symlink_metadata(value).is_err() {
         return Some("already gone");
+    }
+    if action == "free" && !hold::is_held_run(value, home) {
+        return Some("not a run held by disk-clean");
     }
     safe_to_remove(action, value, home, tmp_base).err()
 }
@@ -310,16 +331,31 @@ fn lines(items: &[String]) -> String {
     items.iter().map(|s| format!("{s}\n")).collect()
 }
 
-fn print_dry_run(plan: &Plan) {
+fn print_dry_run(plan: &Plan, run_dir: &Path) {
+    let home = util::home();
+    let until = hold::date(util::now() + hold::hold_days() * 86_400);
     println!("# dry run: nothing is deleted. These are the steps clean would take.");
     println!(
-        "# delete: right before each removal the path is resolved again; it is kept if a parent folder"
+        "# right before each step the path is resolved again; it is kept if a parent folder now resolves"
     );
     println!(
-        "# now resolves elsewhere or it became protected, and a symlink is removed itself, never followed."
+        "# elsewhere or it became protected, and a symlink is moved or removed itself, never followed."
     );
-    for line in plan.commands() {
-        println!("{line}");
+    if !plan.rm.is_empty() {
+        println!(
+            "# moved to hold (undo available until {until}; disk-clean undo / disk-clean free RUN_DIR):"
+        );
+        let targets = hold::planned_targets(&home, run_dir, plan.rm.len());
+        for line in plan.hold_lines(&targets) {
+            println!("{line}");
+        }
+    }
+    let steps = plan.final_steps();
+    if !steps.is_empty() {
+        println!("# can't be undone:");
+        for line in steps {
+            println!("{line}");
+        }
     }
     for (reason, value) in &plan.rejected {
         println!("# rejected ({reason}): {}", shell_quote(value));
@@ -456,7 +492,7 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     let plan = plan(&index_scan(&util::read_lines(&scan_path)), &items);
 
     if dry_run {
-        print_dry_run(&plan);
+        print_dry_run(&plan, dir);
         return Ok(if plan.count() == 0 { 3 } else { 0 });
     }
 
@@ -472,6 +508,7 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     fs::write(dir.join("rm-list"), lines(&plan.rm))?;
     fs::write(dir.join("cmd-list"), lines(&plan.cmds))?;
     fs::write(dir.join("wt-list"), lines(&plan.worktrees))?;
+    fs::write(dir.join("free-list"), lines(&plan.frees))?;
     fs::write(dir.join("rejected"), &rejected)?;
 
     let (kept, total_bytes) = (plan.count(), plan.bytes);
@@ -506,7 +543,7 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     Ok(0)
 }
 
-struct Events {
+pub struct Events {
     file: Option<Mutex<fs::File>>,
     start: Instant,
 }
@@ -519,7 +556,18 @@ impl Events {
         }
     }
 
-    fn emit(&self, event: &str, mut data: Value) {
+    pub fn append(dir: &Path) -> Events {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(EVENTS));
+        Events {
+            file: file.ok().map(Mutex::new),
+            start: Instant::now(),
+        }
+    }
+
+    pub fn emit(&self, event: &str, mut data: Value) {
         data["event"] = json!(event);
         data["elapsed_ms"] = json!(self.start.elapsed().as_millis() as u64);
         if let Some(Ok(mut f)) = self.file.as_ref().map(Mutex::lock) {
@@ -550,7 +598,7 @@ fn planned_bytes(dir: &Path) -> HashMap<String, i64> {
         .collect()
 }
 
-fn remove_path(path: &Path) -> io::Result<()> {
+pub fn remove_path(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
@@ -561,7 +609,13 @@ fn remove_path(path: &Path) -> io::Result<()> {
 
 type Check<'a> = &'a (dyn Fn(&str) -> Result<(), &'static str> + Sync);
 
-fn rm_one(target: &str, bytes: i64, events: &Events, check: Check) -> (String, bool) {
+fn hold_one(
+    target: &str,
+    bytes: i64,
+    events: &Events,
+    check: Check,
+    holder: &mut Result<hold::Holder, String>,
+) -> (String, bool) {
     if let Err(reason) = check(target) {
         events.emit(
             "kept",
@@ -569,29 +623,26 @@ fn rm_one(target: &str, bytes: i64, events: &Events, check: Check) -> (String, b
         );
         return (format!("KEPT    {target} ({reason})"), false);
     }
-    let start = Instant::now();
-    let result = remove_path(Path::new(target));
-    if fs::symlink_metadata(target).is_ok() {
-        let reason = match &result {
-            Err(e) => format!("still present after removal: {}", e.kind()),
-            Ok(()) => "still present after removal".to_string(),
-        };
-        events.emit(
-            "failed",
-            json!({"path": target, "bytes": bytes, "reason": reason}),
-        );
-        let line = format!(
-            "FAILED  {target} (still present, exit {})",
-            if result.is_ok() { 0 } else { 1 }
-        );
-        return (line, false);
+    let held = match holder {
+        Ok(holder) => holder.hold(target, bytes),
+        Err(reason) => Err(reason.clone()),
+    };
+    match held {
+        Ok(held) => {
+            events.emit(
+                "held",
+                json!({"path": target, "bytes": bytes, "held_path": held}),
+            );
+            (format!("held    {target} -> {held}"), true)
+        }
+        Err(reason) => {
+            events.emit(
+                "failed",
+                json!({"path": target, "bytes": bytes, "reason": format!("not held: {reason}")}),
+            );
+            (format!("NOT HELD {target} ({reason})"), false)
+        }
     }
-    let secs = start.elapsed();
-    events.emit(
-        "removed",
-        json!({"path": target, "bytes": bytes, "secs": secs.as_secs_f64()}),
-    );
-    (format!("removed {target}  ({}s)", secs.as_secs()), true)
 }
 
 fn run_logged(label: &str, program: &str, args: &[&str]) -> bool {
@@ -623,16 +674,62 @@ fn listed(dir: &Path, name: &str) -> Vec<String> {
         .collect()
 }
 
+fn free_held_run(target: &str, home: &str, events: &Events, check: Check) -> (usize, i64) {
+    let reason = check(target)
+        .err()
+        .or_else(|| (!hold::is_held_run(target, home)).then_some("not a run held by disk-clean"));
+    if let Some(reason) = reason {
+        events.emit(
+            "kept",
+            json!({"path": target, "bytes": 0, "reason": reason}),
+        );
+        println!("KEPT    {target} ({reason})");
+        return (0, 0);
+    }
+    let dir = Path::new(target);
+    let Ok(Some(_lock)) = hold::lock(dir, LOCK_TRIES) else {
+        let reason = "its held items are busy (another undo or free)";
+        events.emit(
+            "kept",
+            json!({"path": target, "bytes": 0, "reason": reason}),
+        );
+        println!("KEPT    {target} ({reason})");
+        return (0, 0);
+    };
+    let only_items = |event: &str, data: Value| {
+        if event == "freed" {
+            events.emit(event, data);
+        }
+    };
+    match hold::free(dir, &only_items) {
+        Ok(r) => {
+            println!(
+                "freed   {target} ({} items, {} bytes)",
+                r.done, r.done_bytes
+            );
+            (r.done, r.done_bytes)
+        }
+        Err(e) => {
+            events.emit(
+                "kept",
+                json!({"path": target, "bytes": 0, "reason": e.to_string()}),
+            );
+            println!("KEPT    {target} ({e})");
+            (0, 0)
+        }
+    }
+}
+
 pub fn worker(run_dir: &str) -> io::Result<i32> {
     keep_lock_from_commands();
     let dir = Path::new(run_dir);
-    let parallel = util::env_num("DISK_CLEAN_PARALLEL", 4usize).max(1);
     let events = Events::open(dir);
     let run = format!("{}-{}", util::now(), std::process::id());
     println!("started {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
 
     let rm_list = listed(dir, "rm-list");
     let wt_list = listed(dir, "wt-list");
+    let free_list = listed(dir, "free-list");
     let cmd_list = listed(dir, "cmd-list");
     let planned = planned_bytes(dir);
     let bytes_of = |key: &str| planned.get(key).copied().unwrap_or(0);
@@ -650,46 +747,41 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
             "free": free_at_start,
             "paths": rm_list.len(),
             "worktrees": wt_list.len(),
+            "frees": free_list.len(),
             "commands": cmd_list.len(),
-            "bytes": rm_list.iter().chain(&wt_list).chain(&cmd_list).map(|k| bytes_of(k)).sum::<i64>(),
+            "bytes": rm_list.iter().chain(&wt_list).chain(&free_list).chain(&cmd_list).map(|k| bytes_of(k)).sum::<i64>(),
         }),
     );
     let removed = AtomicUsize::new(0);
     let removed_bytes = AtomicI64::new(0);
-    let tally = |bytes: i64| {
-        removed.fetch_add(1, Ordering::SeqCst);
+    let tally = |count: usize, bytes: i64| {
+        removed.fetch_add(count, Ordering::SeqCst);
         removed_bytes.fetch_add(bytes, Ordering::SeqCst);
     };
+    let (mut held, mut held_bytes, mut until) = (0usize, 0i64, None);
 
     let (working, stop) = mpsc::channel::<()>();
     std::thread::scope(|s| -> io::Result<()> {
         let sampler = &events;
         s.spawn(move || sample_free(sampler, stop));
         if !rm_list.is_empty() {
-            println!("deleting {} paths with {parallel} workers", rm_list.len());
-            let next = AtomicUsize::new(0);
-            let out = Mutex::new(io::stdout());
-            std::thread::scope(|s| {
-                for _ in 0..parallel {
-                    s.spawn(|| {
-                        while let Some(target) = rm_list.get(next.fetch_add(1, Ordering::SeqCst)) {
-                            let bytes = bytes_of(target);
-                            let (line, gone) = rm_one(target, bytes, &events, &rm_check);
-                            if gone {
-                                tally(bytes);
-                            }
-                            if let Ok(mut o) = out.lock() {
-                                let _ = writeln!(o, "{line}");
-                            }
-                        }
-                    });
+            println!("moving {} paths to hold (undo available)", rm_list.len());
+            let mut holder = hold::Holder::open(&home, dir).map_err(|e| e.to_string());
+            for target in &rm_list {
+                let bytes = bytes_of(target);
+                let (line, ok) = hold_one(target, bytes, &events, &rm_check, &mut holder);
+                if ok {
+                    held += 1;
+                    held_bytes += bytes;
                 }
-            });
+                println!("{line}");
+            }
+            until = holder.as_ref().ok().and_then(hold::Holder::until);
         }
 
         if !wt_list.is_empty() {
             println!(
-                "removing {} worktrees (each re-checked first)",
+                "removing {} worktrees (each re-checked first, can't be undone)",
                 wt_list.len()
             );
             worktrees::remove(
@@ -698,7 +790,7 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
                 &worktree_check,
                 &mut |path, kept| {
                     if kept.is_none() {
-                        tally(bytes_of(path));
+                        tally(1, bytes_of(path));
                     }
                     events.emit(
                         "worktree",
@@ -711,6 +803,11 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
                     );
                 },
             )?;
+        }
+
+        for target in &free_list {
+            let (count, bytes) = free_held_run(target, &home, &events, &rm_check);
+            tally(count, bytes);
         }
 
         for cmd_id in &cmd_list {
@@ -736,6 +833,12 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
         removed_bytes.load(Ordering::SeqCst),
     );
     println!("removed: {count} items, {bytes} bytes");
+    if held > 0 {
+        println!(
+            "held: {held} items, {held_bytes} bytes, not freed yet (undo until {}: disk-clean undo {run_dir}; free now: disk-clean free {run_dir})",
+            until.map(hold::date).unwrap_or_default()
+        );
+    }
     println!(
         "free space changed by {} bytes since the cleanup started ({free_at_start} -> {after})",
         after - free_at_start
@@ -746,6 +849,9 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
         json!({
             "removed": count,
             "removed_bytes": bytes,
+            "held": held,
+            "held_bytes": held_bytes,
+            "hold_until": until,
             "free_before": free_at_start,
             "free_after": after,
         }),

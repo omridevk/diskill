@@ -182,22 +182,26 @@ fn clean_end_to_end_on_fixture() {
     )
     .unwrap();
 
-    let dry = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["clean", "--dry-run", &p(&run)])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .unwrap();
+    let dry = common::cli(&["clean", "--dry-run", &p(&run)], root, &[]);
     let plan = String::from_utf8_lossy(&dry.stdout);
     assert!(dry.status.success(), "{plan}");
+    let held = disk_clean::hold::dir_of(&p(root), &run);
+    let (hold_at, cant_undo) = (
+        plan.find("# moved to hold (undo available until ").unwrap(),
+        plan.find("# can't be undone:\n").unwrap(),
+    );
+    let first = plan
+        .find(&format!("\nmv -- {} {}/", p(&doomed), p(&held)))
+        .unwrap();
+    let second = plan
+        .find(&format!("\nmv -- {} {}/", p(&doomed_file), p(&held)))
+        .unwrap();
+    assert!(hold_at < first && hold_at < second, "{plan}");
+    assert!(first < cant_undo && second < cant_undo, "{plan}");
     assert!(
-        plan.contains(&format!("\ndelete {}\n", p(&doomed))),
+        !plan.contains("rm -rf") && !plan.contains("\ndelete "),
         "{plan}"
     );
-    assert!(
-        plan.contains(&format!("\ndelete {}\n", p(&doomed_file))),
-        "{plan}"
-    );
-    assert!(!plan.contains("rm -rf"), "{plan}");
     assert!(
         plan.contains(&format!("# kept, not a registered worktree: {}", p(&repo))),
         "{plan}"
@@ -214,11 +218,7 @@ fn clean_end_to_end_on_fixture() {
     assert!(doomed.exists() && doomed_file.exists());
     assert!(!run.join("rm-list").exists() && !run.join("status").exists());
 
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["clean", &p(&run)])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .unwrap();
+    let out = common::cli(&["clean", &p(&run)], root, &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -265,22 +265,41 @@ fn clean_end_to_end_on_fixture() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let log = fs::read_to_string(run.join("clean.log")).unwrap();
-    assert!(log.contains(&format!("removed {}  (", p(&doomed))), "{log}");
     assert!(
-        log.contains(&format!("removed {}  (", p(&doomed_file))),
+        log.contains(&format!("held    {} -> {}/", p(&doomed), p(&held))),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!("held    {} -> {}/", p(&doomed_file), p(&held))),
         "{log}"
     );
     assert!(
         log.contains(&format!("KEPT    {} (not a registered worktree)", p(&repo))),
         "{log}"
     );
-    assert!(log.contains("removed: 2 items, 8192 bytes"), "{log}");
+    assert!(log.contains("removed: 0 items, 0 bytes"), "{log}");
+    assert!(
+        log.contains("held: 2 items, 8192 bytes, not freed yet (undo until "),
+        "{log}"
+    );
     assert!(log.contains("free space changed by "), "{log}");
     assert!(
         !log.contains("987654321987"),
         "the scan-time free-before is never used: {log}"
     );
     assert!(!doomed.exists() && !doomed_file.exists());
+    let manifest = disk_clean::hold::read(&held);
+    assert_eq!(manifest.len(), 2);
+    for entry in &manifest {
+        assert!(Path::new(&entry.held).exists(), "{entry:?}");
+        assert_eq!(entry.bytes, 4096);
+        assert!(entry.held_at > 0);
+    }
+    assert!(
+        Path::new(&manifest[0].held)
+            .join("nested/deeper/file")
+            .exists()
+    );
     assert!(not_in_scan.exists() && repo.join("a").exists() && Path::new("/etc/hosts").exists());
 }
 
@@ -295,10 +314,7 @@ fn clean_rejects_everything() {
         r#"{"items": [{"path": "/etc/hosts"}]}"#,
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["clean", &run.to_string_lossy()])
-        .output()
-        .unwrap();
+    let out = common::cli(&["clean", &run.to_string_lossy()], &t.0, &[]);
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nothing passed validation"));
     assert!(!run.join("clean.log").exists());
@@ -337,14 +353,11 @@ fn dry_run_quotes_paths_and_lists_fixed_commands() {
         format!(r#"{{"items": [{items}]}}"#),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["clean", "--dry-run", &run.to_string_lossy()])
-        .output()
-        .unwrap();
+    let out = common::cli(&["clean", "--dry-run", &run.to_string_lossy()], &t.0, &[]);
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     let quoted = format!("'{}'", odd_s.replace('\'', r"'\''"));
-    assert!(plan.contains(&format!("\ndelete {quoted}\n")), "{plan}");
+    assert!(plan.contains(&format!("\nmv -- {quoted} ")), "{plan}");
     assert!(plan.contains("\ndocker system prune -f\n"), "{plan}");
     assert!(odd.exists());
 }
@@ -372,15 +385,13 @@ fn dry_run_names_the_owning_repo_of_a_linked_worktree() {
         format!(r#"{{"items": [{}]}}"#, selection_item("worktree", &wt_s)),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["clean", "--dry-run", &run.to_string_lossy()])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .unwrap();
+    let out = common::cli(&["clean", "--dry-run", &run.to_string_lossy()], root, &[]);
     let plan = String::from_utf8_lossy(&out.stdout);
     let repo_s = repo.to_string_lossy();
     assert!(
-        plan.contains(&format!("\ngit -C {repo_s} worktree remove {wt_s}\n")),
+        plan.contains(&format!(
+            "\n# can't be undone:\ngit -C {repo_s} worktree remove {wt_s}\n"
+        )),
         "{plan}"
     );
     assert!(
@@ -407,12 +418,12 @@ fn worker_writes_one_event_per_outcome() {
     let doomed = root.join("doomed");
     fs::create_dir_all(doomed.join("a")).unwrap();
     fs::write(doomed.join("a/file"), vec![1u8; 10_000]).unwrap();
-    let stuck = root.join("stuck");
-    fs::create_dir_all(stuck.join("locked")).unwrap();
-    fs::write(stuck.join("locked/file"), b"x").unwrap();
+    let stuck = root.join("pinned/stuck");
+    fs::create_dir_all(&stuck).unwrap();
+    fs::write(stuck.join("file"), b"x").unwrap();
     common::sh(
         root,
-        "chmod 555 stuck/locked && git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q -b gone ../gone main && git worktree add -q -b dirty ../dirty main && echo b >../dirty/b",
+        "chmod 555 pinned && git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q -b gone ../gone main && git worktree add -q -b dirty ../dirty main && echo b >../dirty/b",
     );
     let p = |x: &Path| x.to_string_lossy().into_owned();
     let (gone, dirty) = (root.join("gone"), root.join("dirty"));
@@ -436,14 +447,10 @@ fn worker_writes_one_event_per_outcome() {
         format!(r#"{{"items": [{items}]}}"#),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["clean", &p(&run)])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .unwrap();
+    let out = common::cli(&["clean", &p(&run)], root, &[]);
     assert!(out.status.success());
     wait_done(&run);
-    common::sh(root, "chmod 755 stuck/locked");
+    common::sh(root, "chmod 755 pinned");
 
     let events: Vec<serde_json::Value> = fs::read_to_string(run.join("clean.events"))
         .unwrap()
@@ -465,18 +472,20 @@ fn worker_writes_one_event_per_outcome() {
         (&2.into(), &2.into(), &0.into(), &(4 * 4096).into())
     );
     assert!(started["free"].as_i64().unwrap() > 0);
-    let removed = named("removed");
-    assert_eq!(removed.len(), 1);
-    assert_eq!(removed[0]["path"], p(&doomed));
-    assert_eq!(removed[0]["bytes"], 4096);
-    assert!(removed[0]["secs"].is_number());
+    assert!(
+        named("removed").is_empty(),
+        "held paths are never reported removed"
+    );
+    let held = named("held");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["path"], p(&doomed));
+    assert_eq!(held[0]["bytes"], 4096);
+    let held_path = held[0]["held_path"].as_str().unwrap();
+    assert!(Path::new(held_path).join("a/file").exists());
     let failed = named("failed");
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0]["path"], p(&stuck));
-    assert_eq!(
-        failed[0]["reason"],
-        "still present after removal: permission denied"
-    );
+    assert_eq!(failed[0]["reason"], "not held: permission denied");
     let worktrees = named("worktree");
     assert_eq!(worktrees.len(), 2);
     assert_eq!(worktrees[0]["path"], p(&gone));
@@ -494,17 +503,21 @@ fn worker_writes_one_event_per_outcome() {
     );
     let done = events.last().unwrap();
     assert_eq!(done["event"], "done");
-    assert_eq!(done["removed"], 2);
-    assert_eq!(done["removed_bytes"], 2 * 4096, "{done}");
+    assert_eq!(done["removed"], 1);
+    assert_eq!(done["removed_bytes"], 4096, "{done}");
+    assert_eq!(done["held"], 1);
+    assert_eq!(done["held_bytes"], 4096);
+    assert!(done["hold_until"].as_i64().unwrap() > 1_700_000_000);
     assert_eq!(done["free_before"], started["free"]);
     assert!(done["free_after"].is_i64());
     assert!(events.iter().all(|e| e["elapsed_ms"].is_u64()));
     let log = fs::read_to_string(run.join("clean.log")).unwrap();
     assert!(
-        log.contains(&format!("FAILED  {} (still present, exit 1)", p(&stuck))),
+        log.contains(&format!("NOT HELD {} (permission denied)", p(&stuck))),
         "{log}"
     );
-    assert!(log.contains("removed: 2 items, 8192 bytes"), "{log}");
+    assert!(log.contains("removed: 1 items, 4096 bytes"), "{log}");
+    assert!(log.contains("held: 1 items, 4096 bytes"), "{log}");
     assert!(!doomed.exists() && !gone.exists() && dirty.exists() && stuck.exists());
 }
 
@@ -607,7 +620,7 @@ fn a_symlink_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
 }
 
 #[test]
-fn a_leaf_symlink_is_unlinked_never_followed() {
+fn a_leaf_symlink_is_moved_itself_never_followed() {
     let home_t = common::temp_dir("leaf-home");
     let decoy_t = common::temp_dir("leaf-decoy");
     let home = &home_t.0;
@@ -627,6 +640,14 @@ fn a_leaf_symlink_is_unlinked_never_followed() {
     assert!(out.status.success());
     assert!(fs::symlink_metadata(&link).is_err(), "the link itself goes");
     assert!(decoy_t.0.join("precious").exists(), "its target stays");
+    let held = disk_clean::hold::read(&disk_clean::hold::dir_of(&text(home), &run));
+    assert_eq!(held.len(), 1);
+    assert!(
+        fs::symlink_metadata(&held[0].held)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 #[test]
@@ -733,7 +754,7 @@ fn duplicate_selection_paths_are_planned_once() {
     let out = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
     let plan = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
-        plan.matches(&format!("delete {}\n", text(&dir))).count(),
+        plan.matches(&format!("mv -- {} ", text(&dir))).count(),
         1,
         "{plan}"
     );
