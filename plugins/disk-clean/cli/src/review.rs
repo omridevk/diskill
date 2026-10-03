@@ -674,6 +674,22 @@ fn finished_run(dir: &Path) -> Option<(Value, Live)> {
     Some((data, live))
 }
 
+pub(crate) fn approved_page(dir: &Path, token: &str) -> Option<String> {
+    let (mut data, _) = finished_run(dir)?;
+    let selection: Value = std::fs::read(dir.join("selection.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())?;
+    let paths: Vec<Value> = selection
+        .get("items")?
+        .as_array()?
+        .iter()
+        .filter_map(|i| i.get("path").cloned())
+        .collect();
+    data["approved"] = json!(true);
+    data["selection"] = json!(paths);
+    Some(render(&data, token))
+}
+
 fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(u16, String)> {
     let token = token();
     let pages = Arc::new(Pages {

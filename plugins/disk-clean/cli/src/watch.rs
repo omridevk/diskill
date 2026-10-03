@@ -1,4 +1,4 @@
-use crate::review::{constant_eq, query_token, respond};
+use crate::review::{approved_page, constant_eq, query_token, respond};
 use crate::util;
 use serde_json::Value;
 use std::fs;
@@ -100,7 +100,7 @@ fn stream_events(out: &mut TcpStream, path: &Path) {
     }
 }
 
-fn handle(stream: TcpStream, token: &str, events: &Path, clients: &Mutex<Clients>) {
+fn handle(stream: TcpStream, token: &str, dir: &Path, clients: &Mutex<Clients>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let Ok(mut write) = stream.try_clone() else {
         return;
@@ -128,13 +128,23 @@ fn handle(stream: TcpStream, token: &str, events: &Path, clients: &Mutex<Clients
             "text/plain",
             b"read only",
         );
+    } else if route == "/" {
+        match approved_page(dir, token) {
+            Some(html) => respond(
+                &mut write,
+                "200 OK",
+                "text/html; charset=utf-8",
+                html.as_bytes(),
+            ),
+            None => respond(&mut write, "404 Not Found", "text/plain", b"not found"),
+        }
     } else if route != "/events" {
         respond(&mut write, "404 Not Found", "text/plain", b"not found");
     } else if !constant_eq(query_token(target).as_bytes(), token.as_bytes()) {
         respond(&mut write, "403 Forbidden", "text/plain", b"forbidden");
     } else {
         lock(clients).open += 1;
-        stream_events(&mut write, events);
+        stream_events(&mut write, &dir.join("clean.events"));
         let mut c = lock(clients);
         c.open -= 1;
         c.last = Instant::now();
@@ -160,11 +170,11 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
         open: 0,
         last: began,
     }));
-    let (events, accepted) = (dir.join("clean.events"), Arc::clone(&clients));
+    let (served, accepted) = (dir.clone(), Arc::clone(&clients));
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let (token, events, clients) = (token.clone(), events.clone(), Arc::clone(&accepted));
-            std::thread::spawn(move || handle(stream, &token, &events, &clients));
+            let (token, dir, clients) = (token.clone(), served.clone(), Arc::clone(&accepted));
+            std::thread::spawn(move || handle(stream, &token, &dir, &clients));
         }
     });
     loop {

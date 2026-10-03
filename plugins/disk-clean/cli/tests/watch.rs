@@ -202,3 +202,47 @@ fn watch_needs_its_token_and_port() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn watch_serves_the_approved_page_for_a_reload() {
+    let t = common::temp_dir("watch-page");
+    let run = t.0.join("run");
+    fs::create_dir_all(&run).unwrap();
+    let rows = [
+        "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/a\t/h/Library/Caches/a\t2048\tnote\t3\texact",
+        "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/b\t/h/Library/Caches/b\t4096\tnote\t-\texact",
+    ];
+    fs::write(run.join("scan.tsv"), rows.join("\n") + "\n").unwrap();
+    fs::write(
+        run.join("selection.json"),
+        r#"{"items":[{"path":"/h/Library/Caches/b","bytes":4096}],"total_bytes":4096}"#,
+    )
+    .unwrap();
+    let port = free_port();
+    let mut child = watch(&run, port, &[("DISK_CLEAN_WATCH_START", "5")]);
+
+    let mut s = connect(port);
+    s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.0 200"), "{out}");
+    let (_, rest) = out
+        .split_once(r#"<script id="disk-clean-data" type="application/json">"#)
+        .expect("data script");
+    let (json, _) = rest.split_once("</script>").expect("script end");
+    let data: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(data["approved"], true);
+    assert_eq!(
+        data["selection"],
+        serde_json::json!(["/h/Library/Caches/b"])
+    );
+    assert_eq!(data["categories"][0]["items"].as_array().unwrap().len(), 2);
+    assert!(out.contains(&format!(
+        r#"<meta name="disk-clean-token" content="{TOKEN}""#
+    )));
+
+    fs::remove_file(run.join("selection.json")).unwrap();
+    assert_eq!(request(port, "GET / HTTP/1.1\r\n\r\n"), 404);
+    let _ = child.kill();
+    let _ = child.wait();
+}
