@@ -54,16 +54,7 @@ function DoneText({progress}: {progress: CleanupProgress}) {
 function BarText({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
   const {cleanup, plan} = progress
   if (cleanup.done) return <DoneText progress={progress} />
-  if (!cleanup.started) {
-    return (
-      <>
-        <span aria-hidden className="t-shimmer" data-text={WAITING}>
-          {WAITING}
-        </span>
-        <span className="sr-only">{WAITING}</span>
-      </>
-    )
-  }
+  if (!cleanup.started) return <span className="t-pulse">{WAITING}</span>
   if (lost) return 'Reconnecting…'
   const last = progress.outcomes.at(-1)
   return (

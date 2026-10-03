@@ -325,6 +325,19 @@
   .t-shimmer::before { animation: none !important; }
 }
 
+.t-pulse {
+  display: inline-block;
+  animation: t-pulse var(--shimmer-dur) ease-in-out infinite alternate;
+}
+@keyframes t-pulse {
+  from { opacity: 1; }
+  to   { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-pulse { animation: none; }
+}
+
 /* 16 Tabs sliding */
 .t-tabs {
   position: relative;

@@ -69,6 +69,11 @@ folded into a count.
   (Problem beats, D4/D5); several of them in one batch share one beat with a 40 ms stagger.
 - `free` samples coalesce: only the latest pending sample is used, tweened inside whatever beat is
   scheduled. If no beat is scheduled within 500 ms of a sample, it gets its own gauge-only beat.
+- Events already in the log when the film opens (opened after or mid cleanup, or on Replay) are
+  the backlog. It plays back in batches of the worker's own timing: each batch takes the events
+  within 1 s of `elapsed_ms` of its first event, so a backlog plays as the Single / Stack / Flood
+  beats it would have had live, not as one catch-up Flood. Events arriving after the film opened
+  follow the live rule above.
 - While `document.hidden`, the scheduler does not build beats (rAF is stopped, so GSAP is frozen);
   events keep updating the data. On `visibilitychange` to visible, everything pending becomes one
   Flood beat.
@@ -94,7 +99,7 @@ Trigger: `waiting` (worker events file not there yet; Claude is showing the dry 
 
 | # | Beat (term) | On screen | Duration / ease | Stagger | Reduced motion | Performance |
 | --- | --- | --- | --- | --- | --- | --- |
-| W1 | **Skeleton / Shimmer** (existing `t-shimmer`) | "Waiting for the deletion to start" in the shimmer, under the approved total; no counter, no bar, nothing that looks like progress | 2000 ms linear loop (`--shimmer-dur`), CSS | none | Plain text, no sheen (existing rule) | CSS animation off the main thread; class removed on `started`, so it stops |
+| W1 | **Pulse** (`t-pulse`) | "Waiting for the deletion to start" breathes between full and 45 % opacity, under the approved total; no counter, no bar, nothing that looks like progress | 2000 ms (`--shimmer-dur`) `ease-in-out`, alternate, CSS | none | Plain text, no pulse | Opacity only, so it runs on the compositor. The `t-shimmer` sweep animated `background-position` under `background-clip: text`, a repaint every frame (~27 % of a core in Firefox), and any mask that softens a transform sweep also forces repaints; class removed on `started`, so it stops |
 | W2 | **Idle animation** (the film itself) | Film keeps burning; nothing else moves | until `started` (watcher gives up after 30 min) | none | none | Same single loop as A4 |
 
 ## Act 3: Deleting
@@ -130,15 +135,15 @@ planned bytes); the finale shows `reclaimed`, never the plan.
 | F1 | **Exit** of the stage | Card slot, section rows, command strip leave: fade, y −8 px, blur 2 px. Trays stay if non-empty (they slide to the stats area in F5) | 350 ms (`--duration-medium`), `smooth-out` | 30 ms | Stage list stays; finale numbers appear above it | transform/opacity; one-shot 2 px blur |
 | F2 | **Crossfade** of the film to its still frame | Film lowers to 0.45 opacity and stops burning on its final frame | 1000 ms, `power1.out`; `running` false at the end | none | none (no film) | After this no WebGL loop runs (`still()` path in `useCanvasRenderer`) |
 | F3 | **Fade in** + **Translate** of "You freed" (SplitText words) | Small heading above the figure | 500 ms, `smooth-out`, y 12 px, blur 3 px | 40 ms per word | Text | SplitText words, reverted after |
-| F4 | ParticleText gather, then **Crossfade** to DOM text | `formatBytes(reclaimed)` assembles from particles at 96 px, then is swapped for the same text in DOM | gather 1600 ms (`--gather-dur`, component's own ease-out cubic); crossfade 250 ms `smooth-out` | component's own particle stagger | Number shown | ParticleText canvas unmounted after the crossfade: its loop would otherwise never stop |
+| F4 | ParticleText gather, then **Crossfade** to DOM text | `formatBytes(reclaimed)` assembles from particles at 96 px, then is swapped for the same text in DOM | gather 1600 ms (`--gather-dur`) including the component's 420 ms particle stagger, so the last particle lands as the crossfade starts; both scale with the take's speed; crossfade 250 ms `smooth-out` | component's own particle stagger | Number shown | `glow` off: canvas `shadowBlur` on every particle cost 110 to 150 ms a frame in Firefox, so the particles never converged and GSAP's lag smoothing stalled the finale. DOM figure has no letter-spacing so it matches the canvas text. ParticleText canvas unmounted after the crossfade: its loop would otherwise never stop |
 | F5 | **Continuity transition** before→after disk bars | Two bars: before (static), after animates from the before split to the final one; a bracket over the freed span draws itself (**Line drawing**) | bar 900 ms `power3.inOut`; bracket 350 ms `power3.inOut` after the bar | none | Two static bars with figures | `scaleX` only; bracket DrawSVG |
 | F6 | **Stagger** of stats + **Number ticker** | Six tiles: items removed, sections, biggest item (label + size), time taken (`done` elapsed), kept, not removed; kept/failed tiles expand into their trays' lists on click (instant, no animation: user-driven, frequent) | tiles 500 ms `smooth-out` y 12 px; tickers 800 ms `power3.out` | 40 ms per tile | Static tiles | Six text tickers, then idle |
 | F7 | **Marquee**, one pass, no loop (credits roll) | Every removed path, grouped by section, rolls upward through a masked window; ends on "and that's everything" and stops (no loop) | `y` of one list container, `none` ease, 60 px/s, clamped to 8 to 45 s (long lists roll faster); starts 300 ms after F6 | none | Full list, plain, scrollable | One translated layer; static gradient mask (not animated); user scroll or wheel on it kills the tween and leaves a normal scroll list |
-| F8 | **Fade in** of Replay | "Replay" button under the stats | 250 ms (`--duration-fast`), `smooth-out` | none | Hidden (no film to replay) | Replay: `tl.seek(0).play()` at `timeScale(1.5)`; Shredder/ParticleText beats re-run through their `tl.call`s; trays and list are rebuilt from the data, not the timeline |
+| F8 | **Fade in** of Replay | "Replay" button under the stats | 250 ms (`--duration-fast`), `smooth-out` | none | Hidden (no film to replay) | Replay remounts the film (a new take keyed by a counter) and plays the whole log again at `timeScale(1.5)`. Seeking the master timeline back does not work: its tweens are `immediateRender: false` (beats are appended live), and GSAP leaves such tweens at their end values when the playhead rewinds past them, so the finale stayed on top of the stage |
 
 **Settled** = F7 finished (or was killed by the user) and F4's crossfade done. Checks at that
 point: `tl.isActive()` false, `gsap.globalTimeline.getChildren(true, true, false)` has no active
-tween, no `t-shimmer` element, BurningFilm `running` false, no ParticleText or Shredder canvas in
+tween, no `t-pulse` element, BurningFilm `running` false, no ParticleText or Shredder canvas in
 the DOM, EventSource closed. Nothing draws on an idle tab.
 
 ## Storyboard
@@ -159,7 +164,7 @@ ACT 2  WAITING                                   (until `started`)
 ┌───────────────────────────────┐
 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
 │           42.1 GB             │
-│  Waiting for the deletion to  │   ← shimmer only, no bar, no counter
+│  Waiting for the deletion to  │   ← pulse only, no bar, no counter
 │            start              │
 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
 └───────────────────────────────┘

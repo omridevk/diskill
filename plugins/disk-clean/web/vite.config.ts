@@ -15,6 +15,14 @@ export default defineConfig({
   build: {outDir: '../cli/assets', emptyOutDir: false},
   test: {
     include: ['src/**/*.test.tsx'],
-    browser: {enabled: true, headless: true, provider: playwright(), instances: [{browser: 'chromium', viewport: {width: 1440, height: 960}}]},
+    browser: {
+      enabled: true,
+      headless: true,
+      provider: playwright(),
+      instances: [
+        {browser: 'chromium', viewport: {width: 1440, height: 960}},
+        {browser: 'firefox', viewport: {width: 1440, height: 960}, include: ['src/film.test.tsx']},
+      ],
+    },
   },
 })

@@ -43,7 +43,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter disk-clean-review exec playwright install chromium-headless-shell
+      - run: pnpm --filter disk-clean-review exec playwright install chromium-headless-shell firefox
       - run: pnpm --filter disk-clean-review test
       - run: pnpm --filter disk-clean-review run build
       - name: committed page.html matches the source

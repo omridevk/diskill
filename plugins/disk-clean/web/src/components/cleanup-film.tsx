@@ -4,7 +4,7 @@ import {useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode} f
 import {Button} from '@/components/ui/button'
 import {formatDuration, outcomes, totalsOf, type Cleanup, type FilmPlan, type Outcome, type Totals} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
-import {createFilm, pump, replay, type Film as FilmState} from '@/lib/film'
+import {createFilm, pump, type Film as FilmState} from '@/lib/film'
 import {cssMs} from '@/lib/motion'
 import {DISK_COLORS} from './disk-donut'
 import {BurningFilm} from './radiant/burning-film'
@@ -14,6 +14,8 @@ import Shredder from './react-bits/shredder'
 const WAITING = 'Waiting for the deletion to start'
 const CARDS = 8
 const SHRED_FALL = 90
+const REPLAY_SPEED = 1.5
+const PARTICLE_STAGGER = 420
 
 interface FilmProps {
   plan: FilmPlan
@@ -291,7 +293,27 @@ function Stage({plan, cleanup, shred}: {plan: FilmPlan; cleanup: Cleanup; shred:
   )
 }
 
-function Finale({plan, cleanup, particles, onReplay}: {plan: FilmPlan; cleanup: Cleanup; particles: boolean; onReplay: () => void}) {
+function Particles({text, speed}: {text: string; speed: number}) {
+  const gather = cssMs('--gather-dur', 1600)
+  return (
+    <ParticleText
+      text={text}
+      fontFamily="'Geist Variable'"
+      fontSize={96}
+      fontWeight={700}
+      particleSize={2.2}
+      density={2}
+      color="#f5f8ff"
+      highlightColor="#a9c8f0"
+      glow={false}
+      gatherDuration={(gather - PARTICLE_STAGGER) / speed}
+      stagger={PARTICLE_STAGGER / speed}
+      style={{minHeight: 0, height: 320}}
+    />
+  )
+}
+
+function Finale({plan, cleanup, particles, speed, onReplay}: {plan: FilmPlan; cleanup: Cleanup; particles: boolean; speed: number; onReplay: () => void}) {
   const totals = totalsOf(outcomes(plan, cleanup.log), cleanup.done)
   if (!cleanup.done) return null
   return (
@@ -301,24 +323,11 @@ function Finale({plan, cleanup, particles, onReplay}: {plan: FilmPlan; cleanup: 
           You freed
         </h2>
         <div className="relative grid h-24 w-full place-items-center">
-          <div data-film="freed" className="text-[96px] leading-none font-bold tracking-tighter tabular-nums opacity-0">
+          <div data-film="freed" className="text-[96px] leading-none font-bold tabular-nums opacity-0">
             {formatBytes(totals.reclaimed)}
           </div>
           <div data-film="particles" aria-hidden className="pointer-events-none absolute inset-x-0 -top-28 h-[320px]">
-            {particles && (
-              <ParticleText
-                text={formatBytes(totals.reclaimed)}
-                fontFamily="'Geist Variable'"
-                fontSize={96}
-                fontWeight={700}
-                particleSize={2.2}
-                density={2}
-                color="#f5f8ff"
-                highlightColor="#a9c8f0"
-                gatherDuration={cssMs('--gather-dur', 1600)}
-                style={{minHeight: 0, height: 320}}
-              />
-            )}
+            {particles && <Particles text={formatBytes(totals.reclaimed)} speed={speed} />}
           </div>
         </div>
         <Bars plan={plan} done={cleanup.done} reclaimed={totals.reclaimed} />
@@ -336,7 +345,7 @@ function Finale({plan, cleanup, particles, onReplay}: {plan: FilmPlan; cleanup: 
   )
 }
 
-function useFilm(plan: FilmPlan, cleanup: Cleanup) {
+function useFilm(plan: FilmPlan, cleanup: Cleanup, speed: number) {
   const root = useRef<HTMLDivElement>(null)
   const latest = useRef(cleanup)
   const film = useRef<FilmState | null>(null)
@@ -357,7 +366,8 @@ function useFilm(plan: FilmPlan, cleanup: Cleanup) {
         current.flood = latest.current.log.length > current.processed
         pump(current, latest.current)
       })
-      film.current = createFilm(root.current, plan, {shred: setShred, particles: setParticles, running: setRunning}, tail, ready)
+      film.current = createFilm(root.current, plan, {shred: setShred, particles: setParticles, running: setRunning}, tail, ready, speed)
+      film.current.backlog = latest.current.log.length
       document.addEventListener('visibilitychange', visible)
       return () => document.removeEventListener('visibilitychange', visible)
     },
@@ -367,14 +377,11 @@ function useFilm(plan: FilmPlan, cleanup: Cleanup) {
     latest.current = cleanup
     contextSafe(() => pump(film.current, cleanup))()
   }, [cleanup, contextSafe])
-  const onReplay = () => {
-    if (film.current) replay(film.current)
-  }
-  return {root, shred, particles, running, onReplay}
+  return {root, shred, particles, running}
 }
 
-function Film({plan, cleanup}: FilmProps) {
-  const {root, shred, particles, running, onReplay} = useFilm(plan, cleanup)
+function Take({plan, cleanup, speed, onReplay}: FilmProps & {speed: number; onReplay: () => void}) {
+  const {root, shred, particles, running} = useFilm(plan, cleanup, speed)
   const waiting = cleanup.keys.has('waiting') && !cleanup.started
   return (
     <div ref={root} className="fixed inset-0 isolate z-50 overflow-hidden text-foreground">
@@ -394,15 +401,22 @@ function Film({plan, cleanup}: FilmProps) {
           </p>
         </div>
         <p data-film="waiting" className="text-sm opacity-0">
-          <span className={waiting ? 't-shimmer' : undefined} data-text={WAITING}>
-            {WAITING}
-          </span>
+          <span className={waiting ? 't-pulse' : undefined}>{WAITING}</span>
         </p>
       </section>
       <Stage plan={plan} cleanup={cleanup} shred={shred} />
-      <Finale plan={plan} cleanup={cleanup} particles={particles} onReplay={onReplay} />
+      <Finale plan={plan} cleanup={cleanup} particles={particles} speed={speed} onReplay={onReplay} />
     </div>
   )
+}
+
+function Film({plan, cleanup, onReplay}: FilmProps & {onReplay: () => void}) {
+  const [take, setTake] = useState(0)
+  const replay = () => {
+    setTake(take + 1)
+    onReplay()
+  }
+  return <Take key={take} plan={plan} cleanup={cleanup} speed={take === 0 ? 1 : REPLAY_SPEED} onReplay={replay} />
 }
 
 export function CleanupFilm({plan, cleanup, onClose}: {plan: FilmPlan; cleanup: Cleanup; onClose: () => void}) {
@@ -417,7 +431,7 @@ export function CleanupFilm({plan, cleanup, onClose}: {plan: FilmPlan; cleanup: 
   }, [onClose])
   return (
     <div role="dialog" aria-modal="true" aria-label="Cleanup movie" className="fixed inset-0 z-50">
-      <Film plan={plan} cleanup={cleanup} />
+      <Film plan={plan} cleanup={cleanup} onReplay={() => close.current?.focus()} />
       <Button ref={close} variant="secondary" size="sm" className="absolute top-4 right-4 z-[60]" onClick={onClose}>
         <X /> Close
       </Button>

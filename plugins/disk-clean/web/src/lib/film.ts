@@ -19,6 +19,7 @@ const SHRED = 1.4
 const WAIT_HOLD = 1.5
 const CREDITS_SPEED = 60
 const WRITE_EVERY_MS = 50
+const BATCH_MS = 1000
 
 export interface Tokens {
   fast: number
@@ -85,6 +86,7 @@ export interface Film {
   slot: Point
   pool: number
   processed: number
+  backlog: number
   ready: boolean
   flood: boolean
   started: boolean
@@ -425,11 +427,15 @@ function finaleBeat(film: Film, reclaimed: number) {
   tl.fromTo(part(film, 'particles'), {opacity: 1}, {opacity: 0, duration: tokens.fast, ease: 'smooth-out'}, swapped)
   tl.call(film.set.particles, [false], swapped + tokens.fast)
   const bars = gather + 0.4
-  tl.fromTo(part(film, 'bars'), {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out'}, bars)
   const after = part(film, 'after-used')
-  if (after) tl.fromTo(after, {scaleX: Number(after.dataset.from)}, {scaleX: Number(after.dataset.to), duration: 0.9, ease: 'power3.inOut'}, bars + 0.2)
-  draw(film, one(film, '[data-film="bracket"] path'), '0%', '100%', bars + 1.1)
+  const bracket = part(film, 'bracket')
   const tiles = all(film, '[data-film="tile"]')
+  tl.set([part(film, 'bars'), ...tiles], {opacity: 0}, shown)
+  if (bracket) tl.set(bracket, {clipPath: 'inset(-2px 100% -2px -2px)'}, shown)
+  if (after) tl.set(after, {scaleX: Number(after.dataset.from)}, shown)
+  tl.fromTo(part(film, 'bars'), {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out'}, bars)
+  if (after) tl.fromTo(after, {scaleX: Number(after.dataset.from)}, {scaleX: Number(after.dataset.to), duration: 0.9, ease: 'power3.inOut'}, bars + 0.2)
+  if (bracket) tl.fromTo(bracket, {clipPath: 'inset(-2px 100% -2px -2px)'}, {clipPath: 'inset(-2px 0% -2px -2px)', clearProps: 'clipPath', duration: 0.35, ease: 'power3.inOut'}, bars + 1.1)
   const stats = swapped + tokens.fast
   tl.fromTo(tiles, {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, stats)
   for (const value of all(film, '[data-ticker]')) {
@@ -468,21 +474,35 @@ function build(film: Film, cleanup: Cleanup, pending: CleanupEvent[]) {
   const types = new Set(pending.map(e => e.type))
   openingBeats(film, cleanup, types)
   if (!film.started) return
-  film.gauges.free = cleanup.free?.free ?? film.gauges.free
+  const sample = pending.findLast(e => e.type === 'free')
+  if (sample?.type === 'free') film.gauges.free = sample.data.free
   const done = types.has('done') ? cleanup.done : null
   workBeats(film, outcomesOf(film, pending), film.flood || done !== null)
   if (done) finaleBeat(film, Math.max(0, done.reclaimed))
   film.flood = false
 }
 
+function elapsedOf(event: CleanupEvent | undefined) {
+  return event && 'elapsed_ms' in event.data ? event.data.elapsed_ms : 0
+}
+
+function nextBatch(film: Film, log: readonly CleanupEvent[]) {
+  if (film.flood || film.processed >= film.backlog) return log.slice(film.processed)
+  const first = elapsedOf(log[film.processed])
+  let end = film.processed + 1
+  while (end < film.backlog && elapsedOf(log[end]) - first < BATCH_MS) end++
+  return log.slice(film.processed, end)
+}
+
 export function pump(film: Film | null, cleanup: Cleanup, fromTail = false) {
-  if (!film?.ready || film.finished || document.hidden) return
+  if (!film?.ready || document.hidden) return
   if (film.tl.isActive() && !fromTail) return
-  const pending = cleanup.log.slice(film.processed)
-  if (pending.length === 0) return
-  film.processed = cleanup.log.length
   const before = film.tl.duration()
-  build(film, cleanup, pending)
+  while (!film.finished && film.processed < cleanup.log.length && film.tl.duration() <= before) {
+    const pending = nextBatch(film, cleanup.log)
+    film.processed += pending.length
+    build(film, cleanup, pending)
+  }
   if (film.tl.duration() <= before) return
   film.tl.call(() => film.onTail(), [], film.tl.duration())
   film.tl.play()
@@ -490,7 +510,7 @@ export function pump(film: Film | null, cleanup: Cleanup, fromTail = false) {
 
 function openingAct(film: Film) {
   const {tokens} = film
-  const act = gsap.timeline({onComplete: () => film.onReady()})
+  const act = gsap.timeline({onComplete: () => film.onReady()}).timeScale(film.tl.timeScale())
   act.fromTo(part(film, 'backdrop'), {opacity: 0}, {opacity: 1, duration: tokens.filmFade, ease: 'power1.out'}, 0)
   act.fromTo(part(film, 'total'), {opacity: 0, scale: 0.96}, {opacity: 1, scale: 1, duration: tokens.verySlow, ease: 'smooth-out'}, 0)
   const caption = part(film, 'caption')
@@ -500,10 +520,9 @@ function openingAct(film: Film) {
   }
 }
 
-export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTail: () => void, onReady: () => void): Film {
+export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTail: () => void, onReady: () => void, speed = 1): Film {
   registerEases()
-  const tl = gsap.timeline({paused: true, defaults: {immediateRender: false}})
-  tl.call(set.running, [true], 0)
+  const tl = gsap.timeline({paused: true, defaults: {immediateRender: false}}).timeScale(speed)
   const film: Film = {
     tl,
     root,
@@ -515,6 +534,7 @@ export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTa
     slot: {x: 0, y: 0},
     pool: -1,
     processed: 0,
+    backlog: 0,
     ready: false,
     flood: false,
     started: false,
@@ -525,11 +545,4 @@ export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTa
   }
   openingAct(film)
   return film
-}
-
-export function replay(film: Film) {
-  delete film.root.dataset.settled
-  const credits = part(film, 'credits')
-  if (credits) credits.scrollTop = 0
-  film.tl.timeScale(1.5).seek(0).play()
 }
