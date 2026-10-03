@@ -1,10 +1,11 @@
-import {defineChart, type ChartPoint} from '@tanstack/charts'
+import {defineChart, findNearestPoint, type ChartFocusStrategy, type ChartPoint, type ChartScene, type ChartValue} from '@tanstack/charts'
+import {whenFocused} from '@tanstack/charts/focus/mark'
 import {sunburst, type SunburstNode} from '@tanstack/charts/hierarchy/sunburst'
 import {treemap, type TreemapNode} from '@tanstack/charts/hierarchy/treemap'
 import {motion} from '@tanstack/charts/motion'
 import {polar} from '@tanstack/charts/polar'
 import {RendererChart as Chart} from '@tanstack/charts/react/tooltip'
-import {Fragment, useMemo, useState, type ReactNode} from 'react'
+import {Fragment, useMemo, useRef, useState, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {ChartBoundary} from './chart-boundary'
 import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './chart-card'
@@ -134,15 +135,21 @@ function Cleanable({bytes, count, selected, risk}: ReturnType<typeof cleanupInsi
   )
 }
 
-function BranchHighlight({node, parents, children}: {node: TreeNode | null; parents: Map<string, TreeNode>; children: ReactNode}) {
-  const lit: string[] = []
-  for (let n = node ?? undefined; n; n = parents.get(n.path)) lit.push(`.storage-chart[data-hovering] [data-ts-key$=":${CSS.escape(n.path)}"]`)
-  return (
-    <div className="storage-chart" data-hovering={node ? '' : undefined}>
-      {node && <style>{`${lit.join(',')} {opacity: 1}`}</style>}
-      {children}
-    </div>
-  )
+function branchFocus<T extends {id: string; ancestorIds: readonly string[]}, X extends ChartValue, Y extends ChartValue>(
+  scene: RefObject<ChartScene | null>,
+): ChartFocusStrategy<T, X, Y> {
+  return {
+    resolve: (points, {x, y, maxDistance}) => {
+      const hit = scene.current && findNearestPoint(scene.current, x, y, maxDistance)
+      const point = hit && points.find(p => p.key === hit.key)
+      return point ? [point] : []
+    },
+    group: (points, {point}) => {
+      const ancestors = new Set(point.datum.ancestorIds)
+      return [point, ...points.filter(p => p !== point && ancestors.has(p.datum.id))]
+    },
+    navigation: points => [...points].sort((a, b) => a.x - b.x || a.y - b.y),
+  }
 }
 
 function Reconciliation({data}: {data: ScanData}) {
@@ -183,68 +190,88 @@ function Reconciliation({data}: {data: ScanData}) {
   )
 }
 
+function storageDefinition(
+  flat: ReturnType<typeof flatten>,
+  tree: TreeNode,
+  shape: Shape,
+  focus: string,
+  cleanable: Set<string>,
+  scene: RefObject<ChartScene | null>,
+) {
+  const stroke = (node: {data: Row | null}) => (node.data && cleanable.has(node.data.id) ? '#fafafa' : '#0a0a0a')
+  const focusNode = flat.byPath.get(focus)
+  const hueOf = new Map((focusNode?.children ?? []).map((child, i) => [child.path, HUES[i % HUES.length] ?? 210]))
+  const fill = (branch: string, depth: number) => tone(hueOf.get(branch) ?? 210, depth)
+  const shared = {
+    scales: {x: null, y: null},
+    motion: {transition: {type: 'tween', duration: 480, easing: 'ease-in-out'}},
+    tooltip: CARD_TOOLTIP,
+    focusRing: false,
+  } as const
+  if (shape === 'sunburst') {
+    const rings = (className?: string) =>
+      polar({
+        marks: [
+          sunburst(flat.rows, {
+            id: 'storage-sunburst',
+            className,
+            nodeId: 'id',
+            parentId: 'parent',
+            value: 'value',
+            rootId: focus,
+            visibleDepth: 3,
+            innerRadius: ({radius}) => radius * 0.28,
+            fill: node => fill(node.branchId ?? node.id, node.depth),
+            stroke,
+            strokeWidth: 1,
+          }),
+        ],
+        scales: {angle: null, radius: null},
+      })
+    return defineChart({
+      marks: [rings('storage-base'), whenFocused(rings(), {match: 'group'})],
+      focus: branchFocus<SunburstNode<Row>, number, number>(scene),
+      ...shared,
+    })
+  }
+  return defineChart({
+    marks: [
+      treemap(subtree(flat.byPath.get(focus) ?? tree, 2), {
+        id: 'storage-treemap',
+        nodeId: 'id',
+        parentId: 'parent',
+        value: 'value',
+        method: squarifyInBounds,
+        fill: node => fill(node.ancestorIds[1] ?? node.id, node.depth),
+        label: node => node.data?.name ?? node.name,
+        labelFill: '#09090b',
+        radius: 3,
+        stroke,
+        strokeWidth: 1,
+        states: [{when: {focus: 'unmatched'}, style: {opacity: 0.28}, transition: {type: 'tween', duration: 250, easing: 'ease-out'}}],
+      }),
+    ],
+    focus: branchFocus<TreemapNode<Row>, string, number>(scene),
+    ...shared,
+  })
+}
+
+function useStorageDefinition(flat: ReturnType<typeof flatten> | null, tree: TreeNode | null, shape: Shape, focus: string, cleanable: Set<string>) {
+  const scene = useRef<ChartScene | null>(null)
+  const definition = useMemo(() => (flat && tree ? storageDefinition(flat, tree, shape, focus, cleanable, scene) : null), [flat, tree, shape, focus, cleanable])
+  const onRender = ({scene: rendered}: {scene: ChartScene}) => {
+    scene.current = rendered
+  }
+  return {definition, onRender}
+}
+
 export function Storage({data, cleanable, selection}: {data: ScanData; cleanable: Set<string>; selection: Selection}) {
   const [shape, setShape] = useState<Shape>('sunburst')
   const tree = data.tree
   const flat = useMemo(() => (tree ? flatten(tree) : null), [tree])
   const [focus, setFocus] = useState(tree?.path ?? '')
   const [hover, setHover] = useState<TreeNode | null>(null)
-
-  const definition = useMemo(() => {
-    if (!flat || !tree) return null
-    const stroke = (node: {data: Row | null}) => (node.data && cleanable.has(node.data.id) ? '#fafafa' : '#0a0a0a')
-    const focusNode = flat.byPath.get(focus)
-    const hueOf = new Map((focusNode?.children ?? []).map((child, i) => [child.path, HUES[i % HUES.length] ?? 210]))
-    const fill = (branch: string, depth: number) => tone(hueOf.get(branch) ?? 210, depth)
-    const shared = {
-      scales: {x: null, y: null},
-      motion: {transition: {type: 'tween', duration: 480, easing: 'ease-in-out'}},
-      tooltip: CARD_TOOLTIP,
-      focusRing: false,
-    } as const
-    if (shape === 'sunburst') {
-      return defineChart({
-        marks: [
-          polar({
-            marks: [
-              sunburst(flat.rows, {
-                id: 'storage-sunburst',
-                nodeId: 'id',
-                parentId: 'parent',
-                value: 'value',
-                rootId: focus,
-                visibleDepth: 3,
-                innerRadius: ({radius}) => radius * 0.28,
-                fill: node => fill(node.branchId ?? node.id, node.depth),
-                stroke,
-                strokeWidth: 1,
-              }),
-            ],
-            scales: {angle: null, radius: null},
-          }),
-        ],
-        ...shared,
-      })
-    }
-    return defineChart({
-      marks: [
-        treemap(subtree(flat.byPath.get(focus) ?? tree, 2), {
-          id: 'storage-treemap',
-          nodeId: 'id',
-          parentId: 'parent',
-          value: 'value',
-          method: squarifyInBounds,
-          fill: node => fill(node.ancestorIds[1] ?? node.id, node.depth),
-          label: node => node.data?.name ?? node.name,
-          labelFill: '#09090b',
-          radius: 3,
-          stroke,
-          strokeWidth: 1,
-        }),
-      ],
-      ...shared,
-    })
-  }, [flat, shape, focus, cleanable, tree])
+  const {definition, onRender} = useStorageDefinition(flat, tree, shape, focus, cleanable)
 
   if (!tree || !flat || !definition) {
     return <div className="p-10 text-center text-sm text-muted-foreground">No storage map in this run. Re-run the scan to build one.</div>
@@ -290,17 +317,18 @@ export function Storage({data, cleanable, selection}: {data: ScanData; cleanable
       </div>
       <div className="grid grid-cols-[minmax(0,1fr)_280px] gap-6">
         <ChartBoundary resetKey={`${shape}:${focus}`}>
-          <BranchHighlight node={hover} parents={flat.parents}>
+          <div className="storage-chart" data-hovering={hover !== null}>
             <Chart
               definition={definition}
               renderer={renderer}
               height={shape === 'sunburst' ? 520 : 480}
               ariaLabel={`Storage ${shape} of ${focusNode.path}`}
               onFocusChange={point => setHover(nodeOf(point))}
+              onRender={onRender}
               onSelect={drill}
               renderTooltipBody={({primaryPoint}) => <FolderCard node={nodeOf(primaryPoint ?? null)} parents={flat.parents} data={data} home={home} selection={selection} />}
             />
-          </BranchHighlight>
+          </div>
         </ChartBoundary>
         <aside className="flex flex-col gap-2 border-l pl-5">
           <div className="font-mono text-xs break-all text-muted-foreground">{shown.path}</div>

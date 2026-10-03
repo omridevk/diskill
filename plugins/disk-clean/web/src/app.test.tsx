@@ -107,9 +107,7 @@ describe('other tabs', () => {
     await screen.getByRole('tab', {name: 'Storage'}).click()
     const chart = screen.getByLabelText(/Storage sunburst/)
     await expect.element(chart).toBeVisible()
-    const sector = chart.element().querySelector('path')
-    if (!sector) throw new Error('the sunburst drew no sectors')
-    await userEvent.hover(page.elementLocator(sector))
+    await userEvent.hover(chart, {position: ringPoints(chart.element())(0.3125, 0).local})
     await expect.element(page.getByText('~/Library', {exact: true})).toBeVisible()
     await expect.element(page.getByText('of Home folder')).toBeVisible()
     await expect.element(page.getByText('of the disk')).toBeVisible()
@@ -117,11 +115,24 @@ describe('other tabs', () => {
     await expect.element(page.getByText('3.8 GB cleanable in 4 items · 3.8 GB selected')).toBeVisible()
     await expect.element(page.getByText('Click to zoom')).toBeVisible()
     await expect.element(page.getByText(/apparent sizes|^x /)).not.toBeInTheDocument()
+  })
+
+  test('hovering a sunburst slice lights it and its ancestors, dims the rest, and the card names only that slice', async () => {
+    const screen = await render(<App loaded={fixture} />)
+    await screen.getByRole('tab', {name: 'Storage'}).click()
+    const chart = screen.getByLabelText(/Storage sunburst/)
+    await expect.element(chart).toBeVisible()
+    const at = ringPoints(chart.element())
+    const caches = at(0.1875, 1)
+    await userEvent.hover(chart, {position: caches.local})
+    await expect.element(page.getByText('~/Library/Caches', {exact: true})).toBeVisible()
+    await expect.element(page.getByText('of Library')).toBeVisible()
+    await expect.element(page.getByText('~/Library', {exact: true})).not.toBeInTheDocument()
     await settle(cssMs('--duration-fast', 250) * 3)
-    await expect.element(page.getByText('~/Library', {exact: true})).toBeVisible()
-    const opacities = () => [...chart.element().querySelectorAll('path')].map(p => getComputedStyle(p).opacity)
-    expect(getComputedStyle(sector).opacity).toBe('1')
-    expect(opacities()).toContain('0.28')
+    expect(paintedOpacity(caches.client)).toBe(1)
+    expect(paintedOpacity(at(0.3125, 0).client)).toBe(1)
+    expect(paintedOpacity(at(0.5, 1).client)).toBeCloseTo(0.28)
+    expect(paintedOpacity(at(0.8125, 0).client)).toBeCloseTo(0.28)
   })
 
   test('hovering the disk donut names the segment with its size and share of the disk', async () => {
@@ -422,6 +433,27 @@ function emulateReducedMotion(value: 'reduce' | 'no-preference') {
 function frameOf(canvas: Element | null | undefined) {
   if (!(canvas instanceof HTMLCanvasElement)) throw new Error('no canvas')
   return canvas.toDataURL()
+}
+
+function ringPoints(chart: Element) {
+  const sectors = [...chart.querySelectorAll('.storage-base path')].map(p => p.getBoundingClientRect())
+  const right = Math.max(...sectors.map(r => r.right))
+  const top = Math.min(...sectors.map(r => r.top))
+  const bottom = Math.max(...sectors.map(r => r.bottom))
+  const radius = (bottom - top) / 2
+  const box = chart.getBoundingClientRect()
+  return (turn: number, ring: number) => {
+    const distance = radius * (0.28 + 0.36 * (ring + 0.5))
+    const x = right - radius + distance * Math.sin(turn * 2 * Math.PI)
+    const y = (top + bottom) / 2 - distance * Math.cos(turn * 2 * Math.PI)
+    return {client: {x, y}, local: {x: x - box.left, y: y - box.top}}
+  }
+}
+
+function paintedOpacity({x, y}: {x: number; y: number}) {
+  let opacity = 1
+  for (let node = document.elementFromPoint(x, y); node && node.tagName !== 'svg'; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity)
+  return opacity
 }
 
 function settle(ms: number) {
