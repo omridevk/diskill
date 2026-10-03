@@ -600,7 +600,11 @@ pub fn removable(path_s: &str, real: &[String]) -> Result<PathBuf, String> {
     }
 }
 
-pub fn remove(paths: &[String], out: &mut impl Write) -> std::io::Result<()> {
+pub fn remove(
+    paths: &[String],
+    out: &mut impl Write,
+    on_outcome: &mut dyn FnMut(&str, Option<&str>),
+) -> std::io::Result<()> {
     let real = real_cwds(&process_cwds());
     let mut touched: Vec<PathBuf> = Vec::new();
     for path_s in paths {
@@ -608,18 +612,24 @@ pub fn remove(paths: &[String], out: &mut impl Write) -> std::io::Result<()> {
             Ok(repo) => repo,
             Err(reason) => {
                 writeln!(out, "KEPT    {path_s} ({reason})")?;
+                on_outcome(path_s, Some(&reason));
                 continue;
             }
         };
         let (code, _, stderr) = git(&repo, &["worktree", "remove", path_s]);
         if code == 0 && !Path::new(path_s).exists() {
             writeln!(out, "removed worktree {path_s}")?;
+            on_outcome(path_s, None);
             if !touched.contains(&repo) {
                 touched.push(repo);
             }
         } else {
-            let reason = stderr.trim().lines().last().unwrap_or("?").to_string();
-            writeln!(out, "KEPT    {path_s} (git refused: {reason})")?;
+            let reason = format!(
+                "git refused: {}",
+                stderr.trim().lines().last().unwrap_or("?")
+            );
+            writeln!(out, "KEPT    {path_s} ({reason})")?;
+            on_outcome(path_s, Some(&reason));
         }
     }
     for repo in touched {

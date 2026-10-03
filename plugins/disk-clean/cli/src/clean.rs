@@ -1,14 +1,16 @@
 use crate::util;
 use crate::worktrees;
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::sync::{Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+const FREE_EVERY: Duration = Duration::from_millis(500);
 
 const COMMANDS: &[(&str, &str, &[&str])] = &[
     (
@@ -317,16 +319,7 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    // SAFETY: setsid is async-signal-safe and only detaches the child into its own session.
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let child = cmd.spawn()?;
+    let child = util::spawn_detached(&mut cmd)?;
     let pid = child.id();
     fs::write(dir.join("worker.pid"), format!("{pid}\n"))?;
 
@@ -337,97 +330,209 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     Ok(0)
 }
 
-fn remove_tree(path: &Path) -> bool {
+struct Events {
+    file: Option<Mutex<fs::File>>,
+    start: Instant,
+}
+
+impl Events {
+    fn open(dir: &Path) -> Events {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("clean.events"))
+            .ok();
+        Events {
+            file: file.map(Mutex::new),
+            start: Instant::now(),
+        }
+    }
+
+    fn emit(&self, event: &str, mut data: Value) {
+        data["event"] = json!(event);
+        data["elapsed_ms"] = json!(self.start.elapsed().as_millis() as u64);
+        if let Some(Ok(mut f)) = self.file.as_ref().map(Mutex::lock) {
+            let _ = f.write_all(format!("{data}\n").as_bytes());
+        }
+    }
+}
+
+fn planned_bytes(dir: &Path) -> HashMap<String, i64> {
+    let selection: Value = fs::read(dir.join("selection.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null);
+    selection
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let key = if item.get("action").and_then(Value::as_str) == Some("cmd") {
+                "cmd_id"
+            } else {
+                "path"
+            };
+            let value = item.get(key)?.as_str()?;
+            Some((value.to_string(), int_of(item.get("bytes"))))
+        })
+        .collect()
+}
+
+fn remove_tree(path: &Path) -> io::Result<()> {
     let Ok(meta) = fs::symlink_metadata(path) else {
-        return true;
+        return Ok(());
     };
     if !meta.is_dir() {
-        return fs::remove_file(path).is_ok();
+        return fs::remove_file(path);
     }
-    let mut ok = true;
+    let mut first = Ok(());
     match fs::read_dir(path) {
         Ok(entries) => {
             for entry in entries {
-                match entry {
-                    Ok(e) => ok &= remove_tree(&e.path()),
-                    Err(_) => ok = false,
-                }
+                let removed = entry.and_then(|e| remove_tree(&e.path()));
+                first = first.and(removed);
             }
         }
-        Err(_) => ok = false,
+        Err(e) => first = Err(e),
     }
-    fs::remove_dir(path).is_ok() && ok
+    let removed = fs::remove_dir(path);
+    first.and(removed)
 }
 
-fn rm_one(target: &str) -> String {
+fn rm_one(target: &str, bytes: i64, events: &Events) -> String {
     let start = Instant::now();
-    let ok = remove_tree(Path::new(target));
+    let result = remove_tree(Path::new(target));
     if fs::symlink_metadata(target).is_ok() {
+        let reason = match &result {
+            Err(e) => format!("still present after removal: {}", e.kind()),
+            Ok(()) => "still present after removal".to_string(),
+        };
+        events.emit(
+            "failed",
+            json!({"path": target, "bytes": bytes, "reason": reason}),
+        );
         format!(
             "FAILED  {target} (still present, exit {})",
-            if ok { 0 } else { 1 }
+            if result.is_ok() { 0 } else { 1 }
         )
     } else {
-        format!("removed {target}  ({}s)", start.elapsed().as_secs())
+        let secs = start.elapsed();
+        events.emit(
+            "removed",
+            json!({"path": target, "bytes": bytes, "secs": secs.as_secs_f64()}),
+        );
+        format!("removed {target}  ({}s)", secs.as_secs())
     }
 }
 
-fn run_logged(label: &str, program: &str, args: &[&str]) {
+fn run_logged(label: &str, program: &str, args: &[&str]) -> bool {
     println!("running {label}");
-    if let Err(e) = Command::new(program)
+    match Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .status()
     {
-        println!("{program}: {e}");
+        Ok(status) => status.success(),
+        Err(e) => {
+            println!("{program}: {e}");
+            false
+        }
     }
+}
+
+fn sample_free(events: &Events, stop: mpsc::Receiver<()>) {
+    while let Err(mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(FREE_EVERY) {
+        events.emit("free", json!({"free": util::free_bytes()}));
+    }
+}
+
+fn non_empty(dir: &Path, name: &str) -> Vec<String> {
+    util::read_lines(&dir.join(name))
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .collect()
 }
 
 pub fn worker(run_dir: &str) -> io::Result<i32> {
     let dir = Path::new(run_dir);
     let parallel = util::env_num("DISK_CLEAN_PARALLEL", 4usize).max(1);
+    let events = Events::open(dir);
     println!("started {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
 
-    let rm_list: Vec<String> = util::read_lines(&dir.join("rm-list"))
-        .into_iter()
-        .filter(|l| !l.is_empty())
-        .collect();
-    if !rm_list.is_empty() {
-        println!("deleting {} paths with {parallel} workers", rm_list.len());
-        let next = AtomicUsize::new(0);
-        let out = Mutex::new(io::stdout());
-        std::thread::scope(|s| {
-            for _ in 0..parallel {
-                s.spawn(|| {
-                    while let Some(target) = rm_list.get(next.fetch_add(1, Ordering::SeqCst)) {
-                        let line = rm_one(target);
-                        if let Ok(mut o) = out.lock() {
-                            let _ = writeln!(o, "{line}");
+    let rm_list = non_empty(dir, "rm-list");
+    let wt_list = non_empty(dir, "wt-list");
+    let cmd_list = non_empty(dir, "cmd-list");
+    let planned = planned_bytes(dir);
+    let bytes_of = |key: &str| planned.get(key).copied().unwrap_or(0);
+    let free_at_start = util::free_bytes() as i64;
+    events.emit(
+        "started",
+        json!({
+            "free": free_at_start,
+            "paths": rm_list.len(),
+            "worktrees": wt_list.len(),
+            "commands": cmd_list.len(),
+            "bytes": rm_list.iter().chain(&wt_list).chain(&cmd_list).map(|k| bytes_of(k)).sum::<i64>(),
+        }),
+    );
+
+    let (working, stop) = mpsc::channel::<()>();
+    std::thread::scope(|s| -> io::Result<()> {
+        let sampler = &events;
+        s.spawn(move || sample_free(sampler, stop));
+        if !rm_list.is_empty() {
+            println!("deleting {} paths with {parallel} workers", rm_list.len());
+            let next = AtomicUsize::new(0);
+            let out = Mutex::new(io::stdout());
+            std::thread::scope(|s| {
+                for _ in 0..parallel {
+                    s.spawn(|| {
+                        while let Some(target) = rm_list.get(next.fetch_add(1, Ordering::SeqCst)) {
+                            let line = rm_one(target, bytes_of(target), &events);
+                            if let Ok(mut o) = out.lock() {
+                                let _ = writeln!(o, "{line}");
+                            }
                         }
-                    }
-                });
-            }
-        });
-    }
-
-    let wt_list: Vec<String> = util::read_lines(&dir.join("wt-list"))
-        .into_iter()
-        .filter(|l| !l.trim().is_empty())
-        .collect();
-    if !wt_list.is_empty() {
-        println!(
-            "removing {} worktrees (each re-checked first)",
-            wt_list.len()
-        );
-        worktrees::remove(&wt_list, &mut io::stdout())?;
-    }
-
-    for cmd_id in util::read_lines(&dir.join("cmd-list")) {
-        match command(&cmd_id) {
-            Some((program, args)) => run_logged(&shell_line(program, args), program, args),
-            None => println!("skipped unknown command id: {cmd_id}"),
+                    });
+                }
+            });
         }
-    }
+
+        if !wt_list.is_empty() {
+            println!(
+                "removing {} worktrees (each re-checked first)",
+                wt_list.len()
+            );
+            worktrees::remove(&wt_list, &mut io::stdout(), &mut |path, kept| {
+                events.emit(
+                    "worktree",
+                    json!({
+                        "path": path,
+                        "bytes": bytes_of(path),
+                        "outcome": if kept.is_some() { "kept" } else { "removed" },
+                        "reason": kept.unwrap_or(""),
+                    }),
+                );
+            })?;
+        }
+
+        for cmd_id in &cmd_list {
+            match command(cmd_id) {
+                Some((program, args)) => {
+                    let label = shell_line(program, args);
+                    let ok = run_logged(&label, program, args);
+                    events.emit(
+                        "command",
+                        json!({"id": cmd_id, "label": label, "status": if ok { "ok" } else { "failed" }}),
+                    );
+                }
+                None => println!("skipped unknown command id: {cmd_id}"),
+            }
+        }
+        drop(working);
+        Ok(())
+    })?;
 
     let after = util::free_bytes() as i64;
     let before: i64 = fs::read_to_string(dir.join("free-before"))
@@ -438,6 +543,10 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
     println!("free after:  {after} bytes");
     println!("reclaimed:   {} bytes", after - before);
     println!("finished {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
+    events.emit(
+        "done",
+        json!({"free_before": free_at_start, "free_after": after, "reclaimed": after - free_at_start}),
+    );
     fs::write(dir.join("status"), "done\n")?;
     Ok(0)
 }

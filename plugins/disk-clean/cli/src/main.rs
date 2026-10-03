@@ -1,4 +1,4 @@
-use disk_clean::{clean, review, scan};
+use disk_clean::{clean, review, scan, watch};
 use std::process::ExitCode;
 
 const USAGE: &str =
@@ -10,6 +10,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("scan") => scan::run(arg(1)),
         Some("review") => review::run(arg(1)),
+        Some("watch") => watch::run(arg(1)),
         Some("clean") if arg(1).as_deref() == Some("--worker") => {
             clean::worker(&arg(2).unwrap_or_default())
         }

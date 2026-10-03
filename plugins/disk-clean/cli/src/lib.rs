@@ -4,4 +4,5 @@ pub mod review;
 pub mod scan;
 pub mod util;
 pub mod walk;
+pub mod watch;
 pub mod worktrees;

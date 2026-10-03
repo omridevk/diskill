@@ -331,3 +331,120 @@ fn dry_run_names_the_owning_repo_of_a_linked_worktree() {
     );
     assert!(wt.exists());
 }
+
+fn wait_done(run: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fs::read_to_string(run.join("status")).unwrap_or_default() != "done\n" {
+        assert!(Instant::now() < deadline, "worker never finished");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn worker_writes_one_event_per_outcome() {
+    let t = common::temp_dir("clean-events");
+    let root = &t.0;
+    let run = root.join("run");
+    fs::create_dir_all(&run).unwrap();
+    let doomed = root.join("doomed");
+    fs::create_dir_all(doomed.join("a")).unwrap();
+    fs::write(doomed.join("a/file"), vec![1u8; 10_000]).unwrap();
+    let stuck = root.join("stuck");
+    fs::create_dir_all(stuck.join("locked")).unwrap();
+    fs::write(stuck.join("locked/file"), b"x").unwrap();
+    common::sh(
+        root,
+        "chmod 555 stuck/locked && git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q -b gone ../gone main && git worktree add -q -b dirty ../dirty main && echo b >../dirty/b",
+    );
+    let p = |x: &Path| x.to_string_lossy().into_owned();
+    let (gone, dirty) = (root.join("gone"), root.join("dirty"));
+    let scan = [
+        scan_row("caches", "rm", &p(&doomed)),
+        scan_row("caches", "rm", &p(&stuck)),
+        scan_row("worktrees", "worktree", &p(&gone)),
+        scan_row("worktrees", "worktree", &p(&dirty)),
+    ]
+    .concat();
+    fs::write(run.join("scan.tsv"), scan).unwrap();
+    let items = [
+        selection_item("rm", &p(&doomed)),
+        selection_item("rm", &p(&stuck)),
+        selection_item("worktree", &p(&gone)),
+        selection_item("worktree", &p(&dirty)),
+    ]
+    .join(",");
+    fs::write(
+        run.join("selection.json"),
+        format!(r#"{{"items": [{items}]}}"#),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        .args(["clean", &p(&run)])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    wait_done(&run);
+    common::sh(root, "chmod 755 stuck/locked");
+
+    let events: Vec<serde_json::Value> = fs::read_to_string(run.join("clean.events"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let named = |name: &str| -> Vec<&serde_json::Value> {
+        events.iter().filter(|e| e["event"] == name).collect()
+    };
+    let started = &events[0];
+    assert_eq!(started["event"], "started");
+    assert_eq!(
+        (
+            &started["paths"],
+            &started["worktrees"],
+            &started["commands"],
+            &started["bytes"]
+        ),
+        (&2.into(), &2.into(), &0.into(), &(4 * 4096).into())
+    );
+    assert!(started["free"].as_i64().unwrap() > 0);
+    let removed = named("removed");
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["path"], p(&doomed));
+    assert_eq!(removed[0]["bytes"], 4096);
+    assert!(removed[0]["secs"].is_number());
+    let failed = named("failed");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["path"], p(&stuck));
+    assert_eq!(
+        failed[0]["reason"],
+        "still present after removal: permission denied"
+    );
+    let worktrees = named("worktree");
+    assert_eq!(worktrees.len(), 2);
+    assert_eq!(worktrees[0]["path"], p(&gone));
+    assert_eq!(worktrees[0]["outcome"], "removed");
+    assert_eq!(worktrees[1]["path"], p(&dirty));
+    assert_eq!(worktrees[1]["outcome"], "kept");
+    assert_eq!(worktrees[1]["bytes"], 4096);
+    assert!(
+        worktrees[1]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("1 uncommitted or untracked files"),
+        "{}",
+        worktrees[1]
+    );
+    let done = events.last().unwrap();
+    assert_eq!(done["event"], "done");
+    assert_eq!(
+        done["reclaimed"].as_i64().unwrap(),
+        done["free_after"].as_i64().unwrap() - done["free_before"].as_i64().unwrap()
+    );
+    assert!(events.iter().all(|e| e["elapsed_ms"].is_u64()));
+    let log = fs::read_to_string(run.join("clean.log")).unwrap();
+    assert!(
+        log.contains(&format!("FAILED  {} (still present, exit 1)", p(&stuck))),
+        "{log}"
+    );
+    assert!(!doomed.exists() && !gone.exists() && dirty.exists() && stuck.exists());
+}

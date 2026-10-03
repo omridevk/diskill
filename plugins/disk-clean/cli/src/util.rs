@@ -1,8 +1,10 @@
 use std::ffi::{CStr, CString};
 use std::fs;
+use std::io;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 pub fn home() -> String {
     std::env::var("HOME").unwrap_or_default()
@@ -175,4 +177,17 @@ pub fn read_lines(path: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub fn spawn_detached(cmd: &mut Command) -> io::Result<Child> {
+    // SAFETY: setsid is async-signal-safe and only detaches the child into its own session.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
 }

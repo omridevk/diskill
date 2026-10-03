@@ -279,7 +279,7 @@ pub fn render(data: &Value, token: &str) -> String {
         .replacen("__DATA__", &json, 1)
 }
 
-fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) {
+pub(crate) fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) {
     let head = format!(
         "HTTP/1.0 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         body.len()
@@ -397,7 +397,7 @@ fn stream_events(out: &mut TcpStream, live: &Live) {
     }
 }
 
-fn query_token(target: &str) -> &str {
+pub(crate) fn query_token(target: &str) -> &str {
     target
         .split_once('?')
         .map_or("", |(_, q)| q)
@@ -551,7 +551,7 @@ fn handle(
     }
 }
 
-fn constant_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -674,14 +674,16 @@ fn finished_run(dir: &Path) -> Option<(Value, Live)> {
     Some((data, live))
 }
 
-fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<()> {
+fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(u16, String)> {
     let token = token();
     let pages = Arc::new(Pages {
         first: render(data, &token),
         live: render(&json!({"live": true}), &token),
     });
     let listener = TcpListener::bind("127.0.0.1:0")?;
-    let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
+    let port = listener.local_addr()?.port();
+    let url = format!("http://127.0.0.1:{port}/");
+    let served = (port, token.clone());
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let (pages, token, tx, live) = (
@@ -699,7 +701,25 @@ fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(
     } else {
         let _ = std::process::Command::new("open").arg(&url).status();
     }
-    Ok(())
+    Ok(served)
+}
+
+fn watch_after_approval(dir: &Path, (port, token): (u16, String)) {
+    let spawned = std::env::current_exe().and_then(|exe| {
+        util::spawn_detached(
+            std::process::Command::new(exe)
+                .arg("watch")
+                .arg(dir)
+                .env("DISK_CLEAN_WATCH_TOKEN", token)
+                .env("DISK_CLEAN_WATCH_PORT", port.to_string())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        )
+    });
+    if let Err(e) = spawned {
+        eprintln!("could not start the cleanup page watcher: {e}");
+    }
 }
 
 fn decide(rx: &mpsc::Receiver<Value>, live: &Live) -> io::Result<(i32, Option<PathBuf>)> {
@@ -763,9 +783,12 @@ fn live_scan() -> io::Result<i32> {
     let dir = scan::new_run_dir(None)?;
     let live = Arc::new(Live::new(&dir));
     let (tx, rx) = mpsc::channel();
-    serve(&json!({"live": true}), Arc::clone(&live), tx.clone())?;
+    let served = serve(&json!({"live": true}), Arc::clone(&live), tx.clone())?;
     start_scan(Arc::clone(&live), tx, true);
     let (code, selection) = decide(&rx, &live)?;
+    if selection.is_some() {
+        watch_after_approval(&dir, served);
+    }
     println!("{}", dir.display());
     if let Some(path) = selection {
         println!("{}", path.display());
@@ -783,8 +806,11 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
     };
     let live = Arc::new(live);
     let (tx, rx) = mpsc::channel();
-    serve(&data, Arc::clone(&live), tx)?;
+    let served = serve(&data, Arc::clone(&live), tx)?;
     let (code, selection) = decide(&rx, &live)?;
+    if selection.is_some() {
+        watch_after_approval(&live.dir, served);
+    }
     if let Some(path) = selection {
         println!("{}", path.display());
     }

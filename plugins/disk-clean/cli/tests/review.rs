@@ -54,6 +54,7 @@ fn review_serves_page_and_writes_selection() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["review", &run.to_string_lossy()])
         .env("DISK_CLEAN_NO_BROWSER", "1")
+        .env("DISK_CLEAN_WATCH_START", "3")
         .env("HOME", "/h")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -194,6 +195,17 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(sel["items"][1]["cmd_id"], "docker-prune");
     assert_eq!(sel["items"][1]["action"], "cmd");
     assert_eq!(sel["total_bytes"], 3048);
+
+    let after = events(port, &token, "waiting");
+    assert_eq!(
+        after[0].0, "waiting",
+        "a watcher keeps serving the page's events after review exits"
+    );
+    assert_eq!(
+        post(port, &approve),
+        405,
+        "the watcher accepts no decisions"
+    );
 }
 
 #[test]
@@ -233,7 +245,16 @@ fn events(port: u16, token: &str, until: &str) -> Vec<(String, Value)> {
 }
 
 fn open_events(port: u16, token: &str) -> BufReader<TcpStream> {
-    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut s = loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(s) => break s,
+            Err(e) => {
+                assert!(std::time::Instant::now() < deadline, "{e}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    };
     write!(s, "GET /events?token={token} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
     let mut reader = BufReader::new(s);
     let mut line = String::new();
@@ -430,6 +451,7 @@ fn spawn_live(home: &Path, bin: &Path) -> (std::process::Child, u16, String) {
         .env("HOME", home)
         .env("PATH", path)
         .env("DISK_CLEAN_SKIP_MAP", "1")
+        .env("DISK_CLEAN_WATCH_START", "1")
         .env("DISK_CLEAN_NO_BROWSER", "1")
         .env("DISK_CLEAN_MIN_BYTES", "1")
         .stdout(Stdio::piped())
