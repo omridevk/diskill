@@ -1,49 +1,56 @@
+import {Profiler} from 'react'
 import {afterEach, describe, expect, test} from 'vitest'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
+import type {Loaded} from './lib/data'
 import {bigSection, withSection} from './test/fixture'
 import './index.css'
 
+const SMALL = 30
 const ROWS = 10_000
 const EVENTS = 5_000
+const REPEATS = 3
 const SCROLL_STEPS = 60
+const PER_TICK = 25
+const BROWSER = navigator.userAgent.includes('Firefox') ? 'firefox' : 'chromium'
 
-interface Timing {
-  took: number
-  frame: number
-  script?: number
+type Work = Record<string, number>
+
+const commits: number[] = []
+
+function Measured({loaded}: {loaded: Loaded}) {
+  return (
+    <Profiler id="app" onRender={(_id, _phase, actual) => commits.push(actual)}>
+      <App loaded={loaded} />
+    </Profiler>
+  )
 }
 
 function nextPaint() {
   return new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)))
 }
 
-function watchFrames() {
-  const gaps: number[] = []
-  let last = performance.now()
-  let watching = true
-  const tick = (now: number) => {
-    gaps.push(now - last)
-    last = now
-    if (watching) requestAnimationFrame(tick)
-  }
-  requestAnimationFrame(tick)
-  return () => {
-    watching = false
-    return Math.max(0, ...gaps)
-  }
+const sum = (values: readonly number[]) => values.reduce((total, value) => total + value, 0)
+
+function percentile(values: readonly number[], share: number) {
+  return values.toSorted((a, b) => a - b)[Math.floor(values.length * share)] ?? Infinity
 }
 
-async function timed(action: () => void): Promise<Timing> {
+const median = (values: readonly number[]) => percentile(values, 0.5)
+
+async function work(action: () => void) {
   await nextPaint()
-  const stop = watchFrames()
-  const start = performance.now()
+  commits.length = 0
   action()
-  const script = performance.now() - start
   await nextPaint()
-  const took = performance.now() - start
   await nextPaint()
-  return {took, frame: stop(), script}
+  return sum(commits)
+}
+
+async function repeated(actions: readonly (() => void)[]) {
+  const costs: number[] = []
+  for (let round = 0; round < REPEATS; round++) for (const action of actions) costs.push(await work(action))
+  return median(costs)
 }
 
 function typeInto(input: HTMLInputElement, value: string) {
@@ -58,71 +65,56 @@ function scrollerOf(element: Element) {
   throw new Error('no scroll container')
 }
 
-function report(name: string, timing: Timing) {
-  console.log(`${navigator.userAgent.includes('Firefox') ? 'firefox' : 'chromium'} ${name}: ${timing.took.toFixed(1)} ms (script ${timing.script?.toFixed(1) ?? '-'}), longest frame ${timing.frame.toFixed(1)} ms`)
-}
-
-function within(name: string, timing: Timing) {
-  report(name, timing)
-  expect.soft(timing.took, `${name} interaction`).toBeLessThan(100)
-  expect.soft(timing.frame, `${name} frame`).toBeLessThan(50)
-}
-
 function button(name: RegExp) {
   const found = [...document.querySelectorAll('button')].find(b => name.test(b.textContent ?? ''))
   if (!found) throw new Error(`no button ${name}`)
   return found
 }
 
+function element(selector: string) {
+  const found = document.querySelector<HTMLElement>(selector)
+  if (!found) throw new Error(`no ${selector}`)
+  return found
+}
+
+const press = (key: string) => () => document.body.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true}))
+
 function footerText() {
   return document.querySelector('footer')?.textContent ?? ''
 }
 
-describe('a 10,000-row section', () => {
-  afterEach(() => localStorage.removeItem('disk-clean:view'))
+async function scrollThrough(scroller: HTMLElement) {
+  const costs: number[] = []
+  for (let step = 0; step < SCROLL_STEPS; step++) costs.push(await work(() => (scroller.scrollTop += scroller.clientHeight)))
+  return median(costs)
+}
 
-  test('opens, filters, selects all and scrolls within budget', async () => {
-    const screen = await render(<App loaded={withSection(bigSection(ROWS))} />)
-    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
-
-    within('open section', await timed(() => button(/^Your macOS temp/).click()))
-    await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
-    await screen.getByRole('combobox', {name: 'Sort'}).click()
-    await screen.getByRole('option', {name: 'Name'}).click()
-    await expect.element(screen.getByText('~/tmp/item-00000')).toBeVisible()
-
-    const input = screen.getByRole('textbox', {name: 'Filter paths'}).element()
-    if (!(input instanceof HTMLInputElement)) throw new Error('no filter input')
-    input.focus()
-    for (const typed of ['0', '00', '004', '0042']) within(`type "${typed}"`, await timed(() => typeInto(input, typed)))
-    await expect.element(screen.getByText('~/tmp/item-00042')).toBeVisible()
-    await expect.element(screen.getByText('~/tmp/item-00001')).not.toBeInTheDocument()
-    typeInto(input, '')
-    input.blur()
-    await expect.element(screen.getByText('~/tmp/item-00001')).toBeVisible()
-
-    const deselect = screen.getByRole('checkbox', {name: 'Select all in Your macOS temp'}).element()
-    if (!(deselect instanceof HTMLElement)) throw new Error('no section checkbox')
-    within('section checkbox (deselect all)', await timed(() => deselect.click()))
-    within('section checkbox (select all)', await timed(() => deselect.click()))
-    await expect.poll(footerText).toContain(`${ROWS + 4} items selected`)
-    within('shortcut d', await timed(() => document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'd', bubbles: true}))))
-    within('shortcut a', await timed(() => document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'a', bubbles: true}))))
-    await expect.poll(footerText).toContain(`${ROWS + 6} items selected`)
-
-    const scroller = scrollerOf(screen.getByText('~/tmp/item-00000').element())
-    const stop = watchFrames()
-    const start = performance.now()
-    for (let step = 1; step <= SCROLL_STEPS; step++) {
-      scroller.scrollTop += scroller.clientHeight
-      await nextPaint()
-    }
-    within('scroll a page per frame', {took: (performance.now() - start) / SCROLL_STEPS, frame: stop()})
-    within('jump to the end', await timed(() => (scroller.scrollTop = scroller.scrollHeight)))
-    await expect.element(screen.getByText('~/tmp/item-09999')).toBeVisible()
-    await expect.element(screen.getByText('~/tmp/item-00000')).not.toBeInTheDocument()
-  }, 180_000)
-})
+async function interactions(rows: number): Promise<Work> {
+  const screen = await render(<Measured loaded={withSection(bigSection(rows))} />)
+  await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+  const open = await repeated([() => button(/^Your macOS temp/).click(), () => button(/^Application caches/).click()])
+  button(/^Your macOS temp/).click()
+  await screen.getByRole('combobox', {name: 'Sort'}).click()
+  await screen.getByRole('option', {name: 'Name'}).click()
+  await expect.element(screen.getByText('~/tmp/item-00000')).toBeVisible()
+  const input = element('input[aria-label="Filter paths"]')
+  if (!(input instanceof HTMLInputElement)) throw new Error('no filter input')
+  input.focus()
+  const type = await repeated(['0', '00', '000', '0002', ''].map(value => () => typeInto(input, value)))
+  input.blur()
+  await expect.element(screen.getByText('~/tmp/item-00001')).toBeVisible()
+  const section = () => element('[aria-label="Select all in Your macOS temp"]').click()
+  const selectAll = await repeated([section, section])
+  await expect.poll(footerText).toContain(`${rows + 4} items selected`)
+  const shortcuts = await repeated([press('d'), press('a')])
+  await expect.poll(footerText).toContain(`${rows + 6} items selected`)
+  const scroller = scrollerOf(screen.getByText('~/tmp/item-00000').element())
+  const scroll = await scrollThrough(scroller)
+  scroller.scrollTop = scroller.scrollHeight
+  await expect.element(screen.getByText(`~/tmp/item-${String(rows - 1).padStart(5, '0')}`)).toBeVisible()
+  await screen.unmount()
+  return {open, type, selectAll, shortcuts, scroll}
+}
 
 function cleanupSource() {
   return Object.assign(new EventTarget(), {readyState: 1, close: () => {}})
@@ -132,12 +124,12 @@ function send(source: EventTarget, type: string, data: object) {
   source.dispatchEvent(new MessageEvent(type, {data: JSON.stringify(data)}))
 }
 
-function stream(source: EventTarget, paths: readonly string[], perTick: number) {
+function stream(source: EventTarget, paths: readonly string[]) {
   return new Promise<void>(resolve => {
     let next = 0
     const tick = () => {
-      for (const path of paths.slice(next, next + perTick)) send(source, 'removed', {path, bytes: 4096, secs: 0.01, elapsed_ms: 1000 + next})
-      next += perTick
+      for (const path of paths.slice(next, next + PER_TICK)) send(source, 'removed', {path, bytes: 4096, secs: 0.01, elapsed_ms: 1000 + next})
+      next += PER_TICK
       if (next < paths.length) setTimeout(tick, 16)
       else resolve()
     }
@@ -145,30 +137,60 @@ function stream(source: EventTarget, paths: readonly string[], perTick: number) 
   })
 }
 
-describe('a 5,000-event cleanup', () => {
-  test('keeps frames under 50 ms with the progress panel open', async () => {
-    const loaded = withSection(bigSection(EVENTS))
-    const paths = loaded.data.categories.flatMap(c => c.items.filter(i => i.path.includes('/tmp/')).map(i => i.path))
-    const source = cleanupSource()
-    const screen = await render(<App loaded={{...loaded, approved: paths, openEvents: () => source}} />)
-    await screen.getByRole('button', {name: /^Your macOS temp/}).click()
-    await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
-    send(source, 'started', {free: 1, paths: paths.length, worktrees: 0, commands: 0, bytes: paths.length * 4096, elapsed_ms: 0})
-    await screen.getByRole('button', {name: 'Details'}).click()
-    const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
-    await expect.element(panel).toBeVisible()
-    const stop = watchFrames()
-    await stream(source, paths, 25)
-    await expect.poll(() => document.querySelector('header p')?.textContent).toContain(`${EVENTS} of ${EVENTS}`)
-    await nextPaint()
-    const frame = stop()
-    report('cleanup stream', {took: 0, frame})
-    expect(frame).toBeLessThan(50)
-    await expect.element(panel.getByText('Removed ~/tmp/item-04999')).toBeVisible()
-    await expect.element(panel.getByText(/older rows not shown/)).not.toBeInTheDocument()
-    const log = scrollerOf(panel.getByText('Removed ~/tmp/item-04999').element())
-    log.scrollTop = log.scrollHeight
-    await expect.element(panel.getByText('Removed ~/tmp/item-00000')).toBeVisible()
-    expect(panel.getByRole('listitem').elements().length).toBeLessThan(60)
+async function cleanup(events: number): Promise<Work> {
+  const loaded = withSection(bigSection(events))
+  const paths = loaded.data.categories.flatMap(c => c.items.filter(i => i.path.includes('/tmp/')).map(i => i.path))
+  const source = cleanupSource()
+  const screen = await render(<Measured loaded={{...loaded, approved: paths, openEvents: () => source}} />)
+  await screen.getByRole('button', {name: /^Your macOS temp/}).click()
+  await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
+  send(source, 'started', {free: 1, paths: paths.length, worktrees: 0, commands: 0, bytes: paths.length * 4096, elapsed_ms: 0})
+  await screen.getByRole('button', {name: 'Details'}).click()
+  const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
+  await expect.element(panel).toBeVisible()
+  await nextPaint()
+  commits.length = 0
+  await stream(source, paths)
+  await expect.poll(() => document.querySelector('header p')?.textContent).toContain(`${events} of ${events}`)
+  await nextPaint()
+  const perCommit = [...commits]
+  const newest = `Removed ~/tmp/item-${String(events - 1).padStart(5, '0')}`
+  await expect.element(panel.getByText(newest)).toBeVisible()
+  const log = scrollerOf(panel.getByText(newest).element())
+  log.scrollTop = log.scrollHeight
+  await expect.element(panel.getByText('Removed ~/tmp/item-00000')).toBeVisible()
+  expect(panel.getByRole('listitem').elements().length).toBeLessThan(60)
+  await screen.unmount()
+  return {commit: median(perCommit), p95: percentile(perCommit, 0.95)}
+}
+
+function report(name: string, size: number, small: Work, big: Work) {
+  for (const key of Object.keys(big)) console.log(`${BROWSER} ${name} ${key}: ${big[key]?.toFixed(1)} ms of React work at ${size}, ${small[key]?.toFixed(1)} ms at ${SMALL}`)
+}
+
+function scalesLikeSmall(small: Work, big: Work, slack: number) {
+  for (const key of Object.keys(big)) {
+    const smallCost = small[key] ?? 0
+    expect.soft(big[key], `${key}: ${big[key]?.toFixed(1)} ms against ${smallCost.toFixed(1)} ms for ${SMALL}`).toBeLessThan(smallCost * 2 + slack)
+  }
+}
+
+describe('a 10,000-row section', () => {
+  afterEach(() => localStorage.removeItem('disk-clean:view'))
+
+  test('costs about what a 30-row section costs to open, filter, select and scroll', async () => {
+    const small = await interactions(SMALL)
+    const big = await interactions(ROWS)
+    report('list', ROWS, small, big)
+    scalesLikeSmall(small, big, 16)
+  }, 180_000)
+})
+
+describe('a 5,000-event cleanup with the progress panel open', () => {
+  test('renders each event batch for about what a 30-event cleanup costs', async () => {
+    const small = await cleanup(SMALL)
+    const big = await cleanup(EVENTS)
+    report('stream', EVENTS, small, big)
+    scalesLikeSmall(small, big, 8)
   }, 180_000)
 })

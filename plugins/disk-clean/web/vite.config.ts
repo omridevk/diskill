@@ -36,6 +36,7 @@ export default defineConfig({
         mode: 'production',
         define: {'process.env.NODE_ENV': JSON.stringify('production')},
         cacheDir: 'node_modules/.vite-perf',
+        resolve: {alias: [{find: /^react-dom\/client$/, replacement: 'react-dom/profiling'}]},
         oxc: {jsx: {runtime: 'automatic', development: false}},
         test: {name: 'perf', include: ['src/perf.test.tsx'], browser: inBrowsers('perf', [CHROMIUM, FIREFOX])},
       },
