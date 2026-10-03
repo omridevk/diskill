@@ -17,7 +17,7 @@ Two changes, decided 2026-10-03:
 ## Hold
 
 - `clean` (the worker) moves each approved path with `rename(2)` to
-  `~/.cache/disk-clean/held/<run-id>/<n>` and appends to `held/<run-id>/manifest.json`:
+  `~/.cache/disk-clean/held/<run-id>/<n>` and appends to `held/<run-id>/manifest.jsonl` (one JSON object per line, appended before each move):
   `{original, held, bytes, held_at}`. `rename` is atomic and instant on the same APFS volume
   (home, `/private/tmp` and `$TMPDIR` are all on the Data volume).
 - A path whose rename fails (other volume `EXDEV`, permission) is reported `not held` with the

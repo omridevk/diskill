@@ -33,6 +33,7 @@ value.
 | `/cleanup` | Cleanup tab; search: `view` (list/cards), `q`, `risk[]`, `minSize`, `minAge`, `sort`, `only` (selected) |
 | `/cleanup/$section` | List view with that section open (Cards: that card expanded) |
 | `/cleanup/confirm` | the Delete confirm modal over the list (hold-and-confirm spec); closing navigates back |
+| `/cleanup/free` | the "Free the space now?" confirm (hold-and-confirm spec); only while something is held, otherwise redirects to `/cleanup` |
 | `/storage` and `/storage/$` | Storage tab; the splat is the zoomed folder path; search: `shape` (sunburst/treemap) |
 | `/insights` | Insights tab |
 | any route, search `overlay=progress` | the cleanup progress panel (it layers over whichever tab is open); its log filter `log` (all/removed/problems/commands) |
