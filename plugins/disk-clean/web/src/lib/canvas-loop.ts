@@ -12,15 +12,27 @@ export type CreateRenderer = (canvas: HTMLCanvasElement) => Renderer | null
 
 const MAX_DPR = 1.5
 
+function densityOf(scale: number) {
+  return Math.min(window.devicePixelRatio || 1, MAX_DPR) * scale
+}
+
 function fit(canvas: HTMLCanvasElement, renderer: Renderer, scale: number) {
-  renderer.resize(canvas.clientWidth, canvas.clientHeight, Math.min(window.devicePixelRatio || 1, MAX_DPR) * scale)
+  renderer.resize(canvas.clientWidth, canvas.clientHeight, densityOf(scale))
+}
+
+function fitted(canvas: HTMLCanvasElement, scale: number) {
+  const dpr = densityOf(scale)
+  return canvas.width === Math.max(1, Math.round(canvas.clientWidth * dpr)) && canvas.height === Math.max(1, Math.round(canvas.clientHeight * dpr))
 }
 
 function drawStill(canvas: HTMLCanvasElement, renderer: Renderer, scale: number) {
-  const size = new ResizeObserver(() => {
+  const draw = () => {
+    if (fitted(canvas, scale)) return
     fit(canvas, renderer, scale)
     renderer.still()
-  })
+  }
+  const size = new ResizeObserver(draw)
+  draw()
   size.observe(canvas)
   return () => size.disconnect()
 }
@@ -80,6 +92,8 @@ export function useCanvasRenderer(create: CreateRenderer, scale = 1, running = t
       canvas.remove()
       return setFailed(true)
     }
+    fit(canvas, renderer, scale)
+    renderer.still()
     setMounted({canvas, renderer})
     return () => {
       setMounted(null)
