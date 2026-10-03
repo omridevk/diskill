@@ -54,7 +54,6 @@ function DoneText({progress}: {progress: CleanupProgress}) {
 function BarText({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
   const {cleanup, plan} = progress
   if (cleanup.done) return <DoneText progress={progress} />
-  if (lost) return 'Reconnecting…'
   if (!cleanup.started) {
     return (
       <>
@@ -65,6 +64,7 @@ function BarText({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
       </>
     )
   }
+  if (lost) return 'Reconnecting…'
   const last = progress.outcomes.at(-1)
   return (
     <>

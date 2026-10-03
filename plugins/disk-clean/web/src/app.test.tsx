@@ -614,9 +614,14 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Freed 3.4 GB')
   })
 
-  test('a lost connection says so until the stream comes back', async () => {
+  test('a lost connection says so until the stream comes back, but not during the hand-back to the watcher', async () => {
     const {screen, source} = await approveInApp()
+    source.readyState = 0
+    source.dispatchEvent(new Event('error'))
+    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
+    source.readyState = 1
     sendAll(source, cleanupEvents.slice(0, 3))
+    await barSays(screen, 'Deleting ·')
     source.readyState = 0
     source.dispatchEvent(new Event('error'))
     await barSays(screen, 'Reconnecting…')
