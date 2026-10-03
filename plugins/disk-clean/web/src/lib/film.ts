@@ -19,7 +19,8 @@ const SHRED = 1.4
 const WAIT_HOLD = 1.5
 const CREDITS_SPEED = 60
 const WRITE_EVERY_MS = 50
-const BATCH_MS = 1000
+const RECAP_BEATS = 7
+const MIN_FREED = 0.02
 
 export interface Tokens {
   fast: number
@@ -54,9 +55,11 @@ function registerEases() {
   CustomEase.create('pop', bezier('--ease-bounce', '0.34, 1.36, 0.64, 1'))
 }
 
+export type ParticlePhase = 'off' | 'gather' | 'landing'
+
 export interface Setters {
   shred: (outcome: Outcome | null) => void
-  particles: (on: boolean) => void
+  particles: (phase: ParticlePhase) => void
   running: (on: boolean) => void
 }
 
@@ -91,6 +94,7 @@ export interface Film {
   flood: boolean
   started: boolean
   counting: boolean
+  trays: boolean
   finished: boolean
   onTail: () => void
   onReady: () => void
@@ -198,8 +202,16 @@ function sectionBeat(film: Film, id: string, touched: Outcome[], at: number) {
   if (counted >= section.count) completeBeat(film, id, row, at + 0.35)
 }
 
-function usedScale(film: Film, free: number) {
-  return film.plan.total > 0 ? Math.max(0, film.plan.total - free) / film.plan.total : 0
+export function gaugeOf(total: number, before: number, now: number, planned = now - before) {
+  const used = total > 0 ? Math.max(0, total - before) / total : 0
+  const freed = total > 0 ? Math.max(0, now - before) / total : 0
+  const floor = planned > 0 ? MIN_FREED * Math.min(1, Math.max(0, now - before) / planned) : 0
+  const shown = Math.min(used, Math.max(freed, floor))
+  return {used, rest: used - shown, enlarged: shown > freed}
+}
+
+function restScale(film: Film, free: number) {
+  return gaugeOf(film.plan.total, film.gauges.startFree, free, film.plan.approved).rest
 }
 
 function freeBeat(film: Film, at: number) {
@@ -207,12 +219,6 @@ function freeBeat(film: Film, at: number) {
   if (gauges.free === null || gauges.free === gauges.shownFree) return
   const from = gauges.shownFree ?? gauges.startFree
   gauges.shownFree = gauges.free
-  film.tl.fromTo(
-    part(film, 'used'),
-    {scaleX: usedScale(film, from)},
-    {scaleX: usedScale(film, gauges.free), duration: film.tokens.verySlow, ease: 'power3.inOut'},
-    at,
-  )
   ticker(film, part(film, 'free'), from, gauges.free, at, film.tokens.verySlow)
 }
 
@@ -236,6 +242,15 @@ function gauges(film: Film, touched: Outcome[], at: number) {
   const bytes = touched.filter(o => o.kind === 'removed').reduce((sum, o) => sum + o.bytes, 0)
   if (bytes > 0 && !film.counting) countingBeat(film, at)
   ticker(film, part(film, 'counter'), film.gauges.reclaimed, film.gauges.reclaimed + bytes, at)
+  if (bytes > 0) {
+    const start = film.gauges.startFree
+    film.tl.fromTo(
+      part(film, 'gauge-used'),
+      {scaleX: restScale(film, start + film.gauges.reclaimed)},
+      {scaleX: restScale(film, start + film.gauges.reclaimed + bytes), duration: TICK, ease: 'power3.out'},
+      at,
+    )
+  }
   film.gauges.reclaimed += bytes
   const sections = [...new Set(touched.map(o => o.section).filter(Boolean))]
   sections.forEach((id, i) =>
@@ -308,6 +323,10 @@ function floodBeat(film: Film, outcomes: Outcome[]) {
 }
 
 function removalBeat(film: Film, outcomes: Outcome[], flood: boolean) {
+  if (!film.counting) {
+    countingBeat(film, film.tl.duration())
+    film.tl.to({}, {duration: film.tokens.medium})
+  }
   if (flood || outcomes.length > FLOOD) floodBeat(film, outcomes)
   else if (outcomes.length === 1 && outcomes[0]) singleBeat(film, outcomes[0])
   else stackBeat(film, outcomes)
@@ -317,9 +336,16 @@ function trayRow(film: Film, key: string) {
   return one(film, `[data-film="tray-row"][data-key="${CSS.escape(key)}"]`)
 }
 
+function showTrays(film: Film, at: number) {
+  if (film.trays) return
+  film.trays = true
+  film.tl.fromTo(part(film, 'trays'), {opacity: 0, x: 16}, {opacity: 1, x: 0, duration: film.tokens.slow, ease: 'smooth-out'}, at)
+}
+
 function problemBeat(film: Film, problems: Outcome[]) {
   const at = film.tl.duration()
   const {fast, slow, stagger} = film.tokens
+  showTrays(film, at + fast)
   problems.forEach((outcome, i) => {
     const card = nextCard(film)
     const start = at + i * stagger
@@ -345,6 +371,7 @@ function commandBeat(film: Film, outcome: Outcome) {
   film.tl.fromTo(split.chars, {opacity: 0}, {opacity: 1, duration: 0.01, ease: 'none', stagger: Math.min(0.02, 0.4 / Math.max(1, split.chars.length))}, at)
   draw(film, line.querySelector('[data-part="status"] path'), '0%', '100%', at + 0.4)
   const row = outcome.kind === 'failed' ? trayRow(film, outcome.key) : null
+  if (row) showTrays(film, at + 0.4)
   if (row) film.tl.fromTo(row, {opacity: 0, x: 16}, {opacity: 1, x: 0, duration: film.tokens.slow, ease: 'smooth-out'}, at + 0.4)
   gauges(film, [outcome], at + 0.15)
 }
@@ -377,65 +404,70 @@ function startedBeat(film: Film, free: number) {
   const rows = all(film, '[data-film="build"]')
   film.tl.fromTo(rows, {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: verySlow, ease: 'smooth-out', stagger: Math.min(stagger, 0.4 / Math.max(1, rows.length))}, at)
   film.tl.set(all(film, '[data-part="arc"], [data-part="check"]'), {drawSVG: '0% 0%'}, at)
-  film.tl.set(part(film, 'used'), {scaleX: usedScale(film, free)}, at)
-  film.tl.set(part(film, 'freed-bar'), {scaleX: usedScale(film, free)}, at)
+  const {used} = gaugeOf(film.plan.total, free, free)
+  film.tl.set([part(film, 'gauge-used'), part(film, 'gauge-freed')], {scaleX: used}, at)
 }
 
 function creditsBeat(film: Film, at: number) {
   const view = part(film, 'credits')
-  const list = part(film, 'credits-list')
-  if (!view || !list) return at
-  const distance = Math.max(0, list.scrollHeight - view.clientHeight)
+  if (!view) return at
+  const distance = Math.max(0, view.scrollHeight - view.clientHeight)
   const duration = gsap.utils.clamp(8, 45, distance / CREDITS_SPEED)
-  const roll = gsap.fromTo(list, {y: 0}, {y: -distance, duration, ease: 'none'})
-  film.tl.add(roll, at)
+  const types = ['wheel', 'pointerdown', 'touchstart', 'keydown']
+  const release = () => {
+    for (const type of types) view.removeEventListener(type, stop)
+  }
   const stop = () => {
-    if (!roll.isActive()) return
-    const y = Number(gsap.getProperty(list, 'y'))
+    release()
     roll.kill()
-    gsap.set(list, {y: 0})
-    view.style.overflowY = 'auto'
-    view.scrollTop = -y
     settle(film)
   }
-  for (const type of ['wheel', 'pointerdown', 'touchstart']) view.addEventListener(type, stop, {passive: true})
+  const roll = gsap.fromTo(view, {scrollTop: 0}, {scrollTop: distance, duration, ease: 'none', onComplete: release})
+  film.tl.add(roll, at)
+  for (const type of types) view.addEventListener(type, stop, {passive: true})
   return at + duration
 }
 
-function finaleBeat(film: Film, reclaimed: number) {
+function particleBeat(film: Film, gather: number) {
+  const {tl, tokens} = film
+  if (film.gauges.reclaimed === 0) {
+    tl.fromTo(part(film, 'freed'), {opacity: 0}, {opacity: 1, duration: tokens.verySlow, ease: 'smooth-out'}, gather)
+    return gather
+  }
+  tl.call(film.set.particles, ['gather'], gather)
+  const swapped = gather + tokens.gather
+  tl.addPause(swapped, film.set.particles, ['landing'])
+  tl.fromTo(part(film, 'freed'), {opacity: 0}, {opacity: 1, duration: tokens.verySlow, ease: 'smooth-out'}, swapped)
+  const covered = swapped + tokens.verySlow
+  tl.fromTo(part(film, 'particles'), {opacity: 1}, {opacity: 0, duration: tokens.fast, ease: 'smooth-out'}, covered)
+  tl.call(film.set.particles, ['off'], covered + tokens.fast)
+  return swapped
+}
+
+function finaleBeat(film: Film) {
   const {tl, tokens} = film
   film.finished = true
-  const start = tl.duration()
-  ticker(film, part(film, 'counter'), film.gauges.reclaimed, reclaimed, start)
-  film.gauges.reclaimed = reclaimed
-  const exit = start + TICK
-  const leaving = all(film, '[data-film="leave"]')
+  const exit = tl.duration()
+  const leaving = all(film, '[data-film="leave"], [data-film="trays"]')
   if (!film.counting) tl.to([part(film, 'total'), part(film, 'caption')], {autoAlpha: 0, duration: tokens.medium, ease: 'smooth-out'}, exit)
   tl.fromTo(leaving, {opacity: 1, y: 0, filter: 'blur(0px)'}, {opacity: 0, y: -8, filter: 'blur(2px)', duration: tokens.medium, ease: 'smooth-out', stagger: 0.03}, exit)
   tl.fromTo(part(film, 'film'), {opacity: 1}, {opacity: 0.45 / 0.8, duration: tokens.filmFade, ease: 'power1.out'}, exit)
   tl.call(film.set.running, [false], exit + tokens.filmFade)
   const heading = part(film, 'freed-heading')
   const words = heading ? SplitText.create(heading, {type: 'words'}).words : []
-  const shown = exit + tokens.medium
-  tl.fromTo(part(film, 'stage'), {autoAlpha: 1}, {autoAlpha: 0, duration: 0.01}, shown)
+  const shown = exit + tokens.fast
+  tl.fromTo(part(film, 'stage'), {autoAlpha: 1}, {autoAlpha: 0, duration: 0.01}, exit + tokens.medium)
   tl.fromTo(part(film, 'finale'), {autoAlpha: 0}, {autoAlpha: 1, duration: 0.01}, shown)
   tl.fromTo(words, {opacity: 0, y: 12, filter: 'blur(3px)'}, {opacity: 1, y: 0, filter: 'blur(0px)', duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, shown)
-  const gather = shown + 0.2
-  tl.call(film.set.particles, [true], gather)
-  const swapped = gather + tokens.gather
-  tl.fromTo(part(film, 'freed'), {opacity: 0}, {opacity: 1, duration: tokens.fast, ease: 'smooth-out'}, swapped)
-  tl.fromTo(part(film, 'particles'), {opacity: 1}, {opacity: 0, duration: tokens.fast, ease: 'smooth-out'}, swapped)
-  tl.call(film.set.particles, [false], swapped + tokens.fast)
+  const gather = shown + tokens.stagger
+  const swapped = particleBeat(film, gather)
   const bars = gather + 0.4
-  const after = part(film, 'after-used')
-  const bracket = part(film, 'bracket')
+  const gauge = part(film, 'gauge-after')
   const tiles = all(film, '[data-film="tile"]')
   tl.set([part(film, 'bars'), ...tiles], {opacity: 0}, shown)
-  if (bracket) tl.set(bracket, {clipPath: 'inset(-2px 100% -2px -2px)'}, shown)
-  if (after) tl.set(after, {scaleX: Number(after.dataset.from)}, shown)
+  if (gauge) tl.set(gauge, {scaleX: Number(gauge.dataset.from)}, shown)
   tl.fromTo(part(film, 'bars'), {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out'}, bars)
-  if (after) tl.fromTo(after, {scaleX: Number(after.dataset.from)}, {scaleX: Number(after.dataset.to), duration: 0.9, ease: 'power3.inOut'}, bars + 0.2)
-  if (bracket) tl.fromTo(bracket, {clipPath: 'inset(-2px 100% -2px -2px)'}, {clipPath: 'inset(-2px 0% -2px -2px)', clearProps: 'clipPath', duration: 0.35, ease: 'power3.inOut'}, bars + 1.1)
+  if (gauge) tl.fromTo(gauge, {scaleX: Number(gauge.dataset.from)}, {scaleX: Number(gauge.dataset.to), duration: 0.9, ease: 'power3.inOut'}, bars + 0.2)
   const stats = swapped + tokens.fast
   tl.fromTo(tiles, {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, stats)
   for (const value of all(film, '[data-ticker]')) {
@@ -447,16 +479,22 @@ function finaleBeat(film: Film, reclaimed: number) {
   tl.fromTo(part(film, 'replay'), {autoAlpha: 0}, {autoAlpha: 1, duration: tokens.fast, ease: 'smooth-out'}, statsEnd)
   tl.fromTo(part(film, 'credits'), {opacity: 0}, {opacity: 1, duration: tokens.fast, ease: 'smooth-out'}, statsEnd)
   const end = creditsBeat(film, statsEnd + 0.3)
-  tl.call(settle, [film], Math.max(end, swapped + tokens.fast))
+  tl.call(settle, [film], Math.max(end, swapped + tokens.verySlow + tokens.fast))
 }
 
 function outcomesOf(film: Film, pending: CleanupEvent[]) {
   return pending.flatMap(e => outcomeOf(film.plan, e) ?? [])
 }
 
+function startFree(cleanup: Cleanup, types: ReadonlySet<string>) {
+  if (cleanup.started) return cleanup.started.free
+  return types.has('done') ? cleanup.done?.free_before : undefined
+}
+
 function openingBeats(film: Film, cleanup: Cleanup, types: ReadonlySet<string>) {
-  if (types.has('waiting') && !cleanup.started) waitingBeat(film)
-  if (!film.started && cleanup.started) startedBeat(film, cleanup.started.free)
+  const free = startFree(cleanup, types)
+  if (types.has('waiting') && free === undefined && !cleanup.done) waitingBeat(film)
+  if (!film.started && free !== undefined) startedBeat(film, free)
 }
 
 function workBeats(film: Film, found: Outcome[], flood: boolean) {
@@ -478,20 +516,25 @@ function build(film: Film, cleanup: Cleanup, pending: CleanupEvent[]) {
   if (sample?.type === 'free') film.gauges.free = sample.data.free
   const done = types.has('done') ? cleanup.done : null
   workBeats(film, outcomesOf(film, pending), film.flood || done !== null)
-  if (done) finaleBeat(film, Math.max(0, done.reclaimed))
+  if (done) finaleBeat(film)
   film.flood = false
 }
 
-function elapsedOf(event: CleanupEvent | undefined) {
-  return event && 'elapsed_ms' in event.data ? event.data.elapsed_ms : 0
+const OUTCOMES: ReadonlySet<CleanupEvent['type']> = new Set(['removed', 'failed', 'worktree', 'command'])
+
+function recapSize(film: Film, log: readonly CleanupEvent[]) {
+  const count = log.slice(0, film.backlog).filter(e => OUTCOMES.has(e.type)).length
+  const beats = gsap.utils.clamp(RECAP_BEATS, 2 * RECAP_BEATS, Math.ceil(count / FLOOD))
+  return Math.max(1, Math.ceil(count / beats))
 }
 
 function nextBatch(film: Film, log: readonly CleanupEvent[]) {
   if (film.flood || film.processed >= film.backlog) return log.slice(film.processed)
-  const first = elapsedOf(log[film.processed])
-  let end = film.processed + 1
-  while (end < film.backlog && elapsedOf(log[end]) - first < BATCH_MS) end++
-  return log.slice(film.processed, end)
+  const rest = log.slice(film.processed, film.backlog)
+  const done = rest.findIndex((e, i) => i > 0 && e.type === 'done')
+  const window = done > 0 ? rest.slice(0, done) : rest
+  const marks = window.flatMap((e, i) => (OUTCOMES.has(e.type) ? [i] : []))
+  return window.slice(0, marks[recapSize(film, log)] ?? window.length)
 }
 
 export function pump(film: Film | null, cleanup: Cleanup, fromTail = false) {
@@ -510,7 +553,7 @@ export function pump(film: Film | null, cleanup: Cleanup, fromTail = false) {
 
 function openingAct(film: Film) {
   const {tokens} = film
-  const act = gsap.timeline({onComplete: () => film.onReady()}).timeScale(film.tl.timeScale())
+  const act = gsap.timeline({onComplete: () => film.onReady()})
   act.fromTo(part(film, 'backdrop'), {opacity: 0}, {opacity: 1, duration: tokens.filmFade, ease: 'power1.out'}, 0)
   act.fromTo(part(film, 'total'), {opacity: 0, scale: 0.96}, {opacity: 1, scale: 1, duration: tokens.verySlow, ease: 'smooth-out'}, 0)
   const caption = part(film, 'caption')
@@ -520,9 +563,10 @@ function openingAct(film: Film) {
   }
 }
 
-export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTail: () => void, onReady: () => void, speed = 1): Film {
+export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTail: () => void, onReady: () => void): Film {
   registerEases()
-  const tl = gsap.timeline({paused: true, defaults: {immediateRender: false}}).timeScale(speed)
+  delete root.dataset.settled
+  const tl = gsap.timeline({paused: true, defaults: {immediateRender: false}})
   const film: Film = {
     tl,
     root,
@@ -539,6 +583,7 @@ export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTa
     flood: false,
     started: false,
     counting: false,
+    trays: false,
     finished: false,
     onTail,
     onReady,

@@ -17,14 +17,15 @@ export type CleanupEvent =
 type Of<K extends CleanupEvent['type']> = Extract<CleanupEvent, {type: K}>['data']
 
 export interface Cleanup {
-  log: CleanupEvent[]
-  keys: ReadonlySet<string>
+  log: readonly CleanupEvent[]
+  seen: ReadonlyMap<string, number>
+  waiting: boolean
   started: Of<'started'> | null
   done: Of<'done'> | null
   free: Of<'free'> | null
 }
 
-export const NO_CLEANUP: Cleanup = {log: [], keys: new Set(), started: null, done: null, free: null}
+export const NO_CLEANUP: Cleanup = {log: [], seen: new Map(), waiting: false, started: null, done: null, free: null}
 
 const TYPES: CleanupEvent['type'][] = ['waiting', 'started', 'removed', 'failed', 'worktree', 'command', 'free', 'done']
 
@@ -43,20 +44,40 @@ function keyOf(event: CleanupEvent) {
   }
 }
 
+function seenIn(cleanup: Cleanup) {
+  return cleanup.log.length === 0 ? new Map<string, number>() : (cleanup.seen as Map<string, number>)
+}
+
+function absorb(cleanup: Cleanup, event: CleanupEvent): Cleanup {
+  switch (event.type) {
+    case 'waiting':
+      return {...cleanup, waiting: true}
+    case 'started':
+      return {...cleanup, started: event.data}
+    case 'done':
+      return {...cleanup, done: event.data}
+    case 'free':
+      return event.data.elapsed_ms >= (cleanup.free?.elapsed_ms ?? 0) ? {...cleanup, free: event.data} : cleanup
+    default:
+      return cleanup
+  }
+}
+
 export function cleanupReducer(cleanup: Cleanup, events: readonly CleanupEvent[]): Cleanup {
-  const log = [...cleanup.log]
-  const keys = new Set(cleanup.keys)
-  let {started, done, free} = cleanup
+  const seen = seenIn(cleanup)
+  const length = cleanup.log.length
+  const added: CleanupEvent[] = []
+  const batch = new Set<string>()
+  let next = cleanup
   for (const event of events) {
     const key = keyOf(event)
-    if (keys.has(key)) continue
-    keys.add(key)
-    log.push(event)
-    if (event.type === 'started') started = event.data
-    if (event.type === 'done') done = event.data
-    if (event.type === 'free' && event.data.elapsed_ms >= (free?.elapsed_ms ?? 0)) free = event.data
+    if ((seen.get(key) ?? length) < length || batch.has(key)) continue
+    batch.add(key)
+    seen.set(key, length + added.length)
+    added.push(event)
+    next = absorb(next, event)
   }
-  return log.length === cleanup.log.length ? cleanup : {log, keys, started, done, free}
+  return added.length === 0 ? cleanup : {...next, log: cleanup.log.concat(added), seen}
 }
 
 function isWorkerDone(type: CleanupEvent['type'], data: unknown) {
@@ -183,7 +204,7 @@ function described(plan: FilmPlan, event: CleanupEvent): Omit<Outcome, 'at' | 's
     case 'command': {
       const key = `cmd:${event.data.id}`
       const failed = event.data.status !== 'ok'
-      return {kind: failed ? 'failed' : 'ran', key, reason: failed ? `${event.data.label} failed` : '', ...planned(plan, key, 0, event.data.label)}
+      return {kind: failed ? 'failed' : 'ran', key, reason: failed ? 'the command exited with an error' : '', ...planned(plan, key, 0, event.data.label)}
     }
     default:
       return null
@@ -200,7 +221,7 @@ export function outcomes(plan: FilmPlan, log: readonly CleanupEvent[]) {
   return log.flatMap(e => outcomeOf(plan, e) ?? [])
 }
 
-function useOutcomes(plan: FilmPlan | null, log: readonly CleanupEvent[]) {
+export function useOutcomes(plan: FilmPlan | null, log: readonly CleanupEvent[]) {
   const cache = useMemo(() => new WeakMap<CleanupEvent, Outcome | null>(), [plan])
   return useMemo(() => {
     if (!plan) return []
