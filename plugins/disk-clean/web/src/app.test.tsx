@@ -393,7 +393,7 @@ function Bar() {
   return (
     <>
       <output>{approved} approved</output>
-      <ActionBar selection={selection} locked={false} previewing={false} onCancel={() => {}} onPreview={() => {}} onApprove={() => setApproved(n => n + 1)} onDetails={() => {}} />
+      <ActionBar selection={selection} locked={false} previewing={false} onCancel={() => {}} onPreview={() => {}} onApprove={() => setApproved(n => n + 1)} />
     </>
   )
 }
@@ -496,15 +496,26 @@ function sendAll(source: EventTarget, events: readonly {type: string; data: obje
   for (const event of events) sendRaw(source, event.type, event.data)
 }
 
-const bar = (screen: Awaited<ReturnType<typeof render>>) => screen.getByRole('button', {name: /^(Approved|Deleting|Freed|Reconnecting)/})
+type Screen = Awaited<ReturnType<typeof render>>
 
-function barSays(screen: Awaited<ReturnType<typeof render>>, text: string) {
-  return expect.poll(() => bar(screen).element().textContent).toContain(text)
+const statusOf = (screen: Screen) => screen.container.querySelector('header p')
+
+const details = (screen: Screen) => screen.getByRole('button', {name: 'Details'})
+
+function barSays(screen: Screen, text: string) {
+  return expect.poll(() => statusOf(screen)?.textContent).toContain(text)
 }
 
-function fillOf(screen: Awaited<ReturnType<typeof render>>) {
-  const fill = screen.container.querySelector('[aria-haspopup="dialog"] > span[aria-hidden]')
+function fillOf(screen: Screen) {
+  const fill = screen.container.querySelector('header > span[aria-hidden] > span')
   return fill instanceof HTMLElement ? fill.style.transform : ''
+}
+
+function layoutOf(screen: Screen) {
+  const header = screen.container.querySelector('header')
+  const summary = header?.nextElementSibling
+  if (!header || !summary) throw new Error('no header or summary')
+  return {header: header.getBoundingClientRect().height, summary: summary.getBoundingClientRect().top}
 }
 
 async function approveInApp() {
@@ -534,7 +545,6 @@ describe('cleanup in the app', () => {
     sendRaw(source, 'waiting', {})
     for (const name of ['Approve and delete', 'Preview commands', 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).not.toBeInTheDocument()
     await expect.element(screen.getByText('Approved: the deletion runs in the background')).toBeVisible()
-    await expect.element(screen.getByText(/items found · approved, waiting for Claude to start the deletion/)).toBeVisible()
     await expect.element(screen.getByRole('checkbox', {name: 'Select all in Application caches'})).toBeDisabled()
     await expect.element(screen.getByText('Selected to free')).not.toBeInTheDocument()
     expect(screen.container.querySelectorAll('[data-film]')).toHaveLength(0)
@@ -543,7 +553,6 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-a')
     expect(fillOf(screen)).toMatch(/^scaleX\(0\.5333/)
     await expect.element(screen.getByText('1 of 4 removed')).toBeVisible()
-    await expect.element(screen.getByText(/items found · deleting in the background/)).toBeVisible()
     await expect.element(screen.getByText('removed', {exact: true})).toBeVisible()
     await expect.element(screen.getByText('deleting', {exact: true}).first()).toBeVisible()
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toHaveClass('truncate font-mono text-[12.5px]')
@@ -554,11 +563,10 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByText('3 of 4 removed')).toBeVisible()
     await expect.element(screen.getByText('not removed: still present after removal: permission denied')).toBeVisible()
     await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
-    await expect.element(screen.getByText(/items found · cleanup finished · freed 3\.4 GB/)).toBeVisible()
-    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('Freed 3.4 GB · 3 removed · 1 kept · 1 not removed4 items · 3.8 GB approved · a new cleanup starts with /disk-cleanDetails')
+    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('Cleanup finished4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
     expect(source.readyState).toBe(2)
 
-    await screen.getByRole('button', {name: 'Details'}).click()
+    await details(screen).click()
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
     await expect.element(panel).toBeVisible()
     const rows = panel.getByRole('list', {name: 'Cleanup events'}).getByRole('listitem')
@@ -573,14 +581,14 @@ describe('cleanup in the app', () => {
     await expect.element(panel.getByText('Nothing here yet.')).toBeVisible()
     await userEvent.keyboard('{Escape}')
     await expect.element(panel).not.toBeInTheDocument()
-    await expect.element(screen.getByRole('button', {name: 'Details'})).toHaveFocus()
+    await expect.element(details(screen)).toHaveFocus()
   })
 
   test('the movie opens on demand, keeps up with the stream and closes back to the app', async () => {
     const {screen, source} = await approveInApp()
     sendAll(source, cleanupEvents.slice(0, 3))
     await barSays(screen, 'Deleting ·')
-    await bar(screen).click()
+    await details(screen).click()
     await screen.getByRole('button', {name: 'Watch the movie'}).click()
     const movie = screen.getByRole('dialog', {name: 'Cleanup movie'})
     await expect.element(movie.getByText('Application caches')).toBeVisible()
@@ -588,7 +596,7 @@ describe('cleanup in the app', () => {
     await expect.element(movie).not.toBeInTheDocument()
     sendAll(source, cleanupEvents.slice(3, 6))
     await barSays(screen, 'Deleting · 3.5 GB of 3.8 GB · 3 of 5')
-    await bar(screen).click()
+    await details(screen).click()
     await screen.getByRole('button', {name: 'Watch the movie'}).click()
     sendAll(source, cleanupEvents.slice(6))
     await expect.element(movie.getByRole('heading', {name: 'You freed'})).toBeVisible()
@@ -629,7 +637,7 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByRole('checkbox', {name: /app-b/})).not.toBeChecked()
     sendAll(source, cleanupEvents.slice(0, 3))
     await barSays(screen, 'Deleting · 2.0 GB of 5.0 GB · 1 of 5')
-    await bar(screen).click()
+    await details(screen).click()
     await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'}).getByText('Removed ~/Library/Caches/app-a')).toBeVisible()
   })
 
@@ -638,10 +646,32 @@ describe('cleanup in the app', () => {
     const {screen, source} = await approveInApp()
     sendAll(source, cleanupEvents)
     await barSays(screen, 'Freed 3.4 GB · 3 removed · 1 kept · 1 not removed')
-    await bar(screen).click()
+    await details(screen).click()
     await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'})).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Watch the movie'})).not.toBeInTheDocument()
     expect(document.querySelector('canvas')).toBeNull()
+  })
+
+  test('the header carries the progress without moving the layout, in the foreground colour', async () => {
+    vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
+    const {source} = fakeEventSource()
+    const screen = await render(<App loaded={{...fixture, openEvents: () => source}} />)
+    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeVisible()
+    const before = layoutOf(screen)
+    await screen.getByRole('button', {name: 'Approve and delete'}).click()
+    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
+    expect(layoutOf(screen)).toEqual(before)
+    expect(fillOf(screen)).toBe('scaleX(1)')
+    const status = statusOf(screen)
+    if (!status) throw new Error('no status line')
+    expect(getComputedStyle(status).color).toBe(getComputedStyle(document.body).color)
+    sendAll(source, cleanupEvents.slice(0, 3))
+    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5')
+    expect(layoutOf(screen)).toEqual(before)
+    sendAll(source, cleanupEvents.slice(3))
+    await barSays(screen, 'Freed 3.4 GB · 3 removed · 1 kept · 1 not removed')
+    expect(layoutOf(screen)).toEqual(before)
+    expect(getComputedStyle(status).color).toBe(getComputedStyle(document.body).color)
   })
 
   test('a replayed stream adds no rows twice', () => {

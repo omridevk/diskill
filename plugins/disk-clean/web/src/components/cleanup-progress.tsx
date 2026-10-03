@@ -1,4 +1,4 @@
-import {ChevronDown, Clapperboard} from 'lucide-react'
+import {Activity, Clapperboard} from 'lucide-react'
 import {memo, useCallback, useState, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
 import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/components/ui/sheet'
@@ -51,7 +51,7 @@ function DoneText({progress}: {progress: CleanupProgress}) {
   )
 }
 
-function BarText({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
+export function BarText({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
   const {cleanup, plan} = progress
   if (cleanup.done) return <DoneText progress={progress} />
   if (!cleanup.started) return <span className="t-pulse">{WAITING}</span>
@@ -65,31 +65,23 @@ function BarText({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
   )
 }
 
-function ProgressBar({progress, lost, onOpen}: {progress: CleanupProgress; lost: boolean; onOpen: () => void}) {
+export function ProgressTrack({progress}: {progress: CleanupProgress}) {
+  const waiting = !progress.cleanup.started && !progress.cleanup.done
   return (
-    <button
-      type="button"
-      aria-haspopup="dialog"
-      onClick={onOpen}
-      className="relative isolate flex h-9 w-full shrink-0 items-center gap-3 overflow-hidden border-b bg-card px-7 text-left text-xs font-medium tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
-    >
+    <span aria-hidden className="absolute inset-x-0 -bottom-px h-[3px] overflow-hidden bg-zinc-800">
       <span
-        aria-hidden
-        className="absolute inset-0 -z-10 origin-left bg-blue-400/15 transition-transform duration-(--duration-very-slow) ease-(--ease-smooth-out) motion-reduce:transition-none"
-        style={{transform: `scaleX(${share(progress)})`}}
+        className={`block size-full origin-left bg-blue-500 transition-transform duration-(--duration-very-slow) ease-(--ease-smooth-out) motion-reduce:transition-none ${waiting ? 't-pulse' : ''}`}
+        style={{transform: `scaleX(${waiting ? 1 : share(progress)})`}}
       />
-      <span
-        aria-hidden
-        className="absolute inset-x-0 bottom-0 h-0.5 origin-left bg-blue-400 transition-transform duration-(--duration-very-slow) ease-(--ease-smooth-out) motion-reduce:transition-none"
-        style={{transform: `scaleX(${share(progress)})`}}
-      />
-      <span className="min-w-0 grow truncate">
-        <BarText progress={progress} lost={lost} />
-      </span>
-      <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
-        Details <ChevronDown className="size-3.5" />
-      </span>
-    </button>
+    </span>
+  )
+}
+
+export function DetailsButton({onClick}: {onClick: () => void}) {
+  return (
+    <Button variant="outline" aria-haspopup="dialog" onClick={onClick}>
+      <Activity /> Details
+    </Button>
   )
 }
 
@@ -214,30 +206,22 @@ function ProgressPanel({
   )
 }
 
-export function stateLine(progress: CleanupProgress) {
-  if (progress.cleanup.done) return `cleanup finished · freed ${formatBytes(progress.freed)}`
-  return progress.cleanup.started ? 'deleting in the background' : 'approved, waiting for Claude to start the deletion'
-}
-
-export function ProgressFooter({progress, onDetails}: {progress: CleanupProgress; onDetails: () => void}) {
+export function ProgressFooter({progress}: {progress: CleanupProgress}) {
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex grow flex-col gap-0.5">
         <div className="text-sm font-semibold tabular-nums">
-          {progress.cleanup.done ? <DoneText progress={progress} /> : 'Approved: the deletion runs in the background'}
+          {progress.cleanup.done ? 'Cleanup finished' : 'Approved: the deletion runs in the background'}
         </div>
         <div className="text-xs text-muted-foreground">
           {progress.plan.items.size} items · {formatBytes(progress.plan.approved)} approved · a new cleanup starts with /disk-clean
         </div>
       </div>
-      <Button variant="outline" size="lg" onClick={onDetails}>
-        Details
-      </Button>
     </footer>
   )
 }
 
-export function CleanupTracker({progress, lost, panel, setPanel}: {progress: CleanupProgress; lost: boolean; panel: boolean; setPanel: (open: boolean) => void}) {
+export function CleanupTracker({progress, panel, setPanel}: {progress: CleanupProgress; panel: boolean; setPanel: (open: boolean) => void}) {
   const [movie, setMovie] = useState(false)
   const closeMovie = useCallback(() => setMovie(false), [])
   const openMovie = () => {
@@ -246,7 +230,6 @@ export function CleanupTracker({progress, lost, panel, setPanel}: {progress: Cle
   }
   return (
     <>
-      <ProgressBar progress={progress} lost={lost} onOpen={() => setPanel(true)} />
       <ProgressPanel progress={progress} open={panel} onOpenChange={setPanel} onMovie={openMovie} />
       {movie && <CleanupFilm plan={progress.plan} cleanup={progress.cleanup} onClose={closeMovie} />}
     </>

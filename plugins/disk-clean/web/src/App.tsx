@@ -10,7 +10,7 @@ import {useShownOnMount} from '@/lib/motion'
 import {useSelection, type Selection} from '@/lib/selection'
 import {ActionBar} from './components/action-bar'
 import {Cleanup} from './components/cleanup'
-import {CleanupTracker, stateLine} from './components/cleanup-progress'
+import {BarText, CleanupTracker, DetailsButton, ProgressTrack} from './components/cleanup-progress'
 import {Insights} from './components/insights'
 import {PreviewDialog, type Plan} from './components/preview-dialog'
 import {ScanCounter, useScanHero} from './components/scan-hero'
@@ -54,21 +54,32 @@ function Streamed({live, ready, children}: {live: boolean; ready: boolean; child
   return live ? <SkeletonReveal ready={ready}>{children}</SkeletonReveal> : children
 }
 
-function Header({items, progress}: {items: number; progress: CleanupProgress | null}) {
+function Status({items, progress, lost}: {items: number; progress: CleanupProgress | null; lost: boolean}) {
+  if (!progress) return <p className="truncate text-sm leading-5 text-muted-foreground">{items} items found · nothing is deleted until you approve</p>
   return (
-    <header className="flex items-center gap-4 border-b px-7 py-4">
+    <p className="truncate text-sm leading-5 font-medium text-foreground tabular-nums">
+      <BarText progress={progress} lost={lost} />
+    </p>
+  )
+}
+
+function Header({items, progress, lost, onDetails}: {items: number; progress: CleanupProgress | null; lost: boolean; onDetails: () => void}) {
+  return (
+    <header className="relative flex items-center gap-4 border-b px-7 py-4">
       <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
         <HardDrive className="size-4" />
       </div>
-      <div className="flex grow flex-col">
+      <div className="flex min-w-0 grow flex-col">
         <h1 className="text-[15px] font-semibold">Disk Clean</h1>
-        <p className="text-xs text-muted-foreground">{items} items found · {progress ? stateLine(progress) : 'nothing is deleted until you approve'}</p>
+        <Status items={items} progress={progress} lost={lost} />
       </div>
+      {progress && <DetailsButton onClick={onDetails} />}
       <TabsList>
         <TabsTrigger value="cleanup">Cleanup</TabsTrigger>
         <TabsTrigger value="storage">Storage</TabsTrigger>
         <TabsTrigger value="insights">Insights</TabsTrigger>
       </TabsList>
+      {progress && <ProgressTrack progress={progress} />}
     </header>
   )
 }
@@ -120,6 +131,7 @@ export function App({loaded}: {loaded: Loaded}) {
   const {progress, lost} = useCleanupProgress(loaded.token, film, loaded.openEvents)
   const approved = film !== null
   const [panel, setPanel] = useState(false)
+  const openDetails = () => setPanel(true)
   const cleanable = useMemo(
     () => new Set(data.categories.flatMap(c => c.items.filter(i => !i.report).map(i => i.path))),
     [data.categories],
@@ -130,8 +142,8 @@ export function App({loaded}: {loaded: Loaded}) {
 
   return (
     <Tabs defaultValue="cleanup" className="flex h-svh flex-col gap-0">
-      {progress && <CleanupTracker progress={progress} lost={lost} panel={panel} setPanel={setPanel} />}
-      <Header items={itemCount} progress={progress} />
+      {progress && <CleanupTracker progress={progress} panel={panel} setPanel={setPanel} />}
+      <Header items={itemCount} progress={progress} lost={lost} onDetails={openDetails} />
       <Summary
         data={data}
         selection={selection}
@@ -166,7 +178,6 @@ export function App({loaded}: {loaded: Loaded}) {
         selection={selection}
         locked={!scan.done || scan.error !== ''}
         progress={progress}
-        onDetails={() => setPanel(true)}
         previewing={previewing}
         onCancel={cancel}
         onPreview={openPreview}

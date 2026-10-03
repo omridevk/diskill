@@ -96,7 +96,6 @@ export function ActionBar({
   selection,
   locked,
   progress = null,
-  onDetails,
   previewing,
   onCancel,
   onPreview,
@@ -105,13 +104,12 @@ export function ActionBar({
   selection: Selection
   locked: boolean
   progress?: CleanupProgress | null
-  onDetails: () => void
   previewing: boolean
   onCancel: () => void
   onPreview: () => void
   onApprove: () => void
 }) {
-  if (progress) return <ProgressFooter progress={progress} onDetails={onDetails} />
+  if (progress) return <ProgressFooter progress={progress} />
   const count = selection.selected.length
   const disabled = count === 0 || locked
 
