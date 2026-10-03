@@ -39,27 +39,30 @@ Tunable via environment variables: `DISK_CLEAN_MIN_BYTES` (default 10 MB floor p
 `DISK_CLEAN_NM_MIN_BYTES` (default 5 MB), `DISK_CLEAN_SKIP_MAP=1` to skip the storage map
 and walk only the home and temp folders instead of the whole volume.
 
-The page has two tabs:
+The page has three tabs, a summary strip (disk donut, selected total, scan status) and a footer:
 
-- **Cleanup** — the selectable list. Live search, sort (size, name, item count), minimum-size
-  filter, **minimum-age filter**, risk chips (safe / review / report only), select-all-shown,
-  deselect-all, reset-to-recommended, expand/collapse, show-only-selected, and keyboard shortcuts
-  (`/` `a` `d` `r` `e` `c`). Sort by size, name, item count, or age. Any section with more than
-  three items gets its own quick-select row — **all N · untouched 90+ days · untouched 1+ year ·
-  none** — which is how you take all node_modules at once or just the stale ones. A banner warns
-  when selected items are hidden behind a filter, and picking anything marked `review` turns
-  Approve into a two-click confirm.
-- **Preview commands** (footer button) — a dry run. Shows the exact shell commands Approve would run
-  for the current selection (`rm -rf -- '<path>'`, `git -C <repo> worktree remove <path>`, the fixed
+- **Cleanup** — sections grouped Safe / Review first / Report only, as a **List** (sidebar of
+  sections plus a table of the open section) or **Cards** (one card per section); the view is
+  remembered. Each section has a checkbox for all its items. Live search, risk filters
+  (safe / review / report only), minimum-size and minimum-idle filters, sort (size, name, age),
+  only-selected, and keyboard shortcuts (`/` search, `a` select shown, `d` deselect all, `r` reset,
+  `v` switch view). Sections with more than three items get a quick-select row — **all N · idle 90+
+  days · idle 1+ year · none**. Banners warn when selected items are hidden by a filter and when
+  anything marked `review` is selected.
+- **Storage** — read-only. A **sunburst** or **treemap** of the whole data volume (click to zoom in,
+  breadcrumbs to go back up, white outlines mark folders the Cleanup tab can delete), an inspector
+  for the hovered folder, and the reconciliation of the whole disk (home folder + rest of the data
+  volume + macOS system volume and APFS reserve + free = total). This is where the space this skill
+  *cannot* reclaim shows up.
+- **Insights** — read-only charts: bytes by last-modified day over the past year, the age of the
+  largest folders under `~`, bytes by file kind, cleanup sections by idle time, and the largest files.
+- **Preview commands** (footer) — a dry run. Shows the exact shell commands Approve would run for the
+  current selection (`rm -rf -- '<path>'`, `git -C <repo> worktree remove <path>`, the fixed
   commands), plus anything the safety checks reject. Nothing runs; the list is built by the same
   validation code `clean` uses. Worktree safety checks are not repeated here; `clean` re-runs them
   right before each removal.
-- **Storage map** — read-only, DaisyDisk-style. A three-ring **sunburst** of the home directory:
-  hover to highlight a branch and inspect it, click a segment to zoom into it, click the hub or a
-  breadcrumb to go back up. Segments the Cleanup tab can act on are outlined with a white dashed
-  stroke. Below it, the whole disk reconciles exactly (home folder + rest of the data volume +
-  macOS system volume and APFS reserve + free = total), followed by the same tree as an
-  expandable list. This is where the space this skill *cannot* reclaim shows up.
+- **Approve and delete** (footer) — starts a few-second undo window (a burning fuse; Undo or Escape
+  cancels). The approval is sent only when the window runs out.
 
 Exit codes: `0` approved (`$RUN_DIR/selection.json` written), `3` nothing found,
 `4` timed out after 30 minutes, `5` cancelled or empty selection.
