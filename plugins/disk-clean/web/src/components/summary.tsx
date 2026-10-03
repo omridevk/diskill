@@ -1,7 +1,9 @@
-import type {ReactNode} from 'react'
+import {useEffect, useState, type ReactNode} from 'react'
 import {formatBytes, type ScanData} from '@/lib/data'
+import {cssMs, useReducedMotion} from '@/lib/motion'
 import type {Selection} from '@/lib/selection'
 import {DISK_COLORS, DiskDonut} from './disk-donut'
+import {FlowField} from './radiant/flow-field'
 import {SpinningBytes} from './numbers'
 
 function Legend({color, label, outlined}: {color: string; label: string; outlined?: boolean}) {
@@ -13,8 +15,21 @@ function Legend({color, label, outlined}: {color: string; label: string; outline
   )
 }
 
-function LoadingBackdrop() {
-  return null
+function LoadingBackdrop({scanning}: {scanning: boolean}) {
+  const reduced = useReducedMotion()
+  const [present, setPresent] = useState(scanning)
+  if (scanning && !present) setPresent(true)
+  useEffect(() => {
+    if (scanning) return
+    const timer = setTimeout(() => setPresent(false), reduced ? 0 : cssMs('--backdrop-dur', 500))
+    return () => clearTimeout(timer)
+  }, [scanning, reduced])
+  if (!present) return null
+  return (
+    <div className="t-backdrop pointer-events-none absolute inset-0 -z-10" data-state={scanning ? 'in' : 'out'}>
+      <FlowField className="size-full" />
+    </div>
+  )
 }
 
 export function Summary({
@@ -39,8 +54,8 @@ export function Summary({
   ).size
   const freeAfter = data.free + selection.exactBytes
   return (
-    <section className="relative flex items-center gap-7 border-b px-7 py-5">
-      {scanning && <LoadingBackdrop />}
+    <section className="relative isolate flex items-center gap-7 border-b px-7 py-5">
+      <LoadingBackdrop scanning={scanning} />
       <DiskDonut used={data.used} selected={selection.exactBytes} free={data.free} size={132} />
       <div className="flex grow flex-col gap-2">
         <div className="text-xs text-muted-foreground">Selected to free</div>

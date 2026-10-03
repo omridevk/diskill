@@ -1,7 +1,7 @@
 import {hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode} from 'd3-hierarchy'
 import {useState} from 'react'
-import {afterEach, beforeEach, describe, expect, test} from 'vitest'
-import {page, userEvent} from 'vitest/browser'
+import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest'
+import {cdp, page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {ActionBar} from './components/action-bar'
@@ -331,5 +331,77 @@ describe('approve fuse', () => {
     await expect.element(screen.getByText('1 approved')).toBeVisible()
     await expect.element(approve).toHaveStyle(SHOWN)
     await expect.element(screen.getByText('1 approved')).toBeVisible()
+  })
+})
+
+const backdrop = (container: HTMLElement) => container.querySelector('.t-backdrop canvas')
+
+async function approveFixture() {
+  vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
+  const screen = await render(<App loaded={fixture} />)
+  await screen.getByRole('button', {name: 'Approve and delete'}).click()
+  return screen
+}
+
+function emulateReducedMotion(value: 'reduce' | 'no-preference') {
+  return cdp().send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value}]})
+}
+
+function frameOf(canvas: Element | null | undefined) {
+  if (!(canvas instanceof HTMLCanvasElement)) throw new Error('no canvas')
+  return canvas.toDataURL()
+}
+
+function settle(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+describe('effects', () => {
+  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
+  afterEach(async () => {
+    document.documentElement.style.removeProperty('--fuse-window')
+    vi.restoreAllMocks()
+    await emulateReducedMotion('no-preference')
+  })
+
+  test('the flow field backdrop runs behind the summary while walking and leaves after walked', async () => {
+    const {source, send} = fakeEventSource()
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
+    send(disk)
+    await expect.poll(() => backdrop(screen.container)).toBeInstanceOf(HTMLCanvasElement)
+    send(walked)
+    await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
+    await expect.poll(() => backdrop(screen.container)).toBeNull()
+  })
+
+  test('the approved screen gathers the approved size into a labelled particle canvas', async () => {
+    const screen = await approveFixture()
+    const size = screen.getByRole('img', {name: '3.8 GB'})
+    await expect.element(size).toBeVisible()
+    expect(size.element().querySelector('canvas')).toBeInstanceOf(HTMLCanvasElement)
+    await expect.element(screen.getByRole('heading', {name: 'queued for deletion'})).toBeInTheDocument()
+  })
+
+  test('reduced motion draws one still frame of each effect', async () => {
+    await emulateReducedMotion('reduce')
+    const {source, send} = fakeEventSource()
+    const live = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
+    send(disk)
+    await expect.poll(() => backdrop(live.container)).toBeInstanceOf(HTMLCanvasElement)
+    const scanFrame = frameOf(backdrop(live.container))
+    await settle(300)
+    expect(frameOf(backdrop(live.container))).toBe(scanFrame)
+    send(walked)
+    await expect.poll(() => backdrop(live.container)).toBeNull()
+    await live.unmount()
+
+    const screen = await approveFixture()
+    const size = screen.getByRole('img', {name: '3.8 GB'})
+    await expect.element(size).toBeVisible()
+    const particles = () => size.element().querySelector('canvas')
+    await settle(500)
+    const textFrame = frameOf(particles())
+    await settle(300)
+    expect(frameOf(particles())).toBe(textFrame)
   })
 })

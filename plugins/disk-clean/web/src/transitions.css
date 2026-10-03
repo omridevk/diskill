@@ -58,21 +58,6 @@
   --icon-swap-blur: 2px;
   --icon-swap-start-scale: 0.25;
   --icon-swap-ease: ease-in-out;
-  /* Success check */
-  --check-opacity-dur: 500ms;
-  --check-rotate-dur: 500ms;
-  --check-rotate-from: 80deg;
-  --check-bob-dur: 500ms;
-  --check-y-amount: 40px;
-  --check-blur-dur: 500ms;
-  --check-blur-from: 10px;
-  --check-path-dur: 500ms;
-  --check-path-delay: 80ms;
-  --check-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --check-ease-opacity: cubic-bezier(0.22, 1, 0.36, 1);
-  --check-ease-rotate: cubic-bezier(0.22, 1, 0.36, 1);
-  --check-ease-bob: cubic-bezier(0.34, 1.35, 0.64, 1);
-  --check-ease-path: cubic-bezier(0.22, 1, 0.36, 1);
   /* Shimmer text */
   --shimmer-dur: 2000ms;
   --shimmer-base: #7c7c7c;
@@ -302,50 +287,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .t-icon-swap .t-icon { transition: none !important; }
-}
-
-/* 10 Success check (stroke-dasharray calibrated to the Finished check path) */
-.t-success-check {
-  display: inline-block;
-  transform-origin: center;
-  opacity: 0;
-  will-change: transform, opacity, filter;
-}
-.t-success-check svg { display: block; overflow: visible; }
-.t-success-check svg path {
-  stroke-dasharray: 30;
-  stroke-dashoffset: 30;
-}
-
-.t-success-check[data-state="in"] {
-  animation:
-    t-check-fade   var(--check-opacity-dur) var(--check-ease-opacity) forwards,
-    t-check-rotate var(--check-rotate-dur)  var(--check-ease-rotate)  forwards,
-    t-check-blur   var(--check-blur-dur)    var(--check-ease-out)     forwards,
-    t-check-bob    var(--check-bob-dur)     var(--check-ease-bob)     forwards;
-}
-.t-success-check[data-state="in"] svg path {
-  animation: t-check-draw var(--check-path-dur) var(--check-ease-path) var(--check-path-delay, 0ms) forwards;
-}
-
-@keyframes t-check-fade { from { opacity: 0; } to { opacity: 1; } }
-@keyframes t-check-rotate {
-  from { transform: rotate(var(--check-rotate-from)); }
-  to   { transform: rotate(0deg); }
-}
-@keyframes t-check-blur {
-  from { filter: blur(var(--check-blur-from)); }
-  to   { filter: blur(0); }
-}
-@keyframes t-check-bob {
-  from { translate: 0 var(--check-y-amount); }
-  to   { translate: 0 0; }
-}
-@keyframes t-check-draw { to { stroke-dashoffset: 0; } }
-
-@media (prefers-reduced-motion: reduce) {
-  .t-success-check { animation: none !important; opacity: 1; }
-  .t-success-check svg path { animation: none !important; stroke-dashoffset: 0 !important; }
 }
 
 /* 15 Shimmer text */
@@ -638,4 +579,59 @@
     transition: none !important;
   }
   .t-skel-skeleton.is-pulsing > * { animation: none !important; }
+}
+
+/* Scan backdrop: fades in under the summary while the walk runs, out on walked. */
+:root {
+  --backdrop-opacity: 0.9;
+  --backdrop-mask: linear-gradient(to right, rgb(0 0 0 / 0.6), rgb(0 0 0 / 0.35) 45%, #000 80%);
+  --backdrop-dur: var(--duration-very-slow);
+}
+.t-backdrop {
+  opacity: var(--backdrop-opacity);
+  -webkit-mask-image: var(--backdrop-mask);
+  mask-image: var(--backdrop-mask);
+  transition: opacity var(--backdrop-dur) var(--ease-in-out);
+}
+@starting-style {
+  .t-backdrop { opacity: 0; }
+}
+.t-backdrop[data-state="out"] {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-backdrop { transition: none !important; }
+}
+
+/* Approved screen: the film backdrop fades in, the lines reveal once the particles have gathered. */
+:root {
+  --gather-dur: 1600ms;
+  --film-opacity: 0.8;
+  --film-fade-dur: 1000ms;
+}
+.t-film {
+  opacity: var(--film-opacity);
+  transition: opacity var(--film-fade-dur) var(--ease-out);
+}
+@starting-style {
+  .t-film { opacity: 0; }
+}
+.t-film-scrim {
+  background: radial-gradient(ellipse 46% 36% at 50% 50%, rgb(10 10 10 / 0.85), rgb(10 10 10 / 0.6) 45%, rgb(10 10 10 / 0) 100%);
+}
+.t-stagger--after-gather .t-stagger-line--1 { transition-delay: var(--gather-dur); }
+.t-stagger--after-gather .t-stagger-line--2 { transition-delay: calc(var(--gather-dur) + var(--stagger-stagger)); }
+
+.t-shred {
+  opacity: 1;
+  transition: opacity var(--duration-very-slow) var(--ease-out);
+}
+.t-shred[data-done] {
+  opacity: 0;
+  transition-delay: var(--duration-very-slow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-film { transition: none !important; }
 }
