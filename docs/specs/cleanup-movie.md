@@ -36,7 +36,7 @@ read-only process serves the page from then on.
 | `worktree` | `path, bytes, outcome: removed\|kept, reason` | each worktree after its re-check |
 | `command` | `id, label, status` | each fixed command finished |
 | `free` | `free` | statfs sample, at most every 500 ms while working |
-| `done` | `free_before, free_after, reclaimed` | worker finished |
+| `done` | `free_before, free_after, removed, removed_bytes` | worker finished (`removed_bytes` is the headline "freed"; the free-space change is shown separately) |
 
 `watch` streams them as SSE events of the same names, replaying the file on connect, then tailing
 it. Before the file exists it sends `waiting` once (Claude is showing the dry run).
@@ -58,7 +58,7 @@ events; each event appends a beat to a master timeline so beats never overlap or
    samples arrive. `failed` and `kept` worktrees get their own visible beat with the reason, never
    silently skipped. When many items land at once, beats batch (keep up with the real worker; the
    film may lag it by at most ~2 s).
-4. **Finale** on `done`: "You freed X" with the real `reclaimed` figure, before→after disk bar,
+4. **Finale** on `done`: "You freed X" with the bytes actually removed (`removed_bytes`), before→after disk bar,
    stats (items, sections, biggest item, time taken, kept/failed counts), then a credits roll of
    everything removed. Replay button scrubs the master timeline from the start.
 
@@ -84,4 +84,4 @@ Exporting a video file, sharing, sound.
   events above for a run with rm paths, a kept worktree and a failed path.
 - Browser: feed `waiting`, `started`, `removed`×N, `failed`, `worktree kept`, `free`, `done` through
   the fake event source: the reclaimed counter ends at the real figure, kept/failed are shown with
-  reasons, the finale shows `reclaimed`, reduced motion renders the static list.
+  reasons, the finale shows `removed_bytes`, reduced motion renders the static list.
