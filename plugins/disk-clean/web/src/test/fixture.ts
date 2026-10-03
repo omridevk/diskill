@@ -92,5 +92,5 @@ export const cleanupEvents = [
   {type: 'removed', data: {path: '/Users/you/Library/Caches/app-c', bytes: 0.5 * GB, secs: 1, elapsed_ms: 1500}},
   {type: 'failed', data: {path: '/Users/you/Library/Caches/app-d', bytes: 0.25 * GB, reason: 'still present after removal: permission denied', elapsed_ms: 1600}},
   {type: 'worktree', data: {path: '/Users/you/code/wt', bytes: GB, outcome: 'kept', reason: '1 uncommitted or untracked files', elapsed_ms: 2000}},
-  {type: 'done', data: {free_before: 50 * GB, free_after: 53.4 * GB, reclaimed: 3.5 * GB, elapsed_ms: 2500}},
+  {type: 'done', data: {free_before: 50 * GB, free_after: 53.4 * GB, elapsed_ms: 2500}},
 ] as const

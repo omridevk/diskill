@@ -115,7 +115,7 @@ function quickLog(count: number): CleanupEvent[] {
   return [
     {type: 'started', data: {run: 'run-1', free: 50 * GB, paths: count, worktrees: 0, commands: 0, bytes: count * 2 * MB, elapsed_ms: 0}},
     ...removed,
-    {type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB + count * 2 * MB, reclaimed: count * 2 * MB, elapsed_ms: 1000}},
+    {type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB + count * 2 * MB, elapsed_ms: 1000}},
   ]
 }
 
@@ -328,7 +328,7 @@ describe('the cleanup movie', () => {
       {type: 'started', data: {run: 'run-1', free: 50 * GB, paths: 2, worktrees: 0, commands: 1, bytes: 2 * GB, elapsed_ms: 0}},
       {type: 'failed', data: {path: '/Users/you/Library/Caches/app-a', bytes: 2 * GB, reason: 'Operation not permitted', elapsed_ms: 10}},
       {type: 'command', data: {id: 'brew', label: 'brew cleanup', status: 'failed', elapsed_ms: 20}},
-      {type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB, reclaimed: 0, elapsed_ms: 30}},
+      {type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB, elapsed_ms: 30}},
     ])
     const screen = await render(<CleanupFilm plan={plan} cleanup={failed} onClose={() => {}} />)
     await settledIn(screen)
@@ -339,10 +339,42 @@ describe('the cleanup movie', () => {
 
   test('a done that arrives without a start still ends the film', async () => {
     gsap.globalTimeline.timeScale(4)
-    const orphan = cleanupReducer(NO_CLEANUP, [{type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB, reclaimed: 0, elapsed_ms: 5}}])
+    const orphan = cleanupReducer(NO_CLEANUP, [{type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB, elapsed_ms: 5}}])
     const screen = await render(<CleanupFilm plan={plan} cleanup={orphan} onClose={() => {}} />)
     await settledIn(screen)
     await expect.element(screen.getByRole('heading', {name: 'Nothing was removed'})).toBeVisible()
+  }, 30_000)
+
+  test('a cleanup that never started ends on why, not on a celebration', async () => {
+    gsap.globalTimeline.timeScale(4)
+    const never = cleanupReducer(NO_CLEANUP, [
+      {type: 'waiting', data: {}},
+      {type: 'abandoned', data: {reason: 'clean was never run after the approval'}},
+    ])
+    const screen = await render(<CleanupFilm plan={plan} cleanup={never} onClose={() => {}} />)
+    await settledIn(screen)
+    await expect.element(screen.getByRole('heading', {name: 'The cleanup did not start'})).toBeVisible()
+    expect(film('freed')?.textContent).toBe('clean was never run after the approval')
+    expect(visibility('finale')).toBe('visible')
+    expect(getComputedStyle(film('waiting') ?? document.body).opacity).toBe('0')
+    expect(particleCanvas()).toBeNull()
+  }, 30_000)
+
+  test('a cleanup that stopped halfway ends on what it freed and what it kept', async () => {
+    gsap.globalTimeline.timeScale(4)
+    const stopped = cleanupReducer(NO_CLEANUP, [
+      cleanupEvents[1],
+      cleanupEvents[2],
+      {type: 'kept', data: {path: '/Users/you/Library/Caches/app-b', bytes: GB, reason: 'it changed after the approval', elapsed_ms: 1200}},
+      {type: 'abandoned', data: {reason: 'the cleanup process exited before it finished'}},
+    ])
+    const screen = await render(<CleanupFilm plan={plan} cleanup={stopped} onClose={() => {}} />)
+    await settledIn(screen)
+    await expect.element(screen.getByRole('heading', {name: 'The cleanup stopped before it finished'})).toBeVisible()
+    expect(film('freed')?.textContent).toBe(`the cleanup process exited before it finished · freed ${formatBytes(2 * GB)}`)
+    expect(particleCanvas()).toBeNull()
+    await screen.getByRole('button', {name: /kept/}).click()
+    await expect.element(screen.getByRole('dialog', {name: 'kept'}).getByText('it changed after the approval')).toBeVisible()
   }, 30_000)
 
   test('the shredder never cuts through the caption, and cards stay in their column at narrow widths', async () => {

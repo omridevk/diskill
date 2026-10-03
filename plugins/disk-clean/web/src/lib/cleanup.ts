@@ -13,7 +13,7 @@ export type CleanupEvent =
   | {type: 'worktree'; data: Timed<{path: string; bytes: number; outcome: 'removed' | 'kept'; reason: string}>}
   | {type: 'command'; data: Timed<{id: string; label: string; status: 'ok' | 'failed'}>}
   | {type: 'free'; data: Timed<{free: number}>}
-  | {type: 'done'; data: Timed<{free_before: number; free_after: number; reclaimed: number}>}
+  | {type: 'done'; data: Timed<{free_before: number; free_after: number}>}
   | {type: 'abandoned'; data: {reason: string}}
 
 type Of<K extends CleanupEvent['type']> = Extract<CleanupEvent, {type: K}>['data']
@@ -93,7 +93,7 @@ export function cleanupReducer(cleanup: Cleanup, events: readonly CleanupEvent[]
 }
 
 function isWorkerDone(type: CleanupEvent['type'], data: unknown) {
-  return type !== 'done' || (typeof data === 'object' && data !== null && 'reclaimed' in data)
+  return type !== 'done' || (typeof data === 'object' && data !== null && 'free_after' in data)
 }
 
 const CONNECTING = 0
@@ -296,7 +296,7 @@ export function totalsOf(all: readonly Outcome[], done: Of<'done'> | null): Tota
     sections: new Set(removed.map(o => o.section)).size,
     biggest: removed.reduce<Outcome | null>((best, o) => (best && best.bytes >= o.bytes ? best : o), null),
     reclaimed: removedBytes(removed),
-    seconds: Math.round((done?.elapsed_ms ?? 0) / 1000),
+    seconds: Math.round((done?.elapsed_ms ?? Math.max(0, ...all.map(o => o.at))) / 1000),
   }
 }
 

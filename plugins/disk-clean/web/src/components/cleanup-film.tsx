@@ -373,7 +373,7 @@ function Particles({text, landing, onLanded}: {text: string; landing: boolean; o
 
 interface FinaleProps {
   plan: FilmPlan
-  done: NonNullable<Cleanup['done']>
+  cleanup: Cleanup
   all: readonly Outcome[]
   particles: ParticlePhase
   onLanded: () => void
@@ -391,25 +391,36 @@ function emptySummary(totals: Totals, all: readonly Outcome[]) {
   return parts.filter(Boolean).join(' · ') || 'The cleanup had nothing to do'
 }
 
-function Finale({plan, done, all, particles, onLanded, onReplay}: FinaleProps) {
+function headingOf(cleanup: Cleanup, totals: Totals, all: readonly Outcome[]) {
+  if (cleanup.abandoned) return cleanup.started ? 'The cleanup stopped before it finished' : 'The cleanup did not start'
+  return totals.removed.length === 0 ? emptyHeading(totals, all) : 'You freed'
+}
+
+function figureOf(cleanup: Cleanup, totals: Totals, all: readonly Outcome[], freed: number) {
+  if (cleanup.abandoned) return freed > 0 ? `${cleanup.abandoned.reason} · freed ${formatBytes(freed)}` : cleanup.abandoned.reason
+  return totals.removed.length === 0 ? emptySummary(totals, all) : formatBytes(freed)
+}
+
+function Finale({plan, cleanup, all, particles, onLanded, onReplay}: FinaleProps) {
+  const {done, abandoned} = cleanup
   const totals = useMemo(() => totalsOf(all, done), [all, done])
-  const freed = totals.removed.reduce((sum, o) => sum + o.bytes, 0)
-  const empty = totals.removed.length === 0
+  const freed = totals.reclaimed
+  const empty = totals.removed.length === 0 || abandoned !== null
   return (
     <div data-film="finale" className="invisible absolute inset-0 overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
         <h2 data-film="freed-heading" className="text-2xl font-semibold tracking-tight">
-          {empty ? emptyHeading(totals, all) : 'You freed'}
+          {headingOf(cleanup, totals, all)}
         </h2>
         <div className="relative grid min-h-24 w-full place-items-center">
           <div data-film="freed" className={empty ? 'text-lg text-muted-foreground opacity-0' : 'text-[96px] leading-none font-bold opacity-0'}>
-            {empty ? emptySummary(totals, all) : formatBytes(freed)}
+            {figureOf(cleanup, totals, all, freed)}
           </div>
           <div data-film="particles" aria-hidden className="pointer-events-none absolute inset-x-0 -top-28 h-[320px]">
             {particles !== 'off' && <Particles text={formatBytes(freed)} landing={particles === 'landing'} onLanded={onLanded} />}
           </div>
         </div>
-        <FinaleGauge plan={plan} done={done} freed={freed} />
+        {done && <FinaleGauge plan={plan} done={done} freed={freed} />}
         <Tiles totals={totals} />
         <div
           data-film="credits"
@@ -491,7 +502,7 @@ function Take({container, plan, cleanup, running, onReplay}: TakeProps) {
         </p>
       </section>
       <Stage plan={plan} all={all} startFree={cleanup.started?.free ?? cleanup.done?.free_before ?? 0} shred={shred} />
-      {cleanup.done && <Finale plan={plan} done={cleanup.done} all={all} particles={particles} onLanded={landed} onReplay={onReplay} />}
+      {(cleanup.done || cleanup.abandoned) && <Finale plan={plan} cleanup={cleanup} all={all} particles={particles} onLanded={landed} onReplay={onReplay} />}
     </>
   )
 }

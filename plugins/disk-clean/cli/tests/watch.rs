@@ -168,7 +168,7 @@ fn watch_replays_and_tails_the_worker_events_read_only() {
     .unwrap();
     append(
         &run,
-        &[r#"{"event":"done","free_before":1,"free_after":9,"reclaimed":8,"elapsed_ms":12}"#],
+        &[r#"{"event":"done","free_before":1,"free_after":9,"elapsed_ms":12}"#],
     );
     assert_eq!(read_until(&mut first, "done"), ["failed", "done"]);
 

@@ -428,9 +428,9 @@ function creditsBeat(film: Film, at: number) {
   return at + duration
 }
 
-function particleBeat(film: Film, gather: number) {
+function particleBeat(film: Film, gather: number, quiet: boolean) {
   const {tl, tokens} = film
-  if (film.gauges.reclaimed === 0) {
+  if (quiet || film.gauges.reclaimed === 0) {
     tl.fromTo(part(film, 'freed'), {opacity: 0}, {opacity: 1, duration: tokens.verySlow, ease: 'smooth-out'}, gather)
     return gather
   }
@@ -444,12 +444,13 @@ function particleBeat(film: Film, gather: number) {
   return swapped
 }
 
-function finaleBeat(film: Film) {
+function finaleBeat(film: Film, quiet: boolean) {
   const {tl, tokens} = film
   film.finished = true
   const exit = tl.duration()
   const leaving = all(film, '[data-film="leave"], [data-film="trays"]')
-  if (!film.counting) tl.to([part(film, 'total'), part(film, 'caption')], {autoAlpha: 0, duration: tokens.medium, ease: 'smooth-out'}, exit)
+  const opening = film.started ? [] : [part(film, 'waiting')]
+  if (!film.counting) tl.to([part(film, 'total'), part(film, 'caption'), ...opening], {autoAlpha: 0, duration: tokens.medium, ease: 'smooth-out'}, exit)
   tl.fromTo(leaving, {opacity: 1, y: 0, filter: 'blur(0px)'}, {opacity: 0, y: -8, filter: 'blur(2px)', duration: tokens.medium, ease: 'smooth-out', stagger: 0.03}, exit)
   tl.fromTo(part(film, 'film'), {opacity: 1}, {opacity: 0.45 / 0.8, duration: tokens.filmFade, ease: 'power1.out'}, exit)
   tl.call(film.set.running, [false], exit + tokens.filmFade)
@@ -460,14 +461,15 @@ function finaleBeat(film: Film) {
   tl.fromTo(part(film, 'finale'), {autoAlpha: 0}, {autoAlpha: 1, duration: 0.01}, shown)
   tl.fromTo(words, {opacity: 0, y: 12, filter: 'blur(3px)'}, {opacity: 1, y: 0, filter: 'blur(0px)', duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, shown)
   const gather = shown + tokens.stagger
-  const swapped = particleBeat(film, gather)
-  const bars = gather + 0.4
+  const swapped = particleBeat(film, gather, quiet)
+  const barsAt = gather + 0.4
   const gauge = part(film, 'gauge-after')
   const tiles = all(film, '[data-film="tile"]')
-  tl.set([part(film, 'bars'), ...tiles], {opacity: 0}, shown)
+  const bars = all(film, '[data-film="bars"]')
+  tl.set([...bars, ...tiles], {opacity: 0}, shown)
   if (gauge) tl.set(gauge, {scaleX: Number(gauge.dataset.from)}, shown)
-  tl.fromTo(part(film, 'bars'), {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out'}, bars)
-  if (gauge) tl.fromTo(gauge, {scaleX: Number(gauge.dataset.from)}, {scaleX: Number(gauge.dataset.to), duration: 0.9, ease: 'power3.inOut'}, bars + 0.2)
+  tl.fromTo(bars, {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out'}, barsAt)
+  if (gauge) tl.fromTo(gauge, {scaleX: Number(gauge.dataset.from)}, {scaleX: Number(gauge.dataset.to), duration: 0.9, ease: 'power3.inOut'}, barsAt + 0.2)
   const stats = swapped + tokens.fast
   tl.fromTo(tiles, {opacity: 0, y: 12}, {opacity: 1, y: 0, duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, stats)
   for (const value of all(film, '[data-ticker]')) {
@@ -510,17 +512,22 @@ function workBeats(film: Film, found: Outcome[], flood: boolean) {
 
 function build(film: Film, cleanup: Cleanup, pending: CleanupEvent[]) {
   const types = new Set(pending.map(e => e.type))
+  const abandoned = types.has('abandoned')
+  const ending = abandoned || types.has('done')
   openingBeats(film, cleanup, types)
-  if (!film.started) return
+  if (!film.started) {
+    if (ending) finaleBeat(film, true)
+    return
+  }
   const sample = pending.findLast(e => e.type === 'free')
   if (sample?.type === 'free') film.gauges.free = sample.data.free
-  const done = types.has('done') ? cleanup.done : null
-  workBeats(film, outcomesOf(film, pending), film.flood || done !== null)
-  if (done) finaleBeat(film)
+  workBeats(film, outcomesOf(film, pending), film.flood || ending)
+  if (ending) finaleBeat(film, abandoned)
   film.flood = false
 }
 
-const OUTCOMES: ReadonlySet<CleanupEvent['type']> = new Set(['removed', 'failed', 'worktree', 'command'])
+const OUTCOMES: ReadonlySet<CleanupEvent['type']> = new Set(['removed', 'failed', 'kept', 'worktree', 'command'])
+const ENDINGS: ReadonlySet<CleanupEvent['type']> = new Set(['done', 'abandoned'])
 
 function recapSize(film: Film, log: readonly CleanupEvent[]) {
   const count = log.slice(0, film.backlog).filter(e => OUTCOMES.has(e.type)).length
@@ -531,7 +538,7 @@ function recapSize(film: Film, log: readonly CleanupEvent[]) {
 function nextBatch(film: Film, log: readonly CleanupEvent[]) {
   if (film.flood || film.processed >= film.backlog) return log.slice(film.processed)
   const rest = log.slice(film.processed, film.backlog)
-  const done = rest.findIndex((e, i) => i > 0 && e.type === 'done')
+  const done = rest.findIndex((e, i) => i > 0 && ENDINGS.has(e.type))
   const window = done > 0 ? rest.slice(0, done) : rest
   const marks = window.flatMap((e, i) => (OUTCOMES.has(e.type) ? [i] : []))
   return window.slice(0, marks[recapSize(film, log)] ?? window.length)

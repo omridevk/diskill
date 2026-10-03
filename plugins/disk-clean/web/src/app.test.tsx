@@ -688,7 +688,7 @@ describe('cleanup in the app', () => {
   test('freed is the bytes actually removed, and the free-space change is labelled on its own', async () => {
     const {screen, source} = await approveInApp()
     sendAll(source, cleanupEvents.slice(1, 8))
-    sendRaw(source, 'done', {free_before: 50 * GB, free_after: 49 * GB, reclaimed: 3.5 * GB, elapsed_ms: 2500})
+    sendRaw(source, 'done', {free_before: 50 * GB, free_after: 49 * GB, elapsed_ms: 2500})
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
     await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('Cleanup finishedFreed 3.5 GB · free space changed by −1.0 GB · 4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
     await details(screen).click()

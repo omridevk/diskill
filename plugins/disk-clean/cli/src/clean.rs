@@ -746,7 +746,6 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
         json!({
             "removed": count,
             "removed_bytes": bytes,
-            "reclaimed": bytes,
             "free_before": free_at_start,
             "free_after": after,
         }),
