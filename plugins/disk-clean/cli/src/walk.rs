@@ -74,7 +74,7 @@ pub struct Plan {
 pub struct Walk {
     pub sizes: HashMap<PathBuf, u64>,
     pub children: HashMap<PathBuf, Vec<PathBuf>>,
-    pub map: Vec<(PathBuf, u64)>,
+    pub map: Vec<(PathBuf, u64, u64, i64)>,
     pub node_modules: Vec<PathBuf>,
     pub artifacts: Vec<PathBuf>,
     pub big_files: Vec<(PathBuf, u64, u64)>,
@@ -166,6 +166,8 @@ struct Frame {
     depth: usize,
     path: PathBuf,
     blocks: u64,
+    files: u64,
+    mtime: i64,
     track: bool,
     collect_children: bool,
     home: Option<Home>,
@@ -272,12 +274,14 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     let Some(f) = stack.pop() else { return 0 };
     if let Some(p) = stack.last_mut() {
         p.blocks += f.blocks;
+        p.files += f.files;
+        p.mtime = p.mtime.max(f.mtime);
     }
     if f.track {
         out.sizes.insert(f.path.clone(), f.blocks);
     }
     if plan.map_depth.is_some_and(|m| f.depth <= m) {
-        out.map.push((f.path, f.blocks));
+        out.map.push((f.path, f.blocks, f.files, f.mtime));
     }
     f.blocks
 }
@@ -699,6 +703,8 @@ pub fn walk(
                 depth,
                 path,
                 blocks: own,
+                files: 0,
+                mtime: meta.mtime,
                 track,
                 collect_children,
                 home,
@@ -745,6 +751,8 @@ pub fn walk(
         }
         if let Some(p) = stack.last_mut() {
             p.blocks += own;
+            p.files += u64::from(meta.kind == Kind::File);
+            p.mtime = p.mtime.max(meta.mtime);
         }
     }
     while !stack.is_empty() {

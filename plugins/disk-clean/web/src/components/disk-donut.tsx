@@ -1,10 +1,11 @@
 import {defineChart} from '@tanstack/charts'
 import {pie, polar, radialArc} from '@tanstack/charts/polar'
 import {motion} from '@tanstack/charts/motion'
-import {Chart} from '@tanstack/charts/react/core'
+import {RendererChart as Chart} from '@tanstack/charts/react/tooltip'
 import {useMemo} from 'react'
 import {formatBytes} from '@/lib/data'
 import {cssMs} from '@/lib/motion'
+import {BigBytes, CARD_TOOLTIP, ChartCard, Meter, shareOf} from './chart-card'
 import {PopBytes} from './numbers'
 
 const renderer = motion({initial: false})
@@ -16,7 +17,23 @@ interface Part {
   bytes: number
 }
 
-export function DiskDonut({used, selected, free, size}: {used: number; selected: number; free: number; size: number}) {
+const PART_TEXT: Record<Part['part'], [string, string]> = {
+  used: ['Used', 'Stays used after this cleanup'],
+  selected: ['Selected to free', 'What Approve deletes'],
+  free: ['Free', 'Free right now'],
+}
+
+function PartCard({part, bytes, total}: Part & {total: number}) {
+  const [title, hint] = PART_TEXT[part]
+  return (
+    <ChartCard title={title} hint={hint}>
+      <BigBytes bytes={bytes} />
+      <Meter label="of the disk" share={shareOf(bytes, total)} color={part === 'free' ? 'var(--color-zinc-400)' : DISK_COLORS[part]} />
+    </ChartCard>
+  )
+}
+
+export function DiskDonut({used, selected, free, total, size}: {used: number; selected: number; free: number; total: number; size: number}) {
   const definition = useMemo(() => {
     const parts: Part[] = [
       {part: 'used', bytes: Math.max(0, used - selected)},
@@ -39,6 +56,8 @@ export function DiskDonut({used, selected, free, size}: {used: number; selected:
       ],
       scales: {x: null, y: null},
       motion: {transition: {type: 'tween', duration: cssMs('--duration-fast', 250), easing: 'ease-out'}},
+      tooltip: CARD_TOOLTIP,
+      focusRing: false,
       color: {domain: ['used', 'selected', 'free'], range: [DISK_COLORS.used, DISK_COLORS.selected, DISK_COLORS.free]},
     })
   }, [used, selected, free])
@@ -52,6 +71,7 @@ export function DiskDonut({used, selected, free, size}: {used: number; selected:
         height={size}
         tabIndex={-1}
         ariaLabel={`Disk: ${formatBytes(used - selected)} used after cleanup, ${formatBytes(selected)} selected, ${formatBytes(free)} free now`}
+        renderTooltipBody={({primaryPoint}) => primaryPoint && <PartCard part={primaryPoint.datum.part} bytes={primaryPoint.datum.bytes} total={total} />}
       />
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-[11px] text-muted-foreground">free after</span>

@@ -210,7 +210,7 @@ export function App({loaded}: {loaded: Loaded}) {
       </TabsContent>
       <TabsContent value="storage" className="min-h-0 overflow-auto">
         <Streamed live={live} ready={settled}>
-          <Storage data={data} cleanable={cleanable} />
+          <Storage data={data} cleanable={cleanable} selection={selection} />
         </Streamed>
       </TabsContent>
       <TabsContent value="insights" className="min-h-0 overflow-auto">

@@ -26,6 +26,8 @@ export interface TreeNode {
   name: string
   path: string
   bytes: number
+  files: number
+  mtime: number
   children: TreeNode[]
   rest?: boolean
 }

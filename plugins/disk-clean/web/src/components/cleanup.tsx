@@ -34,7 +34,7 @@ const RISK_BADGE: Record<Risk, string> = {
   review: 'bg-amber-500/15 text-amber-300',
   report: 'bg-muted text-muted-foreground',
 }
-const RISK_BAR: Record<Risk, string> = {safe: 'bg-blue-400', review: 'bg-amber-500', report: 'bg-zinc-600'}
+export const RISK_BAR: Record<Risk, string> = {safe: 'bg-blue-400', review: 'bg-amber-500', report: 'bg-zinc-600'}
 const SORT_LABEL: Record<Sort, string> = {
   'size-desc': 'Largest first',
   'size-asc': 'Smallest first',

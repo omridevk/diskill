@@ -42,17 +42,21 @@ const tree = {
   name: '~',
   path: '/Users/you',
   bytes: 40 * GB,
+  files: 120_000,
+  mtime: 1_700_000_000,
   children: [
     {
       name: 'Library',
       path: '/Users/you/Library',
       bytes: 25 * GB,
+      files: 80_000,
+      mtime: 1_700_000_000,
       children: [
-        {name: 'Caches', path: '/Users/you/Library/Caches', bytes: 15 * GB, children: []},
-        {name: 'everything else in this folder', path: '/Users/you/Library/*', bytes: 10 * GB, children: [], rest: true},
+        {name: 'Caches', path: '/Users/you/Library/Caches', bytes: 15 * GB, files: 50_000, mtime: 1_700_000_000, children: []},
+        {name: 'everything else in this folder', path: '/Users/you/Library/*', bytes: 10 * GB, files: 30_000, mtime: 0, children: [], rest: true},
       ],
     },
-    {name: 'code', path: '/Users/you/code', bytes: 15 * GB, children: []},
+    {name: 'code', path: '/Users/you/code', bytes: 15 * GB, files: 40_000, mtime: 1_690_000_000, children: []},
   ],
 }
 

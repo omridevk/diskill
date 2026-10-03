@@ -46,6 +46,8 @@ pub struct Node {
     pub name: String,
     pub path: String,
     pub bytes: i64,
+    pub files: i64,
+    pub mtime: i64,
     pub children: Vec<Node>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub rest: bool,
@@ -158,15 +160,20 @@ pub fn load_map(run_dir: &Path, home: &str, used: i64) -> Option<Node> {
         return None;
     }
     let mut sizes: HashMap<String, i64> = HashMap::new();
+    let mut stats: HashMap<String, (i64, i64)> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     for line in util::read_lines(&path) {
         let parts: Vec<&str> = line.split('\t').collect();
-        let [size, p] = parts.as_slice() else {
-            continue;
+        let (size, files, mtime, p) = match parts.as_slice() {
+            [size, p] => (*size, "0", "0", *p),
+            [size, files, mtime, p] => (*size, *files, *mtime, *p),
+            _ => continue,
         };
         let Ok(n) = size.trim().parse::<i64>() else {
             continue;
         };
+        let stat = (files.parse().unwrap_or(0), mtime.parse().unwrap_or(0));
+        stats.insert(p.to_string(), stat);
         if sizes.insert(p.to_string(), n).is_none() {
             order.push(p.to_string());
         }
@@ -190,13 +197,14 @@ pub fn load_map(run_dir: &Path, home: &str, used: i64) -> Option<Node> {
                 .push(p.clone());
         }
     }
-    Some(build(&root, home, &sizes, &children))
+    Some(build(&root, home, &sizes, &stats, &children))
 }
 
 fn build(
     p: &str,
     home: &str,
     sizes: &HashMap<String, i64>,
+    stats: &HashMap<String, (i64, i64)>,
     children: &HashMap<String, Vec<String>>,
 ) -> Node {
     let name = if p == home {
@@ -214,9 +222,11 @@ fn build(
     kids.sort_by_key(|k| -sizes.get(*k).copied().unwrap_or(0));
     let mut nodes: Vec<Node> = kids
         .into_iter()
-        .map(|k| build(k, home, sizes, children))
+        .map(|k| build(k, home, sizes, stats, children))
         .collect();
+    let (files, mtime) = stats.get(p).copied().unwrap_or((0, 0));
     let shown: i64 = nodes.iter().map(|n| n.bytes).sum();
+    let shown_files: i64 = nodes.iter().map(|n| n.files).sum();
     let rest = bytes - shown;
     if !nodes.is_empty() && rest > 0 {
         nodes.push(Node {
@@ -228,6 +238,8 @@ fn build(
             .to_string(),
             path: format!("{p}/*"),
             bytes: rest,
+            files: (files - shown_files).max(0),
+            mtime: 0,
             children: Vec::new(),
             rest: true,
         });
@@ -236,6 +248,8 @@ fn build(
         name,
         path: p.to_string(),
         bytes,
+        files,
+        mtime,
         children: nodes,
         rest: false,
     }

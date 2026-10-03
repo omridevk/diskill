@@ -40,7 +40,11 @@ fn review_serves_page_and_writes_selection() {
         "docker\tDocker\tdesc\treview\t0\tcmd\tdocker-prune\tdocker system prune -f\tcmd:docker-prune\t1000\tnote\t-\tvm",
     ];
     fs::write(run.join("scan.tsv"), rows.join("\n") + "\n").unwrap();
-    fs::write(run.join("map.tsv"), "500\t/h/Library\n1000\t/h\n").unwrap();
+    fs::write(
+        run.join("map.tsv"),
+        "500\t/h/Library\n1000\t7\t1700000000\t/h\n",
+    )
+    .unwrap();
     fs::write(
         run.join("disk.tsv"),
         "total\t100000\nused\t60000\nfree\t40000\nhome\t1000\nsnapshots\t0\n",
@@ -95,6 +99,9 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(data["total"], 100000);
     assert_eq!(data["tree"]["name"], "~");
     assert_eq!(data["tree"]["children"][1]["rest"], true);
+    assert_eq!(data["tree"]["files"], 7);
+    assert_eq!(data["tree"]["mtime"], 1700000000);
+    assert_eq!(data["tree"]["children"][0]["files"], 0);
     assert_eq!(data["insights"], Value::Null);
     let token = page
         .split_once(r#"<meta name="disk-clean-token" content=""#)

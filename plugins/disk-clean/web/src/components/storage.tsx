@@ -3,13 +3,15 @@ import {sunburst, type SunburstNode} from '@tanstack/charts/hierarchy/sunburst'
 import {treemap, type TreemapNode} from '@tanstack/charts/hierarchy/treemap'
 import {motion} from '@tanstack/charts/motion'
 import {polar} from '@tanstack/charts/polar'
-import {Chart} from '@tanstack/charts/react/core'
-import {tooltip} from '@tanstack/charts/tooltip'
-import {Fragment, useMemo, useState} from 'react'
+import {RendererChart as Chart} from '@tanstack/charts/react/tooltip'
+import {Fragment, useMemo, useState, type ReactNode} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {ChartBoundary} from './chart-boundary'
+import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './chart-card'
+import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatBytes, type ScanData, type TreeNode} from '@/lib/data'
+import {formatBytes, type Category, type ScanData, type TreeNode} from '@/lib/data'
+import type {Selection} from '@/lib/selection'
 import {squarifyInBounds} from '@/lib/treemap-tile'
 
 interface Row {
@@ -61,10 +63,86 @@ function nodeOf(point: ChartPoint | null) {
   return datum?.data?.node ?? null
 }
 
-function describe(point: ChartPoint, focus: TreeNode) {
-  const node = nodeOf(point)
-  if (!node) return ''
-  return `${node.name} · ${formatBytes(node.bytes)} · ${((node.bytes / focus.bytes) * 100).toFixed(1)}% of ${focus.name}`
+function homeOf(root: TreeNode): string {
+  if (root.name === '~') return root.path
+  return root.children.map(homeOf).find(Boolean) ?? ''
+}
+
+function tilde(path: string, home: string) {
+  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
+}
+
+function titleOf(node: TreeNode) {
+  if (node.path === '/') return 'Whole disk'
+  return node.name === '~' ? 'Home folder' : node.name
+}
+
+function cleanupInside(path: string, categories: readonly Category[], selection: Selection) {
+  const prefix = path.endsWith('/') ? path : `${path}/`
+  const inside = categories
+    .filter(c => c.risk !== 'report')
+    .flatMap(c => c.items.filter(i => i.path === path || i.path.startsWith(prefix)).map(item => ({item, risk: c.risk})))
+  return {
+    bytes: inside.reduce((sum, i) => sum + i.item.bytes, 0),
+    count: inside.length,
+    selected: inside.filter(i => selection.isOn(i.item)).reduce((sum, i) => sum + i.item.bytes, 0),
+    risk: inside.some(i => i.risk === 'review') ? ('review' as const) : ('safe' as const),
+  }
+}
+
+function FolderCard({node, parents, data, home, selection}: {node: TreeNode | null; parents: Map<string, TreeNode>; data: ScanData; home: string; selection: Selection}) {
+  if (!node) return null
+  const parent = parents.get(node.path)
+  const total = data.total
+  const top = node.children.filter(c => !c.rest).slice(0, 3)
+  const cleanup = cleanupInside(node.path, data.categories, selection)
+  return (
+    <ChartCard title={titleOf(node)} subtitle={tilde(node.path, home)} hint={node.children.length > 0 ? 'Click to zoom' : undefined}>
+      <BigBytes bytes={node.bytes} />
+      <div className="flex flex-col gap-2">
+        {parent && <Meter label={`of ${titleOf(parent)}`} share={shareOf(node.bytes, parent.bytes)} />}
+        <Meter label="of the disk" share={shareOf(node.bytes, total)} />
+      </div>
+      <Activity node={node} />
+      {top.length > 0 && (
+        <div className="flex flex-col gap-1.5 border-t pt-2.5">
+          {top.map(child => (
+            <Meter key={child.path} label={child.name} value={formatBytes(child.bytes)} share={shareOf(child.bytes, node.bytes)} color="var(--color-zinc-500)" />
+          ))}
+        </div>
+      )}
+      <Cleanable {...cleanup} />
+    </ChartCard>
+  )
+}
+
+function Activity({node}: {node: TreeNode}) {
+  const parts = [node.files > 0 && `${node.files.toLocaleString()} files`, node.mtime > 0 && `changed ${changedAgo(node.mtime)}`].filter(Boolean)
+  if (parts.length === 0) return null
+  return <div className="text-muted-foreground">{parts.join(' · ')}</div>
+}
+
+function Cleanable({bytes, count, selected, risk}: ReturnType<typeof cleanupInside>) {
+  if (count === 0) return null
+  return (
+    <div className="flex items-center gap-2 border-t pt-2.5">
+      <span className={`size-2 shrink-0 rounded-full ${RISK_BAR[risk]}`} />
+      <span>
+        {formatBytes(bytes)} cleanable in {count} {count === 1 ? 'item' : 'items'} · {formatBytes(selected)} selected
+      </span>
+    </div>
+  )
+}
+
+function BranchHighlight({node, parents, children}: {node: TreeNode | null; parents: Map<string, TreeNode>; children: ReactNode}) {
+  const lit: string[] = []
+  for (let n = node ?? undefined; n; n = parents.get(n.path)) lit.push(`.storage-chart[data-hovering] [data-ts-key$=":${CSS.escape(n.path)}"]`)
+  return (
+    <div className="storage-chart" data-hovering={node ? '' : undefined}>
+      {node && <style>{`${lit.join(',')} {opacity: 1}`}</style>}
+      {children}
+    </div>
+  )
 }
 
 function Reconciliation({data}: {data: ScanData}) {
@@ -105,7 +183,7 @@ function Reconciliation({data}: {data: ScanData}) {
   )
 }
 
-export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<string>}) {
+export function Storage({data, cleanable, selection}: {data: ScanData; cleanable: Set<string>; selection: Selection}) {
   const [shape, setShape] = useState<Shape>('sunburst')
   const tree = data.tree
   const flat = useMemo(() => (tree ? flatten(tree) : null), [tree])
@@ -116,9 +194,14 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
     if (!flat || !tree) return null
     const stroke = (node: {data: Row | null}) => (node.data && cleanable.has(node.data.id) ? '#fafafa' : '#0a0a0a')
     const focusNode = flat.byPath.get(focus)
-    const storageTooltip = {use: tooltip, format: (point: ChartPoint) => describe(point, focusNode ?? tree)}
     const hueOf = new Map((focusNode?.children ?? []).map((child, i) => [child.path, HUES[i % HUES.length] ?? 210]))
     const fill = (branch: string, depth: number) => tone(hueOf.get(branch) ?? 210, depth)
+    const shared = {
+      scales: {x: null, y: null},
+      motion: {transition: {type: 'tween', duration: 480, easing: 'ease-in-out'}},
+      tooltip: CARD_TOOLTIP,
+      focusRing: false,
+    } as const
     if (shape === 'sunburst') {
       return defineChart({
         marks: [
@@ -132,18 +215,15 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
                 rootId: focus,
                 visibleDepth: 3,
                 innerRadius: ({radius}) => radius * 0.28,
-                ringPadding: 1,
                 fill: node => fill(node.branchId ?? node.id, node.depth),
                 stroke,
-                strokeWidth: 1.2,
+                strokeWidth: 1,
               }),
             ],
             scales: {angle: null, radius: null},
           }),
         ],
-        scales: {x: null, y: null},
-        motion: {transition: {type: 'tween', duration: 480, easing: 'ease-in-out'}},
-        tooltip: storageTooltip,
+        ...shared,
       })
     }
     return defineChart({
@@ -159,11 +239,10 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
           labelFill: '#09090b',
           radius: 3,
           stroke,
-          strokeWidth: 1.2,
+          strokeWidth: 1,
         }),
       ],
-      scales: {x: null, y: null},
-      tooltip: storageTooltip,
+      ...shared,
     })
   }, [flat, shape, focus, cleanable, tree])
 
@@ -172,6 +251,7 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
   }
 
   const focusNode = flat.byPath.get(focus) ?? tree
+  const home = homeOf(tree)
   const chain: TreeNode[] = []
   for (let n: TreeNode | undefined = focusNode; n; n = flat.parents.get(n.path)) chain.unshift(n)
   const shown = hover ?? focusNode
@@ -210,14 +290,17 @@ export function Storage({data, cleanable}: {data: ScanData; cleanable: Set<strin
       </div>
       <div className="grid grid-cols-[minmax(0,1fr)_280px] gap-6">
         <ChartBoundary resetKey={`${shape}:${focus}`}>
-          <Chart
-            definition={definition}
-            renderer={renderer}
-            height={shape === 'sunburst' ? 520 : 480}
-            ariaLabel={`Storage ${shape} of ${focusNode.path}`}
-            onFocusChange={point => setHover(nodeOf(point))}
-            onSelect={drill}
-          />
+          <BranchHighlight node={hover} parents={flat.parents}>
+            <Chart
+              definition={definition}
+              renderer={renderer}
+              height={shape === 'sunburst' ? 520 : 480}
+              ariaLabel={`Storage ${shape} of ${focusNode.path}`}
+              onFocusChange={point => setHover(nodeOf(point))}
+              onSelect={drill}
+              renderTooltipBody={({primaryPoint}) => <FolderCard node={nodeOf(primaryPoint ?? null)} parents={flat.parents} data={data} home={home} selection={selection} />}
+            />
+          </BranchHighlight>
         </ChartBoundary>
         <aside className="flex flex-col gap-2 border-l pl-5">
           <div className="font-mono text-xs break-all text-muted-foreground">{shown.path}</div>

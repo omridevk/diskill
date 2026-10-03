@@ -56,7 +56,7 @@ export function Summary({
   return (
     <section className="relative isolate flex items-center gap-7 border-b px-7 py-5">
       <LoadingBackdrop scanning={scanning} />
-      <DiskDonut used={data.used} selected={selection.exactBytes} free={data.free} size={132} />
+      <DiskDonut used={data.used} selected={selection.exactBytes} free={data.free} total={data.total} size={132} />
       <div className="flex grow flex-col gap-2">
         <div className="text-xs text-muted-foreground">Selected to free</div>
         <div className="relative h-12 text-5xl leading-none font-bold tracking-tighter tabular-nums">

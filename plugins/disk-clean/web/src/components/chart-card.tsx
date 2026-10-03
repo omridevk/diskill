@@ -1,0 +1,86 @@
+import {portal} from '@tanstack/charts/tooltip/portal'
+import {tooltip} from '@tanstack/charts/tooltip'
+import type {ReactNode} from 'react'
+import {formatBytes} from '@/lib/data'
+
+export const CARD_TOOLTIP = {
+  use: tooltip,
+  portal,
+  anchor: 'pointer',
+  placement: ['right', 'left', 'bottom', 'top'],
+  offset: 14,
+  sticky: false,
+  className: 'chart-card',
+} as const
+
+const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 31_536_000],
+  ['month', 2_592_000],
+  ['week', 604_800],
+  ['day', 86_400],
+  ['hour', 3_600],
+  ['minute', 60],
+]
+
+export function changedAgo(mtime: number, now = Date.now() / 1000) {
+  const seconds = Math.max(0, now - mtime)
+  const [unit, size] = UNITS.find(([, s]) => seconds >= s) ?? ['minute', 60]
+  return new Intl.RelativeTimeFormat('en', {numeric: 'auto'}).format(-Math.floor(seconds / size), unit)
+}
+
+export const shareOf = (part: number, whole: number) => (whole > 0 ? part / whole : 0)
+
+function percent(share: number) {
+  if (share > 0 && share < 0.001) return '<0.1%'
+  return `${(share * 100).toFixed(1)}%`
+}
+
+function middle(text: string, max = 46) {
+  if (text.length <= max) return text
+  const head = Math.ceil((max - 1) / 2)
+  return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`
+}
+
+export function ChartCard({title, subtitle, hint, children}: {title: string; subtitle?: string; hint?: string; children: ReactNode}) {
+  return (
+    <div className="flex w-72 flex-col gap-3 text-xs text-popover-foreground">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="truncate text-sm font-semibold">{title}</div>
+        {subtitle && (
+          <div className="truncate font-mono text-[11px] text-muted-foreground" title={subtitle}>
+            {middle(subtitle)}
+          </div>
+        )}
+      </div>
+      {children}
+      {hint && <div className="border-t pt-2 text-[11px] text-muted-foreground">{hint}</div>}
+    </div>
+  )
+}
+
+export function Meter({label, value, share, color = 'var(--color-blue-400)'}: {label: ReactNode; value?: ReactNode; share: number; color?: string}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="min-w-0 truncate text-muted-foreground">{label}</span>
+        <span className="shrink-0 font-medium tabular-nums">{value ?? percent(share)}</span>
+      </div>
+      <div className="h-1 overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full" style={{width: `${Math.min(100, Math.max(0, share * 100))}%`, background: color}} />
+      </div>
+    </div>
+  )
+}
+
+export function Fact({label, value}: {label: ReactNode; value: ReactNode}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
+    </div>
+  )
+}
+
+export function BigBytes({bytes}: {bytes: number}) {
+  return <div className="text-2xl leading-none font-bold tracking-tight tabular-nums">{formatBytes(bytes)}</div>
+}

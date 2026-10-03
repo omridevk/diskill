@@ -142,6 +142,25 @@
     --ts-chart-tooltip-shadow: 0 12px 34px oklch(0 0 0 / 45%);
 }
 
+.storage-chart [data-ts-key*=':node:'] {
+    transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.storage-chart[data-hovering] [data-ts-key*=':node:'] {
+    opacity: 0.28;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .storage-chart [data-ts-key*=':node:'] {
+        transition: none;
+    }
+}
+
+.chart-card {
+    --ts-chart-tooltip-max-width: 20rem;
+    --ts-chart-tooltip-padding: 0.75rem 0.875rem;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

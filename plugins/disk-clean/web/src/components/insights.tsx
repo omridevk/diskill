@@ -1,11 +1,11 @@
 import {barX, cell, defineChart} from '@tanstack/charts'
-import {Chart} from '@tanstack/charts/react'
+import {Chart} from '@tanstack/charts/react/tooltip'
 import {scaleBand} from '@tanstack/charts/scales/band'
 import {scaleLinear as linear} from '@tanstack/charts/scales/linear'
-import {tooltip} from '@tanstack/charts/tooltip'
 import {scaleLinear} from 'd3-scale'
 import {useMemo, type ReactNode} from 'react'
 import {ChartBoundary} from './chart-boundary'
+import {BigBytes, CARD_TOOLTIP, ChartCard, Fact, Meter, shareOf} from './chart-card'
 import {formatBytes, type Category, type Insights as InsightsData} from '@/lib/data'
 
 const HEAT = ['#18181b', '#60a5fa']
@@ -18,6 +18,14 @@ const IDLE_BUCKETS: [string, number][] = [
   ['<1y', 365],
   ['1y+', Infinity],
 ]
+
+const INTERACTION = {tooltip: CARD_TOOLTIP, focusRing: false} as const
+
+const sumBytes = (rows: readonly {bytes: number}[]) => rows.reduce((sum, r) => sum + r.bytes, 0)
+
+function dayTitle(day: string) {
+  return new Date(`${day}T00:00`).toLocaleDateString('en', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'})
+}
 
 function heat(max: number) {
   return () => scaleLinear<string>().domain([0, Math.max(1, max)]).range(HEAT)
@@ -50,11 +58,12 @@ function Calendar({days}: {days: InsightsData['modified_by_day']}) {
       cells.push({day, week: String(week), weekday: WEEKDAYS[date.getDay()] ?? '', bytes: found?.bytes ?? 0, files: found?.files ?? 0})
     }
     const weeks = [...new Set(cells.map(c => c.week))]
+    const year = sumBytes(cells)
     const sorted = cells.map(c => c.bytes).toSorted((a, b) => a - b)
     const cap = sorted[Math.floor(sorted.length * 0.97)] ?? 1
     return defineChart({
       marks: [
-        cell(cells, {
+        cell(cells.map(c => ({...c, year})), {
           x: 'week',
           y: 'weekday',
           color: row => Math.min(row.bytes, cap),
@@ -67,15 +76,33 @@ function Calendar({days}: {days: InsightsData['modified_by_day']}) {
         y: {scale: () => scaleBand<string>().domain(WEEKDAYS), axis: {label: ''}},
       },
       color: {scale: heat(cap)},
-      tooltip: {use: tooltip, format: point => `${point.datum.day}: ${formatBytes(point.datum.bytes)} in ${point.datum.files} files`},
+      ...INTERACTION,
     })
   }, [days])
-  return <Chart definition={definition} height={170} ariaLabel="Bytes by last-modified day over the past year" />
+  return (
+    <Chart
+      definition={definition}
+      height={170}
+      ariaLabel="Bytes by last-modified day over the past year"
+      renderTooltipBody={({primaryPoint}) => {
+        const d = primaryPoint?.datum
+        return (
+          d && (
+            <ChartCard title={dayTitle(d.day)}>
+              <BigBytes bytes={d.bytes} />
+              <Fact label="Files changed" value={d.files.toLocaleString()} />
+              <Meter label="of the past year's changes" share={shareOf(d.bytes, d.year)} />
+            </ChartCard>
+          )
+        )
+      }}
+    />
+  )
 }
 
 function FolderAge({data}: {data: InsightsData['age_by_folder']}) {
   const definition = useMemo(() => {
-    const cells = data.folders.flatMap(f => data.buckets.map((bucket, i) => ({folder: f.path, bucket, bytes: f.bytes[i] ?? 0})))
+    const cells = data.folders.flatMap(f => data.buckets.map((bucket, i) => ({folder: f.path, bucket, bytes: f.bytes[i] ?? 0, total: f.bytes.reduce((s, b) => s + b, 0)})))
     const max = Math.max(...cells.map(c => c.bytes))
     return defineChart({
       marks: [cell(cells, {x: 'bucket', y: 'folder', color: 'bytes', key: row => `${row.folder}|${row.bucket}`, inset: 1.5})],
@@ -84,26 +111,61 @@ function FolderAge({data}: {data: InsightsData['age_by_folder']}) {
         y: {scale: () => scaleBand<string>().domain(data.folders.map(f => f.path)), axis: {label: ''}},
       },
       color: {scale: heat(max)},
-      tooltip: {use: tooltip, format: point => `${point.datum.folder} · ${point.datum.bucket}: ${formatBytes(point.datum.bytes)}`},
+      ...INTERACTION,
     })
   }, [data])
-  return <Chart definition={definition} height={36 + data.folders.length * 26} ariaLabel="Folder size by last-modified age" />
+  return (
+    <Chart
+      definition={definition}
+      height={36 + data.folders.length * 26}
+      ariaLabel="Folder size by last-modified age"
+      renderTooltipBody={({primaryPoint}) => {
+        const d = primaryPoint?.datum
+        return (
+          d && (
+            <ChartCard title={d.folder.split('/').at(-1) || d.folder} subtitle={d.folder}>
+              <BigBytes bytes={d.bytes} />
+              <Fact label="Last modified" value={d.bucket} />
+              <Meter label="of this folder" share={shareOf(d.bytes, d.total)} />
+            </ChartCard>
+          )
+        )
+      }}
+    />
+  )
 }
 
 function Kinds({kinds}: {kinds: InsightsData['by_kind']}) {
-  const definition = useMemo(
-    () =>
-      defineChart({
-        marks: [barX(kinds, {x: 'bytes', y: 'kind', key: 'kind', fill: '#60a5fa', radius: 3, inset: 3})],
+  const definition = useMemo(() => {
+    const total = sumBytes(kinds)
+    return defineChart({
+      marks: [barX(kinds.map(k => ({...k, total})), {x: 'bytes', y: 'kind', key: 'kind', fill: '#60a5fa', radius: 3, inset: 3})],
         scales: {
           x: {scale: linear, nice: true, grid: true, axis: {label: 'Bytes', ticks: {format: (v: number) => formatBytes(v)}}},
           y: {scale: () => scaleBand<string>().domain(kinds.map(k => k.kind)), axis: {label: ''}},
         },
-        tooltip: {use: tooltip, format: point => `${point.datum.kind}: ${formatBytes(point.datum.bytes)} in ${point.datum.files} files`},
-      }),
-    [kinds],
+      ...INTERACTION,
+    })
+  }, [kinds])
+  return (
+    <Chart
+      definition={definition}
+      height={40 + kinds.length * 26}
+      ariaLabel="Bytes by file kind"
+      renderTooltipBody={({primaryPoint}) => {
+        const d = primaryPoint?.datum
+        return (
+          d && (
+            <ChartCard title={d.kind}>
+              <BigBytes bytes={d.bytes} />
+              <Fact label="Files" value={d.files.toLocaleString()} />
+              <Meter label="of all files by size" share={shareOf(d.bytes, d.total)} />
+            </ChartCard>
+          )
+        )
+      }}
+    />
   )
-  return <Chart definition={definition} height={40 + kinds.length * 26} ariaLabel="Bytes by file kind" />
 }
 
 function SectionAge({categories}: {categories: Category[]}) {
@@ -113,8 +175,8 @@ function SectionAge({categories}: {categories: Category[]}) {
       IDLE_BUCKETS.map(([bucket], index) => {
         const low = index === 0 ? -1 : (IDLE_BUCKETS[index - 1]?.[1] ?? 0)
         const high = IDLE_BUCKETS[index]?.[1] ?? Infinity
-        const bytes = c.items.filter(i => i.age !== null && i.age > low && i.age <= (index === 0 ? 0 : high)).reduce((s, i) => s + i.bytes, 0)
-        return {section: c.title, bucket, bytes}
+        const items = c.items.filter(i => i.age !== null && i.age > low && i.age <= (index === 0 ? 0 : high))
+        return {section: c.title, bucket, bytes: sumBytes(items), items: items.length, total: c.bytes}
       }),
     )
     const max = Math.max(...cells.map(c => c.bytes))
@@ -127,11 +189,30 @@ function SectionAge({categories}: {categories: Category[]}) {
           y: {scale: () => scaleBand<string>().domain(rows.map(c => c.title)), axis: {label: ''}},
         },
         color: {scale: heat(max)},
-        tooltip: {use: tooltip, format: point => `${point.datum.section} · idle ${point.datum.bucket}: ${formatBytes(point.datum.bytes)}`},
+        ...INTERACTION,
       }),
     }
   }, [categories])
-  return <Chart definition={definition.chart} height={definition.height} ariaLabel="Cleanup sections by idle time" />
+  return (
+    <Chart
+      definition={definition.chart}
+      height={definition.height}
+      ariaLabel="Cleanup sections by idle time"
+      renderTooltipBody={({primaryPoint}) => {
+        const d = primaryPoint?.datum
+        return (
+          d && (
+            <ChartCard title={d.section}>
+              <BigBytes bytes={d.bytes} />
+              <Fact label="Idle for" value={d.bucket} />
+              <Fact label="Items" value={d.items.toLocaleString()} />
+              <Meter label="of this section" share={shareOf(d.bytes, d.total)} />
+            </ChartCard>
+          )
+        )
+      }}
+    />
+  )
 }
 
 export function Insights({insights, categories}: {insights: InsightsData | null | undefined; categories: Category[]}) {

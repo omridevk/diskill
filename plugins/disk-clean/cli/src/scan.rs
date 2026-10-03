@@ -603,11 +603,11 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         let mut map = String::new();
         if !cfg.skip_map {
             let min_kb = cfg.map_min_bytes / 1024;
-            for (p, blocks) in &ctx.walk.map {
+            for (p, blocks, files, mtime) in &ctx.walk.map {
                 let kb = blocks.div_ceil(2);
                 let Some(s) = p.to_str() else { continue };
                 if kb >= min_kb || s == "/" {
-                    map.push_str(&format!("{}\t{s}\n", kb * 1024));
+                    map.push_str(&format!("{}\t{files}\t{mtime}\t{s}\n", kb * 1024));
                 }
             }
         }

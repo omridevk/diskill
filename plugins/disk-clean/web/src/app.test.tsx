@@ -102,7 +102,7 @@ describe('other tabs', () => {
     await expect.element(screen.getByLabelText(/Storage treemap/)).toBeVisible()
   })
 
-  test('hovering the sunburst names the folder and its size', async () => {
+  test('hovering the sunburst shows a folder card with its path, shares, files and cleanable bytes', async () => {
     const screen = await render(<App loaded={fixture} />)
     await screen.getByRole('tab', {name: 'Storage'}).click()
     const chart = screen.getByLabelText(/Storage sunburst/)
@@ -110,9 +110,28 @@ describe('other tabs', () => {
     const sector = chart.element().querySelector('path')
     if (!sector) throw new Error('the sunburst drew no sectors')
     await userEvent.hover(page.elementLocator(sector))
-    const tip = page.getByText(/^(Library|code) · \d+(\.\d)? GB · \d+\.\d% of ~$/)
-    await expect.element(tip).toBeVisible()
-    await expect.element(page.getByText(/^x /)).not.toBeInTheDocument()
+    await expect.element(page.getByText('~/Library', {exact: true})).toBeVisible()
+    await expect.element(page.getByText('of Home folder')).toBeVisible()
+    await expect.element(page.getByText('of the disk')).toBeVisible()
+    await expect.element(page.getByText(/^80,000 files · changed /)).toBeVisible()
+    await expect.element(page.getByText('3.8 GB cleanable in 4 items · 3.8 GB selected')).toBeVisible()
+    await expect.element(page.getByText('Click to zoom')).toBeVisible()
+    await expect.element(page.getByText(/apparent sizes|^x /)).not.toBeInTheDocument()
+    await settle(cssMs('--duration-fast', 250) * 3)
+    await expect.element(page.getByText('~/Library', {exact: true})).toBeVisible()
+    const opacities = () => [...chart.element().querySelectorAll('path')].map(p => getComputedStyle(p).opacity)
+    expect(getComputedStyle(sector).opacity).toBe('1')
+    expect(opacities()).toContain('0.28')
+  })
+
+  test('hovering the disk donut names the segment with its size and share of the disk', async () => {
+    const screen = await render(<App loaded={fixture} />)
+    const donut = screen.getByLabelText(/^Disk: /)
+    const free = [...donut.element().querySelectorAll('path')].at(-1)
+    if (!free) throw new Error('the donut drew no slices')
+    await userEvent.hover(page.elementLocator(free))
+    await expect.element(page.getByText('Free right now')).toBeVisible()
+    await expect.element(page.getByText('10.0%')).toBeVisible()
   })
 
   test('insights draws every panel', async () => {
