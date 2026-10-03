@@ -223,8 +223,30 @@ function ProgressPanel({
   )
 }
 
-export function CleanupTracker({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
-  const [panel, setPanel] = useState(false)
+export function stateLine(progress: CleanupProgress) {
+  if (progress.cleanup.done) return `cleanup finished · freed ${formatBytes(progress.freed)}`
+  return progress.cleanup.started ? 'deleting in the background' : 'approved, waiting for Claude to start the deletion'
+}
+
+export function ProgressFooter({progress, onDetails}: {progress: CleanupProgress; onDetails: () => void}) {
+  return (
+    <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
+      <div className="flex grow flex-col gap-0.5">
+        <div className="text-sm font-semibold tabular-nums">
+          {progress.cleanup.done ? <DoneText progress={progress} /> : 'Approved: the deletion runs in the background'}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {progress.plan.items.size} items · {formatBytes(progress.plan.approved)} approved · a new cleanup starts with /disk-clean
+        </div>
+      </div>
+      <Button variant="outline" size="lg" onClick={onDetails}>
+        Details
+      </Button>
+    </footer>
+  )
+}
+
+export function CleanupTracker({progress, lost, panel, setPanel}: {progress: CleanupProgress; lost: boolean; panel: boolean; setPanel: (open: boolean) => void}) {
   const [movie, setMovie] = useState(false)
   const closeMovie = useCallback(() => setMovie(false), [])
   const openMovie = () => {

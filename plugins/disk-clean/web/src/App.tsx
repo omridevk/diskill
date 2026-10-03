@@ -2,7 +2,7 @@ import {HardDrive} from 'lucide-react'
 import {useMemo, useState, type ReactNode} from 'react'
 import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs'
 import {decide, preview} from '@/lib/api'
-import {filmPlan, useCleanupProgress, type FilmPlan} from '@/lib/cleanup'
+import {filmPlan, useCleanupProgress, type CleanupProgress, type FilmPlan} from '@/lib/cleanup'
 import type {Loaded, ScanData} from '@/lib/data'
 import {useScan} from '@/lib/live'
 import type {Scan} from '@/lib/scan'
@@ -10,7 +10,7 @@ import {useShownOnMount} from '@/lib/motion'
 import {useSelection, type Selection} from '@/lib/selection'
 import {ActionBar} from './components/action-bar'
 import {Cleanup} from './components/cleanup'
-import {CleanupTracker} from './components/cleanup-progress'
+import {CleanupTracker, stateLine} from './components/cleanup-progress'
 import {Insights} from './components/insights'
 import {PreviewDialog, type Plan} from './components/preview-dialog'
 import {ScanCounter, useScanHero} from './components/scan-hero'
@@ -41,11 +41,20 @@ function Problem({text}: {text: string}) {
   return <div className="border-b bg-red-500/10 px-7 py-2 text-xs text-red-300">{text}.</div>
 }
 
+function Problems({scanError, error}: {scanError: string; error: string}) {
+  return (
+    <>
+      <Problem text={scanError && `The scan failed: ${scanError}. Nothing can be approved`} />
+      <Problem text={error && `${error}. Nothing was deleted`} />
+    </>
+  )
+}
+
 function Streamed({live, ready, children}: {live: boolean; ready: boolean; children: ReactNode}) {
   return live ? <SkeletonReveal ready={ready}>{children}</SkeletonReveal> : children
 }
 
-function Header({items, approved}: {items: number; approved: boolean}) {
+function Header({items, progress}: {items: number; progress: CleanupProgress | null}) {
   return (
     <header className="flex items-center gap-4 border-b px-7 py-4">
       <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
@@ -53,7 +62,7 @@ function Header({items, approved}: {items: number; approved: boolean}) {
       </div>
       <div className="flex grow flex-col">
         <h1 className="text-[15px] font-semibold">Disk Clean</h1>
-        <p className="text-xs text-muted-foreground">{items} items found · {approved ? 'approved, the deletion runs in the background' : 'nothing is deleted until you approve'}</p>
+        <p className="text-xs text-muted-foreground">{items} items found · {progress ? stateLine(progress) : 'nothing is deleted until you approve'}</p>
       </div>
       <TabsList>
         <TabsTrigger value="cleanup">Cleanup</TabsTrigger>
@@ -110,6 +119,7 @@ export function App({loaded}: {loaded: Loaded}) {
   const {plan, dialog, setDialog, previewing, done, film, error, openPreview, approve, cancel} = useDecisions(loaded.token, selection, data, loaded.approved !== undefined)
   const {progress, lost} = useCleanupProgress(loaded.token, film, loaded.openEvents)
   const approved = film !== null
+  const [panel, setPanel] = useState(false)
   const cleanable = useMemo(
     () => new Set(data.categories.flatMap(c => c.items.filter(i => !i.report).map(i => i.path))),
     [data.categories],
@@ -120,8 +130,8 @@ export function App({loaded}: {loaded: Loaded}) {
 
   return (
     <Tabs defaultValue="cleanup" className="flex h-svh flex-col gap-0">
-      {progress && <CleanupTracker progress={progress} lost={lost} />}
-      <Header items={itemCount} approved={approved} />
+      {progress && <CleanupTracker progress={progress} lost={lost} panel={panel} setPanel={setPanel} />}
+      <Header items={itemCount} progress={progress} />
       <Summary
         data={data}
         selection={selection}
@@ -131,14 +141,13 @@ export function App({loaded}: {loaded: Loaded}) {
         status={
           <>
             {tracking && <ScanStatus scan={scan} />}
-            <RescanButton scan={scan} locked={approved} onRescan={rescan} />
+            <RescanButton scan={scan} approved={approved} onRescan={rescan} />
           </>
         }
         scanning={live && !settled}
         progress={progress}
       />
-      <Problem text={scan.error && `The scan failed: ${scan.error}. Nothing can be approved`} />
-      <Problem text={error && `${error}. Nothing was deleted`} />
+      <Problems scanError={scan.error} error={error} />
       <TabsContent value="cleanup" className="flex min-h-0 flex-col">
         <Cleanup categories={data.categories} selection={selection} progress={progress} />
       </TabsContent>
@@ -156,7 +165,8 @@ export function App({loaded}: {loaded: Loaded}) {
         key={scan.rescans}
         selection={selection}
         locked={!scan.done || scan.error !== ''}
-        approved={approved}
+        progress={progress}
+        onDetails={() => setPanel(true)}
         previewing={previewing}
         onCancel={cancel}
         onPreview={openPreview}

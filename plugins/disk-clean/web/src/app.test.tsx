@@ -393,7 +393,7 @@ function Bar() {
   return (
     <>
       <output>{approved} approved</output>
-      <ActionBar selection={selection} locked={false} previewing={false} onCancel={() => {}} onPreview={() => {}} onApprove={() => setApproved(n => n + 1)} />
+      <ActionBar selection={selection} locked={false} previewing={false} onCancel={() => {}} onPreview={() => {}} onApprove={() => setApproved(n => n + 1)} onDetails={() => {}} />
     </>
   )
 }
@@ -544,9 +544,9 @@ describe('cleanup in the app', () => {
     const {screen, source} = await approveInApp()
     sendRaw(source, 'done', {reclaimable: 7 * GB, elapsed_ms: 9500})
     sendRaw(source, 'waiting', {})
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
-    await expect.element(screen.getByRole('button', {name: 'Preview commands'})).toBeDisabled()
-    await expect.element(screen.getByRole('button', {name: 'Rescan'})).toBeDisabled()
+    for (const name of ['Approve and delete', 'Preview commands', 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).not.toBeInTheDocument()
+    await expect.element(screen.getByText('Approved: the deletion runs in the background')).toBeVisible()
+    await expect.element(screen.getByText(/items found · approved, waiting for Claude to start the deletion/)).toBeVisible()
     await expect.element(screen.getByRole('checkbox', {name: 'Select all in Application caches'})).toBeDisabled()
     await expect.element(screen.getByText('Selected to free')).not.toBeInTheDocument()
     expect(screen.container.querySelectorAll('[data-film]')).toHaveLength(0)
@@ -555,6 +555,7 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-a')
     expect(fillOf(screen)).toMatch(/^scaleX\(0\.5333/)
     await expect.element(screen.getByText('1 of 4 removed')).toBeVisible()
+    await expect.element(screen.getByText(/items found · deleting in the background/)).toBeVisible()
     await expect.element(screen.getByText('removed', {exact: true})).toBeVisible()
     await expect.element(screen.getByText('deleting', {exact: true}).first()).toBeVisible()
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toHaveClass('truncate font-mono text-[12.5px]')
@@ -565,9 +566,11 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByText('3 of 4 removed')).toBeVisible()
     await expect.element(screen.getByText('not removed: still present after removal: permission denied')).toBeVisible()
     await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
+    await expect.element(screen.getByText(/items found · cleanup finished · freed 3\.4 GB/)).toBeVisible()
+    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('Freed 3.4 GB · 3 removed · 1 kept · 1 not removed4 items · 3.8 GB approved · a new cleanup starts with /disk-cleanDetails')
     expect(source.readyState).toBe(2)
 
-    await bar(screen).click()
+    await screen.getByRole('button', {name: 'Details'}).click()
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
     await expect.element(panel).toBeVisible()
     const rows = panel.getByRole('list', {name: 'Cleanup events'}).getByRole('listitem')
@@ -582,7 +585,7 @@ describe('cleanup in the app', () => {
     await expect.element(panel.getByText('Nothing here yet.')).toBeVisible()
     await userEvent.keyboard('{Escape}')
     await expect.element(panel).not.toBeInTheDocument()
-    await expect.element(bar(screen)).toHaveFocus()
+    await expect.element(screen.getByRole('button', {name: 'Details'})).toHaveFocus()
   })
 
   test('the movie opens on demand, keeps up with the stream and closes back to the app', async () => {

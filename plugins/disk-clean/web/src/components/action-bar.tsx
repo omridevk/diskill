@@ -1,9 +1,11 @@
 import {Loader2, SquareTerminal, Trash2, X} from 'lucide-react'
 import {useEffect, useState, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
+import type {CleanupProgress} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
 import {cssMs, useReducedMotion, useTextSwap} from '@/lib/motion'
 import type {Selection} from '@/lib/selection'
+import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
 import FuseButton from './react-bits/fuse-button'
 
@@ -56,11 +58,11 @@ interface FuseAction {
   icon: ReactNode
   background: string
   color: string
-  disabled: boolean
+  disabled?: boolean
   onCommit: () => void
 }
 
-function FuseAction({label, doneLabel, icon, background, color, disabled, onCommit}: FuseAction) {
+function FuseAction({label, doneLabel, icon, background, color, disabled = false, onCommit}: FuseAction) {
   const reduced = useReducedMotion()
   const undoWindow = cssMs('--fuse-window', 4000)
   const [armed, setArmed] = useState(false)
@@ -86,15 +88,15 @@ function FuseAction({label, doneLabel, icon, background, color, disabled, onComm
   )
 }
 
-function hint(locked: boolean, approved: boolean) {
-  if (approved) return ' · Approved: the deletion runs in the background'
+function hint(locked: boolean) {
   return locked ? ' · Preview and Approve unlock when the scan finishes' : ' · Approve and Cancel give you a few seconds to undo'
 }
 
 export function ActionBar({
   selection,
   locked,
-  approved = false,
+  progress = null,
+  onDetails,
   previewing,
   onCancel,
   onPreview,
@@ -102,14 +104,16 @@ export function ActionBar({
 }: {
   selection: Selection
   locked: boolean
-  approved?: boolean
+  progress?: CleanupProgress | null
+  onDetails: () => void
   previewing: boolean
   onCancel: () => void
   onPreview: () => void
   onApprove: () => void
 }) {
+  if (progress) return <ProgressFooter progress={progress} onDetails={onDetails} />
   const count = selection.selected.length
-  const disabled = count === 0 || locked || approved
+  const disabled = count === 0 || locked
 
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
@@ -122,10 +126,10 @@ export function ActionBar({
         </div>
         <div className="text-xs text-muted-foreground">
           Permanent delete, not to the Trash · worktrees are re-checked right before removal
-          {hint(locked, approved)}
+          {hint(locked)}
         </div>
       </div>
-      <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" disabled={approved} onCommit={onCancel} />
+      <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />
       <PreviewButton disabled={disabled} previewing={previewing} onClick={onPreview} />
       <FuseAction
         label="Approve and delete"
