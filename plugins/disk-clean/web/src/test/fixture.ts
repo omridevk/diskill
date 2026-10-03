@@ -85,12 +85,12 @@ export const fixture: Loaded = {data, token: 'test-token'}
 
 export const cleanupEvents = [
   {type: 'waiting', data: {}},
-  {type: 'started', data: {free: 50 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 3.75 * GB, elapsed_ms: 0}},
+  {type: 'started', data: {run: 'run-1', free: 50 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 3.75 * GB, elapsed_ms: 0}},
   {type: 'removed', data: {path: '/Users/you/Library/Caches/app-a', bytes: 2 * GB, secs: 1, elapsed_ms: 900}},
   {type: 'free', data: {free: 52 * GB, elapsed_ms: 1000}},
   {type: 'removed', data: {path: '/Users/you/Library/Caches/app-b', bytes: GB, secs: 1, elapsed_ms: 1400}},
   {type: 'removed', data: {path: '/Users/you/Library/Caches/app-c', bytes: 0.5 * GB, secs: 1, elapsed_ms: 1500}},
   {type: 'failed', data: {path: '/Users/you/Library/Caches/app-d', bytes: 0.25 * GB, reason: 'still present after removal: permission denied', elapsed_ms: 1600}},
   {type: 'worktree', data: {path: '/Users/you/code/wt', bytes: GB, outcome: 'kept', reason: '1 uncommitted or untracked files', elapsed_ms: 2000}},
-  {type: 'done', data: {free_before: 50 * GB, free_after: 53.4 * GB, reclaimed: 3.4 * GB, elapsed_ms: 2500}},
+  {type: 'done', data: {free_before: 50 * GB, free_after: 53.4 * GB, reclaimed: 3.5 * GB, elapsed_ms: 2500}},
 ] as const

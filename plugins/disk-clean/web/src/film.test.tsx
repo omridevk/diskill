@@ -90,7 +90,7 @@ describe('the cleanup movie', () => {
     expect(frame).toBeLessThan(34)
     expect(gathered).toBeGreaterThan(0.85)
     await expect.element(screen.getByRole('heading', {name: 'You freed'})).toBeVisible()
-    expect(figure.textContent).toBe(formatBytes(3.4 * GB))
+    expect(figure.textContent).toBe(formatBytes(3.5 * GB))
     expect(getComputedStyle(figure).opacity).toBe('1')
   }, 20_000)
 
@@ -113,7 +113,7 @@ describe('the cleanup movie', () => {
       await expect.poll(() => getComputedStyle(screen.container.querySelector('[data-film="stage"]') ?? document.body).visibility).toBe('visible')
       await expect.poll(settled, {timeout: 15_000}).not.toBeNull()
       await expect.element(screen.getByRole('heading', {name: 'You freed'})).toBeVisible()
-      expect(screen.container.querySelector('[data-film="counter"]')?.textContent).toBe(formatBytes(3.4 * GB))
+      expect(screen.container.querySelector('[data-film="counter"]')?.textContent).toBe(formatBytes(3.5 * GB))
       expect(particleCanvas()).toBeNull()
     }
   }, 60_000)

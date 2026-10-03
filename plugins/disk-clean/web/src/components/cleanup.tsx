@@ -166,7 +166,7 @@ const OUTCOME_TEXT: Record<Outcome['kind'], [string, string]> = {
 }
 
 function pendingText(progress: CleanupProgress) {
-  if (progress.cleanup.done) return 'not run'
+  if (progress.cleanup.done || progress.cleanup.abandoned) return 'not run'
   return progress.cleanup.started ? 'deleting' : 'queued'
 }
 

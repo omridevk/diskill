@@ -35,9 +35,10 @@ function LoadingBackdrop({scanning}: {scanning: boolean}) {
 
 function diskFigures(data: ScanData, selection: Selection, progress: CleanupProgress | null) {
   if (!progress) return {used: data.used, pending: selection.exactBytes, before: data.free, after: data.free + selection.exactBytes, free: data.free}
+  const {started, done, abandoned} = progress.cleanup
   const free = progress.free ?? data.free
-  const pending = progress.cleanup.done ? 0 : Math.max(0, progress.plan.approved - progress.freed)
-  return {used: Math.max(0, data.total - free), pending, before: progress.cleanup.started?.free ?? data.free, after: free, free}
+  const pending = done || abandoned ? 0 : Math.max(0, progress.plan.approved - progress.freed)
+  return {used: Math.max(0, data.total - free), pending, before: done?.free_before ?? started?.free ?? data.free, after: free, free}
 }
 
 function FreeSpace({before, after, total, live}: {before: number; after: number; total: number; live: boolean}) {

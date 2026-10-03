@@ -163,7 +163,7 @@ describe('other tabs', () => {
 describe('preview dialog', () => {
   const plan = {
     commands: [
-      'rm -rf -- /Users/you/Library/Caches/app-a',
+      'delete /Users/you/Library/Caches/app-a',
       'git -C /Users/you/repo worktree remove /Users/you/repo-wt',
       'git -C /Users/you/repo worktree prune',
       'docker system prune -f',
@@ -175,7 +175,7 @@ describe('preview dialog', () => {
 
   test('counts each kind of command and lists rejections', async () => {
     const screen = await render(<PreviewDialog plan={plan} open onOpenChange={() => {}} onApprove={() => {}} />)
-    await expect.element(screen.getByText('folders deleted')).toBeVisible()
+    await expect.element(screen.getByText('paths deleted')).toBeVisible()
     await expect.element(screen.getByText('/Users/you/Library/Caches/app-a')).toBeVisible()
     await screen.getByRole('tab', {name: /Rejected/}).click()
     await expect.element(screen.getByText('/Users/you/old')).toBeVisible()
@@ -558,12 +558,14 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toHaveClass('truncate font-mono text-[12.5px]')
 
     sendAll(source, cleanupEvents.slice(3))
-    await barSays(screen, 'Freed 3.4 GB · 3 removed · 1 kept · 1 not removed')
+    await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
     expect(fillOf(screen)).toBe('scaleX(1)')
     await expect.element(screen.getByText('3 of 4 removed')).toBeVisible()
     await expect.element(screen.getByText('not removed: still present after removal: permission denied')).toBeVisible()
     await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
-    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('Cleanup finished4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
+    await expect
+      .element(screen.getByRole('contentinfo'))
+      .toHaveTextContent('Cleanup finishedFreed 3.5 GB · free space changed by +3.4 GB · 4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
     expect(source.readyState).toBe(2)
 
     await details(screen).click()
@@ -602,15 +604,15 @@ describe('cleanup in the app', () => {
     await expect.element(movie.getByRole('heading', {name: 'You freed'})).toBeVisible()
     const freed = screen.container.querySelector('[data-film="freed"]')
     if (!freed) throw new Error('no finale figure')
-    await expect.element(page.elementLocator(freed)).toHaveTextContent(formatBytes(3.4 * GB))
-    await expect.poll(() => screen.container.querySelector('[data-film="counter"]')?.textContent).toBe(formatBytes(3.4 * GB))
+    await expect.element(page.elementLocator(freed)).toHaveTextContent(formatBytes(3.5 * GB))
+    await expect.poll(() => screen.container.querySelector('[data-film="counter"]')?.textContent).toBe(formatBytes(3.5 * GB))
     await expect.element(movie.getByText('still present after removal: permission denied').first()).toBeInTheDocument()
     await expect.poll(() => screen.container.querySelector('[data-film]')?.closest('[data-settled]'), {timeout: 10_000}).not.toBeNull()
     expect(screen.container.querySelector('[data-film="particles"] canvas')).toBeNull()
     await movie.getByRole('button', {name: 'Close'}).click()
     await expect.element(movie).not.toBeInTheDocument()
     expect(document.querySelector('canvas')).toBeNull()
-    await barSays(screen, 'Freed 3.4 GB')
+    await barSays(screen, 'Freed 3.5 GB')
   })
 
   test('a lost connection says so until the stream comes back, but not during the hand-back to the watcher', async () => {
@@ -645,7 +647,7 @@ describe('cleanup in the app', () => {
     await emulateReducedMotion('reduce')
     const {screen, source} = await approveInApp()
     sendAll(source, cleanupEvents)
-    await barSays(screen, 'Freed 3.4 GB · 3 removed · 1 kept · 1 not removed')
+    await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
     await details(screen).click()
     await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'})).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Watch the movie'})).not.toBeInTheDocument()
@@ -669,7 +671,7 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5')
     expect(layoutOf(screen)).toEqual(before)
     sendAll(source, cleanupEvents.slice(3))
-    await barSays(screen, 'Freed 3.4 GB · 3 removed · 1 kept · 1 not removed')
+    await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
     expect(layoutOf(screen)).toEqual(before)
     expect(getComputedStyle(status).color).toBe(getComputedStyle(document.body).color)
   })
@@ -680,7 +682,51 @@ describe('cleanup in the app', () => {
     const once = cleanupReducer(NO_CLEANUP, events)
     expect(cleanupReducer(once, events)).toBe(once)
     expect(cleanupReducer(NO_CLEANUP, [...events, ...events]).log).toEqual(once.log)
-    expect(totalsOf(outcomes(plan, once.log), once.done)).toMatchObject({reclaimed: 3.4 * GB, sections: 1, seconds: 3})
+    expect(totalsOf(outcomes(plan, once.log), once.done)).toMatchObject({reclaimed: 3.5 * GB, sections: 1, seconds: 3})
+  })
+
+  test('freed is the bytes actually removed, and the free-space change is labelled on its own', async () => {
+    const {screen, source} = await approveInApp()
+    sendAll(source, cleanupEvents.slice(1, 8))
+    sendRaw(source, 'done', {free_before: 50 * GB, free_after: 49 * GB, reclaimed: 3.5 * GB, elapsed_ms: 2500})
+    await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
+    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('Cleanup finishedFreed 3.5 GB · free space changed by −1.0 GB · 4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
+    await details(screen).click()
+    const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
+    await expect.element(panel.getByText('Free space changed by')).toBeVisible()
+    await expect.element(panel.getByText('−1.0 GB')).toBeVisible()
+  })
+
+  test('a new run on the same page replaces the previous run instead of mixing with it', async () => {
+    const {screen, source} = await approveInApp()
+    sendAll(source, cleanupEvents.slice(1, 3))
+    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5')
+    sendRaw(source, 'started', {run: 'run-2', free: 52 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 3.75 * GB, elapsed_ms: 0})
+    sendRaw(source, 'removed', {path: '/Users/you/Library/Caches/app-b', bytes: GB, secs: 1, elapsed_ms: 300})
+    await barSays(screen, 'Deleting · 1.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-b')
+    await details(screen).click()
+    const rows = screen.getByRole('dialog', {name: 'Cleanup progress'}).getByRole('list', {name: 'Cleanup events'}).getByRole('listitem')
+    await expect.poll(() => rows.elements().length).toBe(1)
+    await expect.element(rows.first()).toHaveTextContent('0.3sRemoved ~/Library/Caches/app-b1.0 GB in 1.0s')
+  })
+
+  test('a cleanup that never starts says so and stops waiting', async () => {
+    const {screen, source} = await approveInApp()
+    sendRaw(source, 'waiting', {})
+    sendRaw(source, 'abandoned', {reason: 'clean was never run after the approval'})
+    await barSays(screen, 'The cleanup did not start · clean was never run after the approval')
+    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('The cleanup did not start4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
+    await expect.element(screen.getByText('not run', {exact: true}).first()).toBeVisible()
+    expect(fillOf(screen)).toBe('scaleX(0)')
+    expect(source.readyState).toBe(2)
+  })
+
+  test('a cleanup that stops halfway keeps what it freed and says it stopped', async () => {
+    const {screen, source} = await approveInApp()
+    sendAll(source, cleanupEvents.slice(1, 3))
+    sendRaw(source, 'abandoned', {reason: 'the cleanup process exited before it finished'})
+    await barSays(screen, 'The cleanup stopped · the cleanup process exited before it finished · freed 2.0 GB')
+    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('The cleanup stopped before it finished4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
   })
 })
 

@@ -23,6 +23,10 @@ const FILTERS: Record<Filter, (o: Outcome) => boolean> = {
 
 const FILTER_LABEL: Record<Filter, string> = {all: 'All', removed: 'Removed', problems: 'Problems', commands: 'Commands'}
 
+function signedBytes(n: number) {
+  return `${n < 0 ? '−' : '+'}${formatBytes(Math.abs(n))}`
+}
+
 function share(progress: CleanupProgress) {
   if (progress.cleanup.done) return 1
   const {freed, count, total, plan} = progress
@@ -51,9 +55,19 @@ function DoneText({progress}: {progress: CleanupProgress}) {
   )
 }
 
+function AbandonedText({progress, reason}: {progress: CleanupProgress; reason: string}) {
+  if (!progress.cleanup.started) return <span className="text-red-300">The cleanup did not start · {reason}</span>
+  return (
+    <span className="text-red-300">
+      The cleanup stopped · {reason} · freed {formatBytes(progress.freed)}
+    </span>
+  )
+}
+
 export function BarText({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
   const {cleanup, plan} = progress
   if (cleanup.done) return <DoneText progress={progress} />
+  if (cleanup.abandoned) return <AbandonedText progress={progress} reason={cleanup.abandoned.reason} />
   if (!cleanup.started) return <span className="t-pulse">{WAITING}</span>
   if (lost) return 'Reconnecting…'
   const last = progress.outcomes.at(-1)
@@ -66,7 +80,8 @@ export function BarText({progress, lost}: {progress: CleanupProgress; lost: bool
 }
 
 export function ProgressTrack({progress}: {progress: CleanupProgress}) {
-  const waiting = !progress.cleanup.started && !progress.cleanup.done
+  const {started, done, abandoned} = progress.cleanup
+  const waiting = !started && !done && !abandoned
   return (
     <span aria-hidden className="absolute inset-x-0 -bottom-px h-[3px] overflow-hidden bg-zinc-800">
       <span
@@ -99,8 +114,13 @@ function elapsedOf(progress: CleanupProgress) {
   return timed && 'elapsed_ms' in timed.data ? Math.round(timed.data.elapsed_ms / 1000) : 0
 }
 
-function Stats({progress}: {progress: CleanupProgress}) {
+function FreeSpace({progress}: {progress: CleanupProgress}) {
   const before = progress.cleanup.started?.free
+  if (progress.freeChange !== null) return <Stat label="Free space changed by">{signedBytes(progress.freeChange)}</Stat>
+  return <Stat label="Free space">{before === undefined || progress.free === null ? 'not started' : `${formatBytes(before)} → ${formatBytes(progress.free)}`}</Stat>
+}
+
+function Stats({progress}: {progress: CleanupProgress}) {
   return (
     <div className="flex flex-col gap-4 px-4">
       <div className="flex flex-col gap-1">
@@ -114,9 +134,7 @@ function Stats({progress}: {progress: CleanupProgress}) {
           {progress.count} of {progress.total}
         </Stat>
         <Stat label="Elapsed">{formatDuration(elapsedOf(progress))}</Stat>
-        <Stat label="Free space">
-          {before === undefined || progress.free === null ? 'not started' : `${formatBytes(before)} → ${formatBytes(progress.free)}`}
-        </Stat>
+        <FreeSpace progress={progress} />
       </div>
     </div>
   )
@@ -160,6 +178,12 @@ function Rows({outcomes}: {outcomes: readonly Outcome[]}) {
   )
 }
 
+function panelState({cleanup}: CleanupProgress) {
+  if (cleanup.done) return 'Finished'
+  if (cleanup.abandoned) return cleanup.started ? 'Stopped before it finished' : 'The cleanup did not start'
+  return cleanup.started ? 'Deleting in the background' : 'Waiting for the deletion to start'
+}
+
 function ProgressPanel({
   progress,
   open,
@@ -173,13 +197,12 @@ function ProgressPanel({
 }) {
   const [filter, setFilter] = useState<Filter>('all')
   const reduced = useReducedMotion()
-  const {done, started} = progress.cleanup
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="gap-4 data-[side=right]:sm:max-w-md">
         <SheetHeader className="pb-0">
           <SheetTitle>Cleanup progress</SheetTitle>
-          <SheetDescription>{done ? 'Finished' : started ? 'Deleting in the background' : 'Waiting for the deletion to start'}</SheetDescription>
+          <SheetDescription>{panelState(progress)}</SheetDescription>
         </SheetHeader>
         <Stats progress={progress} />
         <div className="flex items-center gap-2 px-4">
@@ -206,14 +229,28 @@ function ProgressPanel({
   )
 }
 
+function footerTitle({cleanup}: CleanupProgress) {
+  if (cleanup.done) return 'Cleanup finished'
+  if (cleanup.abandoned) return cleanup.started ? 'The cleanup stopped before it finished' : 'The cleanup did not start'
+  return 'Approved: the deletion runs in the background'
+}
+
+function FooterFigures({progress}: {progress: CleanupProgress}) {
+  if (progress.freeChange === null) return null
+  return (
+    <>
+      Freed {formatBytes(progress.freed)} · free space changed by {signedBytes(progress.freeChange)} ·{' '}
+    </>
+  )
+}
+
 export function ProgressFooter({progress}: {progress: CleanupProgress}) {
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex grow flex-col gap-0.5">
-        <div className="text-sm font-semibold tabular-nums">
-          {progress.cleanup.done ? 'Cleanup finished' : 'Approved: the deletion runs in the background'}
-        </div>
-        <div className="text-xs text-muted-foreground">
+        <div className="text-sm font-semibold tabular-nums">{footerTitle(progress)}</div>
+        <div className="text-xs text-muted-foreground tabular-nums">
+          <FooterFigures progress={progress} />
           {progress.plan.items.size} items · {formatBytes(progress.plan.approved)} approved · a new cleanup starts with /disk-clean
         </div>
       </div>

@@ -13,11 +13,11 @@ export interface Plan {
   bytes: number
 }
 
-const VERB = /^(rm -rf --|git -C \S+ worktree (?:remove|prune)|#[^:]*:)\s?(.*)$/
+const VERB = /^(delete|git -C \S+ worktree (?:remove|prune)|#[^:]*:)\s?(.*)$/
 
 function Line({n, text}: {n: number; text: string}) {
   const [, verb = text, rest = ''] = text.match(VERB) ?? []
-  const color = verb.startsWith('rm') ? 'text-red-400' : verb.startsWith('#') ? 'text-muted-foreground' : 'text-blue-300'
+  const color = verb === 'delete' ? 'text-red-400' : verb.startsWith('#') ? 'text-muted-foreground' : 'text-blue-300'
   return (
     <div className="grid grid-cols-[44px_minmax(0,1fr)] gap-3 pr-4">
       <span className="text-right text-zinc-600 select-none">{n}</span>
@@ -41,7 +41,7 @@ function Lines({lines}: {lines: string[]}) {
 function stats(plan: Plan) {
   const count = (re: RegExp) => plan.commands.filter(c => re.test(c)).length
   return [
-    {n: count(/^rm /), label: 'folders deleted'},
+    {n: count(/^delete /), label: 'paths deleted'},
     {n: count(/ worktree remove /), label: 'worktrees removed'},
     {n: count(/ worktree prune$/), label: 'repos pruned'},
     {n: count(/^(xcrun|docker|brew) /), label: 'fixed commands'},
@@ -52,7 +52,7 @@ export function PreviewDialog({plan, open, onOpenChange, onApprove}: {plan: Plan
   const [copied, setCopied] = useState(false)
   const copy = () => {
     if (!plan) return
-    navigator.clipboard.writeText(`#!/bin/sh\nset -e\n${plan.commands.join('\n')}\n`).then(() => {
+    navigator.clipboard.writeText(`${plan.commands.join('\n')}\n`).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })
@@ -65,8 +65,9 @@ export function PreviewDialog({plan, open, onOpenChange, onApprove}: {plan: Plan
             Dry run <Badge className="bg-emerald-500/15 text-emerald-300">nothing has run</Badge>
           </DialogTitle>
           <DialogDescription>
-            Approve runs exactly these commands, four at a time, largest first. Deletion is permanent, not to the Trash.
-            Each worktree is re-checked right before removal; git refuses any that changed.
+            Approve runs exactly these steps, four paths at a time, largest first. Deletion is permanent, not to the Trash.
+            Each path is resolved again right before removal and kept if a parent folder now points elsewhere; a symlink
+            is removed itself, never followed. Each worktree is re-checked too; git refuses any that changed.
           </DialogDescription>
         </DialogHeader>
         {plan && (
@@ -91,7 +92,7 @@ export function PreviewDialog({plan, open, onOpenChange, onApprove}: {plan: Plan
                     <Copy className="t-icon" data-icon="a" />
                     <Check className="t-icon" data-icon="b" />
                   </span>
-                  {copied ? 'Copied' : 'Copy as shell script'}
+                  {copied ? 'Copied' : 'Copy the plan'}
                 </Button>
               </div>
               <TabsContent value="commands">

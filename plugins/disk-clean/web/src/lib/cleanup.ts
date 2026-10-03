@@ -6,13 +6,15 @@ type Timed<T> = T & {elapsed_ms: number}
 
 export type CleanupEvent =
   | {type: 'waiting'; data: object}
-  | {type: 'started'; data: Timed<{free: number; paths: number; worktrees: number; commands: number; bytes: number}>}
+  | {type: 'started'; data: Timed<{run: string; free: number; paths: number; worktrees: number; commands: number; bytes: number}>}
   | {type: 'removed'; data: Timed<{path: string; bytes: number; secs: number}>}
   | {type: 'failed'; data: Timed<{path: string; bytes: number; reason: string}>}
+  | {type: 'kept'; data: Timed<{path: string; bytes: number; reason: string}>}
   | {type: 'worktree'; data: Timed<{path: string; bytes: number; outcome: 'removed' | 'kept'; reason: string}>}
   | {type: 'command'; data: Timed<{id: string; label: string; status: 'ok' | 'failed'}>}
   | {type: 'free'; data: Timed<{free: number}>}
   | {type: 'done'; data: Timed<{free_before: number; free_after: number; reclaimed: number}>}
+  | {type: 'abandoned'; data: {reason: string}}
 
 type Of<K extends CleanupEvent['type']> = Extract<CleanupEvent, {type: K}>['data']
 
@@ -22,16 +24,19 @@ export interface Cleanup {
   started: Of<'started'> | null
   done: Of<'done'> | null
   free: Of<'free'> | null
+  abandoned: Of<'abandoned'> | null
 }
 
-export const NO_CLEANUP: Cleanup = {log: [], keys: new Set(), started: null, done: null, free: null}
+export const NO_CLEANUP: Cleanup = {log: [], keys: new Set(), started: null, done: null, free: null, abandoned: null}
 
-const TYPES: CleanupEvent['type'][] = ['waiting', 'started', 'removed', 'failed', 'worktree', 'command', 'free', 'done']
+const TYPES: CleanupEvent['type'][] = ['waiting', 'started', 'removed', 'failed', 'kept', 'worktree', 'command', 'free', 'done', 'abandoned']
+const FINAL = new Set<CleanupEvent['type']>(['done', 'abandoned'])
 
 function keyOf(event: CleanupEvent) {
   switch (event.type) {
     case 'removed':
     case 'failed':
+    case 'kept':
     case 'worktree':
       return event.data.path
     case 'command':
@@ -43,20 +48,40 @@ function keyOf(event: CleanupEvent) {
   }
 }
 
-export function cleanupReducer(cleanup: Cleanup, events: readonly CleanupEvent[]): Cleanup {
-  const log = [...cleanup.log]
-  const keys = new Set(cleanup.keys)
-  let {started, done, free} = cleanup
-  for (const event of events) {
-    const key = keyOf(event)
-    if (keys.has(key)) continue
-    keys.add(key)
-    log.push(event)
-    if (event.type === 'started') started = event.data
-    if (event.type === 'done') done = event.data
-    if (event.type === 'free' && event.data.elapsed_ms >= (free?.elapsed_ms ?? 0)) free = event.data
+function isNewRun(cleanup: Cleanup, event: CleanupEvent) {
+  return event.type === 'started' && cleanup.started !== null && cleanup.started.run !== event.data.run
+}
+
+function stateOf(cleanup: Cleanup, event: CleanupEvent): Partial<Cleanup> {
+  switch (event.type) {
+    case 'started':
+      return {started: event.data}
+    case 'done':
+      return {done: event.data}
+    case 'abandoned':
+      return {abandoned: event.data}
+    case 'free':
+      return event.data.elapsed_ms >= (cleanup.free?.elapsed_ms ?? 0) ? {free: event.data} : {}
+    default:
+      return {}
   }
-  return log.length === cleanup.log.length ? cleanup : {log, keys, started, done, free}
+}
+
+const copyOf = (cleanup: Cleanup) => ({...cleanup, log: [...cleanup.log], keys: new Set(cleanup.keys)})
+
+export function cleanupReducer(cleanup: Cleanup, events: readonly CleanupEvent[]): Cleanup {
+  let next = copyOf(cleanup)
+  let changed = false
+  for (const event of events) {
+    if (isNewRun(next, event)) next = copyOf(NO_CLEANUP)
+    const key = keyOf(event)
+    if (next.keys.has(key)) continue
+    next.keys.add(key)
+    next.log.push(event)
+    Object.assign(next, stateOf(next, event))
+    changed = true
+  }
+  return changed ? next : cleanup
 }
 
 function isWorkerDone(type: CleanupEvent['type'], data: unknown) {
@@ -72,7 +97,7 @@ function listenCleanup(source: EventSourceLike, take: (event: CleanupEvent) => v
       if (data === null || !isWorkerDone(type, data)) return
       setLost(false)
       take({type, data} as CleanupEvent)
-      if (type === 'done') source.close()
+      if (FINAL.has(type)) source.close()
     })
   }
   source.addEventListener('open', () => setLost(false))
@@ -173,6 +198,8 @@ function described(plan: FilmPlan, event: CleanupEvent): Omit<Outcome, 'at' | 's
       return {kind: 'removed', key: event.data.path, reason: '', ...planned(plan, event.data.path, event.data.bytes)}
     case 'failed':
       return {kind: 'failed', key: event.data.path, reason: event.data.reason, ...planned(plan, event.data.path, event.data.bytes)}
+    case 'kept':
+      return {kind: 'kept', key: event.data.path, reason: event.data.reason, ...planned(plan, event.data.path, event.data.bytes)}
     case 'worktree':
       return {
         kind: event.data.outcome === 'kept' ? 'kept' : 'removed',
@@ -220,20 +247,25 @@ export interface CleanupProgress {
   count: number
   total: number
   free: number | null
+  freeChange: number | null
+}
+
+function removedBytes(all: readonly Outcome[]) {
+  return all.filter(o => o.kind === 'removed').reduce((sum, o) => sum + o.bytes, 0)
 }
 
 function progressOf(plan: FilmPlan, cleanup: Cleanup, all: readonly Outcome[]): CleanupProgress {
-  const started = cleanup.started
-  const removed = all.filter(o => o.kind === 'removed').reduce((sum, o) => sum + o.bytes, 0)
+  const {started, done} = cleanup
   return {
     plan,
     cleanup,
     outcomes: all,
     byKey: new Map(all.map(o => [o.key, o])),
-    freed: cleanup.done ? Math.max(0, cleanup.done.reclaimed) : removed,
+    freed: removedBytes(all),
     count: all.length,
     total: started ? started.paths + started.worktrees + started.commands : plan.items.size,
-    free: cleanup.done?.free_after ?? cleanup.free?.free ?? started?.free ?? null,
+    free: done?.free_after ?? cleanup.free?.free ?? started?.free ?? null,
+    freeChange: done ? done.free_after - done.free_before : null,
   }
 }
 
@@ -255,7 +287,7 @@ export function totalsOf(all: readonly Outcome[], done: Of<'done'> | null): Tota
     kept: all.filter(o => o.kind === 'kept'),
     sections: new Set(removed.map(o => o.section)).size,
     biggest: removed.reduce<Outcome | null>((best, o) => (best && best.bytes >= o.bytes ? best : o), null),
-    reclaimed: Math.max(0, done?.reclaimed ?? removed.reduce((sum, o) => sum + o.bytes, 0)),
+    reclaimed: removedBytes(removed),
     seconds: Math.round((done?.elapsed_ms ?? 0) / 1000),
   }
 }
