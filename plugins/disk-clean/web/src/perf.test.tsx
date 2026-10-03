@@ -1,9 +1,9 @@
 import {Profiler} from 'react'
-import {afterEach, describe, expect, test} from 'vitest'
+import {describe, expect, test} from 'vitest'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import type {Loaded} from './lib/data'
-import {bigSection, withSection} from './test/fixture'
+import {at, bigSection, withSection} from './test/fixture'
 import './index.css'
 
 const SMALL = 30
@@ -21,7 +21,7 @@ const commits: number[] = []
 function Measured({loaded}: {loaded: Loaded}) {
   return (
     <Profiler id="app" onRender={(_id, _phase, actual) => commits.push(actual)}>
-      <App loaded={loaded} />
+      <App loaded={loaded} history={at()} />
     </Profiler>
   )
 }
@@ -65,9 +65,9 @@ function scrollerOf(element: Element) {
   throw new Error('no scroll container')
 }
 
-function button(name: RegExp) {
-  const found = [...document.querySelectorAll('button')].find(b => name.test(b.textContent ?? ''))
-  if (!found) throw new Error(`no button ${name}`)
+function link(name: RegExp) {
+  const found = [...document.querySelectorAll('a')].find(a => name.test(a.textContent ?? ''))
+  if (!found) throw new Error(`no link ${name}`)
   return found
 }
 
@@ -92,8 +92,8 @@ async function scrollThrough(scroller: HTMLElement) {
 async function interactions(rows: number): Promise<Work> {
   const screen = await render(<Measured loaded={withSection(bigSection(rows))} />)
   await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
-  const open = await repeated([() => button(/^Your macOS temp/).click(), () => button(/^Application caches/).click()])
-  button(/^Your macOS temp/).click()
+  const open = await repeated([() => link(/^Your macOS temp/).click(), () => link(/^Application caches/).click()])
+  link(/^Your macOS temp/).click()
   await screen.getByRole('combobox', {name: 'Sort'}).click()
   await screen.getByRole('option', {name: 'Name'}).click()
   await expect.element(screen.getByText('~/tmp/item-00000')).toBeVisible()
@@ -142,7 +142,7 @@ async function cleanup(events: number): Promise<Work> {
   const paths = loaded.data.categories.flatMap(c => c.items.filter(i => i.path.includes('/tmp/')).map(i => i.path))
   const source = cleanupSource()
   const screen = await render(<Measured loaded={{...loaded, approved: paths, openEvents: () => source}} />)
-  await screen.getByRole('button', {name: /^Your macOS temp/}).click()
+  await screen.getByRole('link', {name: /^Your macOS temp/}).click()
   await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
   send(source, 'started', {run: 'run-1', free: 1, paths: paths.length, worktrees: 0, commands: 0, bytes: paths.length * 4096, elapsed_ms: 0})
   await screen.getByRole('button', {name: 'Details'}).click()
@@ -176,8 +176,6 @@ function scalesLikeSmall(small: Work, big: Work, slack: number) {
 }
 
 describe('a 10,000-row section', () => {
-  afterEach(() => localStorage.removeItem('disk-clean:view'))
-
   test('costs about what a 30-row section costs to open, filter, select and scroll', async () => {
     const small = await interactions(SMALL)
     const big = await interactions(ROWS)

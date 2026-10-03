@@ -1,6 +1,9 @@
+import {createMemoryHistory} from '@tanstack/react-router'
 import type {Category, Item, Loaded, ScanData} from '@/lib/data'
 
 const GB = 1024 ** 3
+
+export const at = (url = '/') => createMemoryHistory({initialEntries: [url]})
 
 export function item(path: string, bytes: number, extra: Partial<Item> = {}): Item {
   return {

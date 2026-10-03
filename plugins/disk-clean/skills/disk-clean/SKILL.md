@@ -47,8 +47,7 @@ and walk only the home and temp folders instead of the whole volume.
 The page has three tabs, a summary strip (disk donut, selected total, scan status) and a footer:
 
 - **Cleanup** — sections grouped Safe / Review first / Report only, as a **List** (sidebar of
-  sections plus a table of the open section) or **Cards** (one card per section); the view is
-  remembered. Each section has a checkbox for all its shown items, and its size and counts follow
+  sections plus a table of the open section) or **Cards** (one card per section). Each section has a checkbox for all its shown items, and its size and counts follow
   the filters (a path inside another selected path counts once). Live search, risk filters
   (safe / review / report only), minimum-size and minimum-idle filters, sort (size, natural name
   order, age), only-selected, and keyboard shortcuts (`/` search, `a` select shown, `d` deselect
@@ -62,6 +61,13 @@ The page has three tabs, a summary strip (disk donut, selected total, scan statu
   *cannot* reclaim shows up.
 - **Insights** — read-only charts: bytes by last-modified day over the past year, the age of the
   largest folders under `~`, bytes by file kind, cleanup sections by idle time, and the largest files.
+- **Addresses** — everything you see is in the page address, so reload, Back/Forward and a copied
+  link all restore it: the tab and the open section or zoomed folder are the path
+  (`/cleanup/<section>`, `/storage/<folder path>`, `/insights`), filters, sort, view and the
+  chart shape are query parameters (default values are left out), the Preview dialog is
+  `/cleanup/confirm`, and the progress log and the movie are `?overlay=progress` / `?overlay=movie`.
+  Escape closes a dialog by going back to the address it was opened from. Which items are ticked is
+  not in the address. The local server answers every page address with the same page and token.
 - **Preview commands** (footer) — a dry run. Shows the exact steps Approve would take for the
   current selection (`delete '<path>'`, `git -C <repo> worktree remove <path>`, the fixed
   commands), plus anything the safety checks reject. Nothing runs; the list is built by the same

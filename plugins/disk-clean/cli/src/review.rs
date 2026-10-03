@@ -437,7 +437,13 @@ fn handle(
             let route = target.split('?').next().unwrap_or("");
             if route == "/favicon.ico" {
                 respond(&mut stream, "204 No Content", "text/plain", b"");
-            } else if route == "/" {
+            } else if route == "/events" {
+                if constant_eq(query_token(target).as_bytes(), token.as_bytes()) {
+                    stream_events(&mut stream, live);
+                } else {
+                    refuse(&mut stream, "403 Forbidden");
+                }
+            } else if http::is_page_route(route) {
                 let html = if lock(&live.log).generation > 0 {
                     &pages.live
                 } else {
@@ -449,18 +455,12 @@ fn handle(
                     "text/html; charset=utf-8",
                     html.as_bytes(),
                 );
-            } else if route == "/events" {
-                if constant_eq(query_token(target).as_bytes(), token.as_bytes()) {
-                    stream_events(&mut stream, live);
-                } else {
-                    refuse(&mut stream, "403 Forbidden");
-                }
             } else {
                 refuse(&mut stream, "404 Not Found");
             }
         }
         "POST" => {
-            if !["/decide", "/preview", "/rescan"].contains(&target) {
+            if !http::POST_ROUTES.contains(&target) {
                 return refuse(&mut stream, "404 Not Found");
             }
             if !http::is_trusted_post(&req) {

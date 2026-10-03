@@ -5,6 +5,7 @@ import {treemap, type TreemapNode} from '@tanstack/charts/hierarchy/treemap'
 import {motion} from '@tanstack/charts/motion'
 import {polar} from '@tanstack/charts/polar'
 import {RendererChart as Chart} from '@tanstack/charts/react/tooltip'
+import {Link, useNavigate, useParams} from '@tanstack/react-router'
 import {Fragment, useMemo, useRef, useState, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {ChartBoundary} from './chart-boundary'
@@ -12,6 +13,7 @@ import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './c
 import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatBytes, type Category, type ScanData, type TreeNode} from '@/lib/data'
+import type {Shape} from '@/lib/search'
 import {outermost, sumBytes, type Selection} from '@/lib/selection'
 import {squarifyInBounds} from '@/lib/treemap-tile'
 
@@ -22,8 +24,6 @@ interface Row {
   value: number
   node: TreeNode
 }
-
-type Shape = 'sunburst' | 'treemap'
 
 const renderer = motion({initial: false})
 
@@ -265,11 +265,22 @@ function useStorageDefinition(flat: ReturnType<typeof flatten> | null, tree: Tre
   return {definition, onRender}
 }
 
-export function Storage({data, cleanable, selection}: {data: ScanData; cleanable: Set<string>; selection: Selection}) {
-  const [shape, setShape] = useState<Shape>('sunburst')
+function splatOf(path: string, root: string) {
+  return path === root ? '' : path.slice(1)
+}
+
+function useFocus(flat: ReturnType<typeof flatten> | null, root: string) {
+  const splat = useParams({strict: false, select: params => params._splat})
+  const wanted = splat ? `/${splat}` : root
+  return flat?.byPath.has(wanted) ? wanted : root
+}
+
+export function Storage({data, cleanable, selection, shape}: {data: ScanData; cleanable: Set<string>; selection: Selection; shape: Shape}) {
   const tree = data.tree
   const flat = useMemo(() => (tree ? flatten(tree) : null), [tree])
-  const [focus, setFocus] = useState(tree?.path ?? '')
+  const root = tree?.path ?? ''
+  const focus = useFocus(flat, root)
+  const navigate = useNavigate()
   const [hover, setHover] = useState<TreeNode | null>(null)
   const {definition, onRender} = useStorageDefinition(flat, tree, shape, focus, cleanable)
 
@@ -290,7 +301,7 @@ export function Storage({data, cleanable, selection}: {data: ScanData; cleanable
       if (!parent || parent.path === focus) break
       node = parent
     }
-    if (node?.children.length) setFocus(node.path)
+    if (node?.children.length) navigate({to: '/storage/$', params: {_splat: splatOf(node.path, root)}, search: true})
   }
 
   return (
@@ -300,17 +311,19 @@ export function Storage({data, cleanable, selection}: {data: ScanData; cleanable
           {chain.map((n, i) => (
             <Fragment key={n.path}>
               {i > 0 && <span className="text-muted-foreground">/</span>}
-              <button
-                type="button"
+              <Link
+                to="/storage/$"
+                params={{_splat: splatOf(n.path, root)}}
+                search
+                activeOptions={{exact: true}}
                 className={i === chain.length - 1 ? 'font-semibold' : `text-muted-foreground transition-[color] duration-(--duration-quick) ease-(--ease-smooth-out) motion-reduce:transition-none hover:text-foreground`}
-                onClick={() => setFocus(n.path)}
               >
                 {n.name}
-              </button>
+              </Link>
             </Fragment>
           ))}
         </nav>
-        <ToggleGroup value={[shape]} onValueChange={v => v[0] && setShape(v[0] as Shape)} variant="outline" size="sm" aria-label="Chart">
+        <ToggleGroup value={[shape]} onValueChange={v => v[0] && navigate({to: '.', search: prev => ({...prev, shape: v[0] as Shape})})} variant="outline" size="sm" aria-label="Chart">
           <ToggleGroupItem value="sunburst">Sunburst</ToggleGroupItem>
           <ToggleGroupItem value="treemap">Treemap</ToggleGroupItem>
         </ToggleGroup>

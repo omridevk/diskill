@@ -184,6 +184,12 @@ pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+pub const POST_ROUTES: [&str; 3] = ["/decide", "/preview", "/rescan"];
+
+pub fn is_page_route(route: &str) -> bool {
+    route.starts_with('/') && route != "/events" && !POST_ROUTES.contains(&route)
+}
+
 pub fn query_token(target: &str) -> &str {
     target
         .split_once('?')

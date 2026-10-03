@@ -1,7 +1,7 @@
 import {Dialog as DialogPrimitive} from '@base-ui/react/dialog'
 import {useGSAP} from '@gsap/react'
 import {ChevronDown, X} from 'lucide-react'
-import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode} from 'react'
+import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
 import {formatDuration, totalsOf, useOutcomes, type Cleanup, type FilmPlan, type Outcome, type Totals} from '@/lib/cleanup'
@@ -507,13 +507,11 @@ function Take({container, plan, cleanup, running, onReplay}: TakeProps) {
   )
 }
 
-function Film({plan, cleanup, onReplay}: FilmProps & {onReplay: () => void}) {
-  const [take, setTake] = useState(0)
+function Film({plan, cleanup, take, onReplay}: FilmProps & {take: number; onReplay: () => void}) {
   const [running, setRunning] = useState(true)
   const [container, setContainer] = useState<HTMLDivElement | null>(null)
   const replay = () => {
     setRunning(true)
-    setTake(take + 1)
     onReplay()
   }
   return (
@@ -528,13 +526,25 @@ function Film({plan, cleanup, onReplay}: FilmProps & {onReplay: () => void}) {
   )
 }
 
-export function CleanupFilm({plan, cleanup, onClose}: {plan: FilmPlan; cleanup: Cleanup; onClose: () => void}) {
+interface CleanupFilmProps extends FilmProps {
+  open: boolean
+  take: number
+  onReplay: () => void
+  onClose: () => void
+  returnFocus?: RefObject<HTMLButtonElement | null>
+}
+
+export function CleanupFilm({plan, cleanup, open, take, onReplay, onClose, returnFocus}: CleanupFilmProps) {
   const close = useRef<HTMLButtonElement>(null)
+  const replay = () => {
+    onReplay()
+    close.current?.focus()
+  }
   return (
-    <DialogPrimitive.Root open onOpenChange={open => !open && onClose()}>
+    <DialogPrimitive.Root open={open} onOpenChange={next => next || onClose()}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Popup aria-label="Cleanup movie" initialFocus={close} className="fixed inset-0 z-50 outline-none">
-          <Film plan={plan} cleanup={cleanup} onReplay={() => close.current?.focus()} />
+        <DialogPrimitive.Popup aria-label="Cleanup movie" initialFocus={close} finalFocus={returnFocus} className="fixed inset-0 z-50 outline-none">
+          <Film plan={plan} cleanup={cleanup} take={take} onReplay={replay} />
           <DialogPrimitive.Close render={<Button ref={close} variant="secondary" size="sm" className="absolute top-4 right-4 z-10" />}>
             <X /> Close
           </DialogPrimitive.Close>

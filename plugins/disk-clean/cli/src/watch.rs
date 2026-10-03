@@ -146,8 +146,8 @@ fn handle(mut write: TcpStream, port: u16, token: &str, dir: &Path, clients: &Mu
             "text/plain",
             b"read only",
         );
-    } else if route == "/" {
-        match approved_page(dir, token) {
+    } else if route != "/events" {
+        match approved_page(dir, token).filter(|_| http::is_page_route(route)) {
             Some(html) => respond(
                 &mut write,
                 "200 OK",
@@ -156,8 +156,6 @@ fn handle(mut write: TcpStream, port: u16, token: &str, dir: &Path, clients: &Mu
             ),
             None => refuse(&mut write, "404 Not Found"),
         }
-    } else if route != "/events" {
-        refuse(&mut write, "404 Not Found");
     } else if !constant_eq(query_token(target).as_bytes(), token.as_bytes()) {
         refuse(&mut write, "403 Forbidden");
     } else {

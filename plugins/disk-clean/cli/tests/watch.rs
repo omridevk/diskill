@@ -276,11 +276,36 @@ fn watch_serves_the_approved_page_for_a_reload() {
         r#"<meta name="disk-clean-token" content="{TOKEN}""#
     )));
 
+    for target in [
+        "/cleanup/caches?view=cards",
+        "/storage/h/Library",
+        "/cleanup?overlay=movie&take=2",
+        "/no/such/page",
+    ] {
+        let mut deep = connect(port);
+        write!(deep, "GET {target} HTTP/1.1\r\n{}\r\n", host(port)).unwrap();
+        let mut body = String::new();
+        deep.read_to_string(&mut body).unwrap();
+        assert!(body.starts_with("HTTP/1.0 200"), "GET {target}: {body}");
+        assert!(
+            body.contains(&format!(
+                r#"<meta name="disk-clean-token" content="{TOKEN}""#
+            )) && body.contains(r#""approved":true"#),
+            "GET {target} serves the approved page"
+        );
+    }
+
     fs::remove_file(run.join("selection.json")).unwrap();
-    assert_eq!(
-        request(port, &format!("GET / HTTP/1.1\r\n{}\r\n", host(port))),
-        404
-    );
+    for target in ["/", "/cleanup"] {
+        assert_eq!(
+            request(
+                port,
+                &format!("GET {target} HTTP/1.1\r\n{}\r\n", host(port))
+            ),
+            404,
+            "GET {target} without an approved run"
+        );
+    }
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -294,7 +319,11 @@ fn watch_refuses_a_foreign_host() {
     let port = free_port();
     let mut child = watch(&run, port, &[]);
     connect(port);
-    for target in ["/".to_string(), format!("/events?token={TOKEN}")] {
+    for target in [
+        "/".to_string(),
+        "/cleanup/caches".to_string(),
+        format!("/events?token={TOKEN}"),
+    ] {
         for host in [format!("evil.example:{port}"), "evil.example".to_string()] {
             assert_eq!(
                 request(

@@ -131,7 +131,6 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(token.len(), 22);
 
     assert_eq!(get(port, "/favicon.ico").0, 204);
-    assert_eq!(get(port, "/nope").0, 404);
     assert_eq!(
         post(
             port,
@@ -673,6 +672,43 @@ fn raw(method: &str, target: &str, headers: &str, body: &str) -> String {
     )
 }
 
+const DEEP_LINKS: [&str; 7] = [
+    "/cleanup",
+    "/cleanup/caches?view=cards&q=%22a%22",
+    "/cleanup/confirm",
+    "/storage/Users/you/Library%20Support?shape=treemap",
+    "/insights?overlay=progress&log=problems",
+    "/no/such/page",
+    "/events/",
+];
+
+#[test]
+fn deep_links_get_the_page_and_api_routes_are_unchanged() {
+    let (_t, mut child, port, token) = finished_review("deep");
+    let (status, page) = get(port, "/");
+    assert_eq!(status, 200);
+    for target in DEEP_LINKS {
+        let (status, body) = get(port, target);
+        assert_eq!(status, 200, "GET {target}");
+        assert_eq!(
+            body, page,
+            "GET {target} serves the same page with its token"
+        );
+    }
+    assert_eq!(get(port, "/events").0, 403);
+    assert_eq!(get(port, "/events?token=wrong").0, 403);
+    for route in ["/decide", "/preview", "/rescan"] {
+        assert_eq!(get(port, route).0, 404, "GET {route}");
+    }
+    assert_eq!(
+        post_to(port, "/cleanup", &format!(r#"{{"token": "{token}"}}"#)),
+        404
+    );
+    let body = format!(r#"{{"token": "{token}", "decision": "cancel", "items": []}}"#);
+    assert_eq!(post(port, &body), 200);
+    assert_eq!(child.wait().unwrap().code(), Some(5));
+}
+
 #[test]
 fn a_foreign_host_or_origin_is_refused_everywhere() {
     let (_t, mut child, port, token) = finished_review("rebind");
@@ -687,6 +723,7 @@ fn a_foreign_host_or_origin_is_refused_everywhere() {
         let headers = format!("Host: {host}\r\nOrigin: http://{host}\r\n{json}");
         for (method, target) in [
             ("GET", "/".to_string()),
+            ("GET", "/storage/Users".to_string()),
             ("GET", format!("/events?token={token}")),
             ("POST", "/preview".to_string()),
             ("POST", "/rescan".to_string()),

@@ -1,5 +1,6 @@
 import {fileURLToPath} from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
+import {tanstackRouter} from '@tanstack/router-plugin/vite'
 import react from '@vitejs/plugin-react'
 import {playwright} from '@vitest/browser-playwright'
 import {defineConfig} from 'vitest/config'
@@ -11,6 +12,7 @@ const VIEWPORT = {width: 1440, height: 960}
 const CHROMIUM = {browser: 'chromium' as const, viewport: VIEWPORT}
 const FIREFOX = {browser: 'firefox' as const, viewport: VIEWPORT}
 const FILM = ['src/film.test.tsx']
+const ROUTER = ['src/router.test.tsx']
 
 interface Instance {
   browser: 'chromium' | 'firefox'
@@ -30,7 +32,7 @@ function inBrowsers(project: string, instances: Instance[]) {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), viteSingleFile()],
+  plugins: [tanstackRouter({target: 'react'}), react(), tailwindcss(), viteSingleFile()],
   resolve: {alias: {'@': fileURLToPath(new URL('./src', import.meta.url))}},
   server: {proxy: review ? {'/preview': review, '/decide': review, '/events': review} : undefined},
   optimizeDeps: {
@@ -42,7 +44,7 @@ export default defineConfig({
       'gsap/Flip',
       'gsap/SplitText',
       '@gsap/react',
-      '@tanstack/react-store',
+      '@tanstack/react-router',
       '@tanstack/react-table',
       '@tanstack/react-virtual',
     ],
@@ -59,7 +61,7 @@ export default defineConfig({
           exclude: ['src/perf.test.tsx'],
           browser: inBrowsers('app', [
             CHROMIUM,
-            {...FIREFOX, include: FILM, provider: retina},
+            {...FIREFOX, include: [...FILM, ...ROUTER], provider: retina},
             {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, include: FILM, provider: retina},
           ]),
         },

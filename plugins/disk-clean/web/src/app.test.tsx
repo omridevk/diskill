@@ -13,7 +13,8 @@ import {cssMs, useTextSwap} from './lib/motion'
 import {scanBatchReducer, scanReducer, startScan, type ScanEvent} from './lib/scan'
 import {NO_PICKS, outermost, picksReducer, useSelection} from './lib/selection'
 import {squarifyInBounds} from './lib/treemap-tile'
-import {category, cleanupEvents, fixture, item} from './test/fixture'
+import {at, category, cleanupEvents, fixture, item} from './test/fixture'
+import {fakeEventSource, ringPoints, sendAll, sendRaw} from './test/page'
 import './index.css'
 
 describe('formatBytes', () => {
@@ -37,19 +38,19 @@ describe('motion tokens', () => {
 
 describe('cleanup', () => {
   test('preselected items set the total and footer', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await expect.element(screen.getByText('4 items selected · 3.8 GB')).toBeVisible()
     await expect.element(screen.getByText('3.8 GB', {exact: true}).first()).toBeVisible()
   })
 
   test('a section checkbox selects every item in it', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('checkbox', {name: 'Select all in node_modules'}).click()
     await expect.element(screen.getByText('5 items selected · 6.8 GB')).toBeVisible()
   })
 
   test('unticking one item makes its section partly selected', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByText('~/Library/Caches/app-a').click()
     await expect
       .element(screen.getByRole('checkbox', {name: 'Select all in Application caches'}))
@@ -58,35 +59,35 @@ describe('cleanup', () => {
   })
 
   test('quick select keeps only items idle a year or more', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('button', {name: 'idle 1+ year'}).click()
     await expect.element(screen.getByText('1 item selected · 1.0 GB')).toBeVisible()
   })
 
   test('filtering hides selected items and warns about them', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('textbox', {name: 'Filter paths'}).fill('app-a')
     await expect.element(screen.getByText(/3 selected items are hidden by the filters/)).toBeVisible()
     await expect.element(screen.getByText('~/Library/Caches/app-b')).not.toBeInTheDocument()
   })
 
   test('a filter that matches nothing offers to clear it', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('textbox', {name: 'Filter paths'}).fill('no such path')
     await screen.getByRole('button', {name: 'Clear filters'}).click()
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
   })
 
   test('card view shows every section and opens one in the list', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('button', {name: 'Card view'}).click()
     await expect.element(screen.getByText('Large files')).toBeVisible()
-    await screen.getByRole('button', {name: /Show items/}).nth(1).click()
+    await screen.getByRole('link', {name: /Show items/}).nth(1).click()
     await expect.element(screen.getByText('~/code/web/node_modules')).toBeVisible()
   })
 
   test('keyboard shortcuts select all, clear and reset', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await userEvent.keyboard('d')
     await expect.element(screen.getByText('0 items selected · 0 B')).toBeVisible()
     await userEvent.keyboard('r')
@@ -96,7 +97,7 @@ describe('cleanup', () => {
 
 describe('other tabs', () => {
   test('storage shows the folder tree, reconciliation and snapshots', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('tab', {name: 'Storage'}).click()
     await expect.element(screen.getByText('Where your 500 GB went')).toBeVisible()
     await expect.element(screen.getByText(/2 local Time Machine snapshots/)).toBeVisible()
@@ -105,7 +106,7 @@ describe('other tabs', () => {
   })
 
   test('hovering the sunburst shows a folder card with its path, shares, files and cleanable bytes', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('tab', {name: 'Storage'}).click()
     const chart = screen.getByLabelText(/Storage sunburst/)
     await expect.element(chart).toBeVisible()
@@ -120,25 +121,25 @@ describe('other tabs', () => {
   })
 
   test('hovering a sunburst slice lights it and its ancestors, dims the rest, and the card names only that slice', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('tab', {name: 'Storage'}).click()
     const chart = screen.getByLabelText(/Storage sunburst/)
     await expect.element(chart).toBeVisible()
-    const at = ringPoints(chart.element())
-    const caches = at(0.1875, 1)
+    const ring = ringPoints(chart.element())
+    const caches = ring(0.1875, 1)
     await userEvent.hover(chart, {position: caches.local})
     await expect.element(page.getByText('~/Library/Caches', {exact: true})).toBeVisible()
     await expect.element(page.getByText('of Library')).toBeVisible()
     await expect.element(page.getByText('~/Library', {exact: true})).not.toBeInTheDocument()
     await settle(cssMs('--duration-fast', 250) * 3)
     expect(paintedOpacity(caches.client)).toBe(1)
-    expect(paintedOpacity(at(0.3125, 0).client)).toBe(1)
-    expect(paintedOpacity(at(0.5, 1).client)).toBeCloseTo(0.28)
-    expect(paintedOpacity(at(0.8125, 0).client)).toBeCloseTo(0.28)
+    expect(paintedOpacity(ring(0.3125, 0).client)).toBe(1)
+    expect(paintedOpacity(ring(0.5, 1).client)).toBeCloseTo(0.28)
+    expect(paintedOpacity(ring(0.8125, 0).client)).toBeCloseTo(0.28)
   })
 
   test('hovering the disk donut names the segment with its size and share of the disk', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     const donut = screen.getByLabelText(/^Disk: /)
     const free = [...donut.element().querySelectorAll('path')].at(-1)
     if (!free) throw new Error('the donut drew no slices')
@@ -148,7 +149,7 @@ describe('other tabs', () => {
   })
 
   test('insights draws every panel', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('tab', {name: 'Insights'}).click()
     for (const title of ['When your files last changed', 'How old each big folder is', 'What kind of data', 'Cleanup sections by idle time', 'Largest files']) {
       await expect.element(screen.getByText(title)).toBeVisible()
@@ -282,24 +283,13 @@ describe('live scan reducer', () => {
 
 const SHOWN = {visibility: 'visible'}
 
-function fakeEventSource() {
-  const source = Object.assign(new EventTarget(), {
-    readyState: 1,
-    close: () => {
-      source.readyState = 2
-    },
-  })
-  const send = (event: ScanEvent) => source.dispatchEvent(new MessageEvent(event.type, {data: JSON.stringify(event.data)}))
-  return {source, send}
-}
-
 describe('live page', () => {
   beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
   afterEach(() => document.documentElement.style.removeProperty('--fuse-window'))
 
   test('streams items during the walk, reveals storage on walked, unlocks on done and undoes an approve', async () => {
     const {source, send} = fakeEventSource()
-    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} history={at()} />)
     await expect.element(screen.getByText('Scanning your disk…').first().first()).toBeInTheDocument()
     await expect.element(screen.getByText('Walking disk')).toBeVisible()
     send({type: 'progress', data: {files: 1234, bytes: 5 * GB, dir: '/Users/you/Library/Caches', elapsed_ms: 300}})
@@ -319,7 +309,7 @@ describe('live page', () => {
     await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
     await expect.element(screen.getByRole('button', {name: 'Preview commands'})).toBeDisabled()
     for (const event of items.slice(5)) send(event)
-    await expect.element(screen.getByRole('button', {name: /^Docker/})).toBeVisible()
+    await expect.element(screen.getByRole('link', {name: /^Docker/})).toBeVisible()
     send(done)
     await expect.element(screen.getByText('Scan complete')).toBeVisible()
     await expect.element(screen.getByText('9.5s')).toBeVisible()
@@ -339,7 +329,7 @@ describe('live page', () => {
       return fake.source
     }
     const send = (event: ScanEvent) => sources.at(-1)?.send(event)
-    const screen = await render(<App loaded={{...LIVE, openEvents}} />)
+    const screen = await render(<App loaded={{...LIVE, openEvents}} history={at()} />)
     for (const event of [disk, ...items, walked, done]) send(event)
     await expect.element(screen.getByText('Scan complete')).toBeVisible()
     await screen.getByText('~/Library/Caches/app-a').click()
@@ -385,7 +375,7 @@ describe('live page', () => {
 
   test('a scan error shows and keeps approve locked', async () => {
     const {source, send} = fakeEventSource()
-    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} history={at()} />)
     send(disk)
     send({type: 'error', data: {message: 'permission denied', elapsed_ms: 40}})
     await expect.element(screen.getByText(/The scan failed: permission denied/)).toBeVisible()
@@ -437,21 +427,6 @@ function frameOf(canvas: Element | null | undefined) {
   return canvas.toDataURL()
 }
 
-function ringPoints(chart: Element) {
-  const sectors = [...chart.querySelectorAll('.storage-base path')].map(p => p.getBoundingClientRect())
-  const right = Math.max(...sectors.map(r => r.right))
-  const top = Math.min(...sectors.map(r => r.top))
-  const bottom = Math.max(...sectors.map(r => r.bottom))
-  const radius = (bottom - top) / 2
-  const box = chart.getBoundingClientRect()
-  return (turn: number, ring: number) => {
-    const distance = radius * (0.28 + 0.36 * (ring + 0.5))
-    const x = right - radius + distance * Math.sin(turn * 2 * Math.PI)
-    const y = (top + bottom) / 2 - distance * Math.cos(turn * 2 * Math.PI)
-    return {client: {x, y}, local: {x: x - box.left, y: y - box.top}}
-  }
-}
-
 function paintedOpacity({x, y}: {x: number; y: number}) {
   let opacity = 1
   for (let node = document.elementFromPoint(x, y); node && node.tagName !== 'svg'; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity)
@@ -472,7 +447,7 @@ describe('effects', () => {
 
   test('the flow field backdrop runs behind the summary while walking and leaves after walked', async () => {
     const {source, send} = fakeEventSource()
-    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} history={at()} />)
     send(disk)
     await expect.poll(() => backdrop(screen.container)).toBeInstanceOf(HTMLCanvasElement)
     send(walked)
@@ -483,7 +458,7 @@ describe('effects', () => {
   test('reduced motion draws one still frame of each effect', async () => {
     await emulateReducedMotion('reduce')
     const {source, send} = fakeEventSource()
-    const live = await render(<App loaded={{...LIVE, openEvents: () => source}} />)
+    const live = await render(<App loaded={{...LIVE, openEvents: () => source}} history={at()} />)
     send(disk)
     await expect.poll(() => backdrop(live.container)).toBeInstanceOf(HTMLCanvasElement)
     const scanFrame = frameOf(backdrop(live.container))
@@ -494,14 +469,6 @@ describe('effects', () => {
     await live.unmount()
   })
 })
-
-function sendRaw(source: EventTarget, type: string, data: object) {
-  source.dispatchEvent(new MessageEvent(type, {data: JSON.stringify(data)}))
-}
-
-function sendAll(source: EventTarget, events: readonly {type: string; data: object}[]) {
-  for (const event of events) sendRaw(source, event.type, event.data)
-}
 
 type Screen = Awaited<ReturnType<typeof render>>
 
@@ -528,7 +495,7 @@ function layoutOf(screen: Screen) {
 async function approveInApp() {
   vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
   const {source} = fakeEventSource()
-  const screen = await render(<App loaded={{...fixture, openEvents: () => source}} />)
+  const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
   await screen.getByRole('button', {name: 'Approve and delete'}).click()
   await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
   return {screen, source}
@@ -644,7 +611,7 @@ describe('cleanup in the app', () => {
   test('a reload during the cleanup lands back in the app with the bar and panel', async () => {
     const {source} = fakeEventSource()
     const approved = ['/Users/you/Library/Caches/app-a', '/Users/you/code/web/node_modules']
-    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} />)
+    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} history={at()} />)
     await expect.element(screen.getByRole('checkbox', {name: /node_modules/})).toBeChecked()
     await expect.element(screen.getByRole('checkbox', {name: /app-b/})).not.toBeChecked()
     sendAll(source, cleanupEvents.slice(0, 3))
@@ -667,7 +634,7 @@ describe('cleanup in the app', () => {
   test('the header carries the progress without moving the layout, in the foreground colour', async () => {
     vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
     const {source} = fakeEventSource()
-    const screen = await render(<App loaded={{...fixture, openEvents: () => source}} />)
+    const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
     await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeVisible()
     const before = layoutOf(screen)
     await screen.getByRole('button', {name: 'Approve and delete'}).click()
@@ -785,7 +752,7 @@ describe('cancel', () => {
 
   test('cancel has an undo window, and only a burnt-out fuse cancels', async () => {
     vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     const cancel = screen.getByRole('button', {name: 'Cancel'})
     await cancel.click()
     await screen.getByRole('button', {name: 'Undo'}).click()
@@ -846,7 +813,7 @@ describe('list fixes from QA', () => {
 
   test('REV-3: closing the preview dialog returns focus to Preview commands', async () => {
     vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({commands: ['rm -rf -- /x'], rejected: [], count: 1, bytes: GB})))
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     const preview = screen.getByRole('button', {name: 'Preview commands'})
     await preview.click()
     await expect.element(screen.getByRole('dialog')).toBeVisible()
@@ -857,7 +824,7 @@ describe('list fixes from QA', () => {
 
   test('REV-4: at 1024 px the footer buttons keep their full label and icon', async () => {
     await page.viewport(1024, 768)
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     for (const name of ['Cancel', 'Preview commands', 'Approve and delete']) {
       const button = screen.getByRole('button', {name}).element()
       expect(button.scrollWidth, name).toBeLessThanOrEqual(button.clientWidth + 1)
@@ -867,7 +834,7 @@ describe('list fixes from QA', () => {
 
   test('REV-5: deselecting everything while Approve is armed never approves', async () => {
     vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('button', {name: 'Approve and delete'}).click()
     await expect.element(screen.getByRole('button', {name: 'Undo'})).toHaveStyle(SHOWN)
     press('d')
@@ -878,16 +845,16 @@ describe('list fixes from QA', () => {
   })
 
   test('REV-6: section sizes and counts follow the active filters', async () => {
-    const screen = await render(<App loaded={fixture} />)
-    const caches = screen.getByRole('button', {name: /^Application caches/})
+    const screen = await render(<App loaded={fixture} history={at()} />)
+    const caches = screen.getByRole('link', {name: /^Application caches/})
     await expect.element(caches).toHaveTextContent('Application caches3.8 GB4/4')
     await screen.getByRole('textbox', {name: 'Filter paths'}).fill('app-a')
     await expect.element(caches).toHaveTextContent('Application caches2.0 GB1/1')
-    await expect.element(screen.getByRole('button', {name: /^node_modules/})).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('link', {name: /^node_modules/})).not.toBeInTheDocument()
   })
 
   test('REV-7: name sort is natural and ignores case', async () => {
-    const screen = await render(<App loaded={NAMES} />)
+    const screen = await render(<App loaded={NAMES} history={at()} />)
     await screen.getByRole('combobox', {name: 'Sort'}).click()
     await screen.getByRole('option', {name: 'Name'}).click()
     const names = () => [...screen.container.querySelectorAll('[role="row"] [data-label]')].map(el => el.textContent)
@@ -895,16 +862,16 @@ describe('list fixes from QA', () => {
   })
 
   test('STO-4 / REV-12: a selected path inside another selected path counts once', async () => {
-    const screen = await render(<App loaded={NESTED} />)
+    const screen = await render(<App loaded={NESTED} history={at()} />)
     await expect.element(screen.getByText('3 items selected · 5.0 GB')).toBeVisible()
-    await screen.getByRole('button', {name: /^node_modules/}).click()
+    await screen.getByRole('link', {name: /^node_modules/}).click()
     await screen.getByRole('checkbox', {name: '~/code/app/node_modules'}).click()
     await expect.element(screen.getByText('2 items selected · 4.0 GB')).toBeVisible()
     expect(outermost(NESTED.data.categories.flatMap(c => c.items)).map(i => i.path)).toEqual(['/Users/you/code/wt', '/Users/you/code/app/node_modules'])
   })
 
   test('the list is a table with its full row count for assistive tech', async () => {
-    const screen = await render(<App loaded={fixture} />)
+    const screen = await render(<App loaded={fixture} history={at()} />)
     const table = screen.getByRole('table', {name: 'Application caches'})
     await expect.element(table).toHaveAttribute('aria-rowcount', '5')
     await expect.element(table.getByRole('row').nth(1)).toHaveAttribute('aria-rowindex', '2')

@@ -19,7 +19,7 @@ import {
 import {Checkbox} from '@/components/ui/checkbox'
 import type {CleanupProgress, Outcome} from '@/lib/cleanup'
 import {formatBytes, isExact, type Category, type Item, type Risk} from '@/lib/data'
-import type {ListView, Sort} from '@/lib/list-view'
+import type {CleanupSearch, Sort} from '@/lib/search'
 
 export interface Entry extends Item {
   section: string
@@ -185,7 +185,7 @@ export function sortOf(sorting: SortingState): Sort {
   return found ?? 'size-desc'
 }
 
-type Filters = Pick<ListView, 'risk' | 'minSize' | 'minAge' | 'only'>
+type Filters = Pick<CleanupSearch, 'risk' | 'minSize' | 'minAge' | 'only'>
 
 export function filtersOf({risk, minSize, minAge, only}: Filters, selection: RowSelectionState): ColumnFiltersState {
   return [

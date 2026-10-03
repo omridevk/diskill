@@ -1,12 +1,14 @@
 import {Activity, Clapperboard} from 'lucide-react'
 import {useVirtualizer} from '@tanstack/react-virtual'
-import {memo, useCallback, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject} from 'react'
+import {useNavigate, useSearch} from '@tanstack/react-router'
+import {memo, useMemo, useRef, type ReactNode, type Ref, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/components/ui/sheet'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatDuration, type Outcome, type CleanupProgress} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
-import type {LogFilter} from '@/lib/list-view'
+import {useBack} from '@/lib/navigation'
+import {LOG_FILTERS, type LogFilter, type Overlay} from '@/lib/search'
 import {useReducedMotion} from '@/lib/motion'
 import {CleanupFilm} from './cleanup-film'
 import {SpinningBytes} from './numbers'
@@ -238,7 +240,7 @@ function ProgressPanel({
         <Stats progress={progress} />
         <div className="flex items-center gap-2 px-4">
           <ToggleGroup value={[log]} onValueChange={v => v[0] && setLog(v[0] as LogFilter)} variant="outline" size="sm" aria-label="Show">
-            {(Object.keys(FILTER_LABEL) as LogFilter[]).map(f => (
+            {LOG_FILTERS.map(f => (
               <ToggleGroupItem key={f} value={f}>
                 {FILTER_LABEL[f]}
               </ToggleGroupItem>
@@ -287,34 +289,33 @@ export function ProgressFooter({progress}: {progress: CleanupProgress}) {
   )
 }
 
-export function CleanupTracker({
-  progress,
-  panel,
-  setPanel,
-  log,
-  setLog,
-  returnFocus,
-}: {
-  progress: CleanupProgress
-  panel: boolean
-  setPanel: (open: boolean) => void
-  log: LogFilter
-  setLog: (log: LogFilter) => void
-  returnFocus: RefObject<HTMLButtonElement | null>
-}) {
-  const [movie, setMovie] = useState(false)
-  const closeMovie = useCallback(() => {
-    setMovie(false)
-    returnFocus.current?.focus()
-  }, [returnFocus])
-  const openMovie = () => {
-    setPanel(false)
-    setMovie(true)
-  }
+export function CleanupTracker({progress, returnFocus}: {progress: CleanupProgress; returnFocus: RefObject<HTMLButtonElement | null>}) {
+  const overlay = useSearch({strict: false, select: search => search.overlay})
+  const log = useSearch({strict: false, select: search => search.log}) ?? 'all'
+  const take = useSearch({strict: false, select: search => search.take}) ?? 0
+  const navigate = useNavigate()
+  const back = useBack()
+  const close = () => back({to: '.', search: prev => ({...prev, overlay: undefined, log: undefined, take: undefined})})
+  const layer = (patch: {overlay?: Overlay; log?: LogFilter; take?: number}) => navigate({to: '.', search: prev => ({...prev, ...patch}), replace: true})
   return (
     <>
-      <ProgressPanel progress={progress} open={panel} onOpenChange={setPanel} onMovie={openMovie} log={log} setLog={setLog} />
-      {movie && <CleanupFilm plan={progress.plan} cleanup={progress.cleanup} onClose={closeMovie} />}
+      <ProgressPanel
+        progress={progress}
+        open={overlay === 'progress'}
+        onOpenChange={open => open || close()}
+        onMovie={() => layer({overlay: 'movie', take: 0})}
+        log={log}
+        setLog={next => layer({log: next})}
+      />
+      <CleanupFilm
+        plan={progress.plan}
+        cleanup={progress.cleanup}
+        open={overlay === 'movie'}
+        take={take}
+        onReplay={() => layer({take: take + 1})}
+        onClose={close}
+        returnFocus={returnFocus}
+      />
     </>
   )
 }
