@@ -1,9 +1,12 @@
-use crate::review::{approved_page, constant_eq, query_token, respond};
+use crate::clean;
+use crate::http::{self, constant_eq, query_token, refuse, respond};
+use crate::review::approved_page;
 use crate::util;
 use serde_json::Value;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -11,6 +14,13 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(1);
 const BIND_FOR: Duration = Duration::from_secs(10);
+const CLOSING_GRACE: Duration = Duration::from_secs(1);
+
+struct Tail {
+    inode: Option<u64>,
+    offset: u64,
+    pending: Vec<u8>,
+}
 
 struct Clients {
     open: usize,
@@ -60,14 +70,25 @@ fn complete_lines(pending: &mut Vec<u8>) -> String {
     chunk
 }
 
-fn read_from(path: &Path, offset: &mut u64, pending: &mut Vec<u8>) -> bool {
+fn read_from(path: &Path, tail: &mut Tail) -> bool {
     let Ok(mut file) = fs::File::open(path) else {
         return false;
     };
-    if file.seek(SeekFrom::Start(*offset)).is_ok()
-        && let Ok(n) = file.read_to_end(pending)
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    let replaced = tail.inode != Some(meta.ino()) || meta.len() < tail.offset;
+    if replaced {
+        *tail = Tail {
+            inode: Some(meta.ino()),
+            offset: 0,
+            pending: Vec::new(),
+        };
+    }
+    if file.seek(SeekFrom::Start(tail.offset)).is_ok()
+        && let Ok(n) = file.read_to_end(&mut tail.pending)
     {
-        *offset += n as u64;
+        tail.offset += n as u64;
     }
     true
 }
@@ -77,15 +98,22 @@ fn stream_events(out: &mut TcpStream, path: &Path) {
     if out.write_all(head.as_bytes()).is_err() {
         return;
     }
-    let (mut offset, mut pending, mut waited) = (0, Vec::new(), false);
-    let mut quiet = Instant::now();
+    let mut tail = Tail {
+        inode: None,
+        offset: 0,
+        pending: Vec::new(),
+    };
+    let (mut waited, mut quiet) = (false, Instant::now());
     loop {
         let mut chunk = String::new();
-        if read_from(path, &mut offset, &mut pending) {
-            chunk = complete_lines(&mut pending);
+        if read_from(path, &mut tail) {
+            chunk = complete_lines(&mut tail.pending);
         } else if !waited {
             waited = true;
             chunk = sse("waiting", "{}");
+        }
+        if chunk.is_empty() && http::client_gone(out) {
+            return;
         }
         if chunk.is_empty() && quiet.elapsed() >= HEARTBEAT {
             chunk = ":\n\n".to_string();
@@ -100,28 +128,18 @@ fn stream_events(out: &mut TcpStream, path: &Path) {
     }
 }
 
-fn handle(stream: TcpStream, token: &str, dir: &Path, clients: &Mutex<Clients>) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let Ok(mut write) = stream.try_clone() else {
-        return;
+fn handle(mut write: TcpStream, port: u16, token: &str, dir: &Path, clients: &Mutex<Clients>) {
+    let req = match http::read_request(&mut write) {
+        Ok(req) => req,
+        Err(Some(status)) => return refuse(&mut write, status),
+        Err(None) => return,
     };
-    let mut reader = BufReader::new(stream);
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() {
-        return;
+    if !http::is_local_host(&req, port) {
+        return refuse(&mut write, "403 Forbidden");
     }
-    loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) if line.trim().is_empty() => break,
-            Ok(_) => {}
-        }
-    }
-    let mut parts = request_line.split_whitespace();
-    let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let target = req.target.as_str();
     let route = target.split('?').next().unwrap_or("");
-    if method != "GET" {
+    if req.method != "GET" {
         respond(
             &mut write,
             "405 Method Not Allowed",
@@ -136,12 +154,12 @@ fn handle(stream: TcpStream, token: &str, dir: &Path, clients: &Mutex<Clients>) 
                 "text/html; charset=utf-8",
                 html.as_bytes(),
             ),
-            None => respond(&mut write, "404 Not Found", "text/plain", b"not found"),
+            None => refuse(&mut write, "404 Not Found"),
         }
     } else if route != "/events" {
-        respond(&mut write, "404 Not Found", "text/plain", b"not found");
+        refuse(&mut write, "404 Not Found");
     } else if !constant_eq(query_token(target).as_bytes(), token.as_bytes()) {
-        respond(&mut write, "403 Forbidden", "text/plain", b"forbidden");
+        refuse(&mut write, "403 Forbidden");
     } else {
         lock(clients).open += 1;
         stream_events(&mut write, &dir.join("clean.events"));
@@ -172,22 +190,30 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
     }));
     let (served, accepted) = (dir.clone(), Arc::clone(&clients));
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let (token, dir, clients) = (token.clone(), served.clone(), Arc::clone(&accepted));
-            std::thread::spawn(move || handle(stream, &token, &dir, &clients));
-        }
+        http::serve(listener, move |stream| {
+            handle(stream, port, &token, &served, &accepted)
+        });
     });
+    let mut closing: Option<Instant> = None;
     loop {
         std::thread::sleep(POLL);
         let up = began.elapsed();
-        let finished = fs::read_to_string(dir.join("status")).is_ok_and(|s| s.trim() == "done");
+        let status = clean::run_status(&dir);
+        let never_started = status.is_empty() && !dir.join("clean.events").exists();
+        if never_started && up >= start && closing.is_none() {
+            let _ = clean::abandon(&dir, "abandoned", "clean was never run after the approval");
+            closing = Some(Instant::now());
+        }
+        if status == "abandoned" || status == "interrupted" {
+            closing.get_or_insert_with(Instant::now);
+        }
         let idle_now = {
             let c = lock(&clients);
             c.open == 0 && c.last.elapsed() >= idle
         };
         if up >= most
-            || (up >= start && !dir.join("clean.events").exists())
-            || (finished && idle_now)
+            || closing.is_some_and(|t| t.elapsed() >= CLOSING_GRACE)
+            || (status == "done" && idle_now)
         {
             return Ok(0);
         }

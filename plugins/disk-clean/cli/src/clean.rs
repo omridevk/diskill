@@ -1,16 +1,52 @@
 use crate::util;
 use crate::worktrees;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 const FREE_EVERY: Duration = Duration::from_millis(500);
+const EVENTS: &str = "clean.events";
+const STATUS: &str = "status";
+const LOCK: &str = "clean.lock";
+const LOCK_FD: &str = "DISK_CLEAN_LOCK_FD";
+const LOCK_TRIES: usize = 50;
+const ALREADY_RUNNING: i32 = 4;
+pub const PATH_CHANGED: &str = "path changed since the scan";
+
+const PERSONAL: &[&str] = &[
+    "documents",
+    "desktop",
+    "pictures",
+    "movies",
+    "music",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    ".claude",
+    "library/mail",
+    "library/messages",
+];
+const SYSTEM: &[&str] = &[
+    "/System",
+    "/Library",
+    "/Applications",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/var",
+    "/private",
+    "/opt",
+];
 
 const COMMANDS: &[(&str, &str, &[&str])] = &[
     (
@@ -65,7 +101,7 @@ impl Plan {
         let mut out: Vec<String> = self
             .rm
             .iter()
-            .map(|p| shell_line("rm", &["-rf", "--", p]))
+            .map(|p| format!("delete {}", shell_quote(p)))
             .collect();
         let mut repos: Vec<String> = Vec::new();
         for path in &self.worktrees {
@@ -101,10 +137,27 @@ impl Plan {
     }
 }
 
-pub fn plan(scan_lines: &[String], items: &[Value]) -> Plan {
+pub type ScanIndex = HashMap<String, Vec<String>>;
+
+pub fn index_scan(lines: &[String]) -> ScanIndex {
+    let mut index = ScanIndex::new();
+    for line in lines {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if let [_, _, _, _, _, action, _, _, path, _, _, _, _] = cols.as_slice() {
+            index
+                .entry(path.to_string())
+                .or_default()
+                .push(action.to_string());
+        }
+    }
+    index
+}
+
+pub fn plan(index: &ScanIndex, items: &[Value]) -> Plan {
     let home = util::home();
     let tmp_base = util::user_tmp_base();
     let mut plan = Plan::default();
+    let mut seen = HashSet::new();
     for item in items {
         let action = item.get("action").and_then(Value::as_str).unwrap_or("rm");
         let key = if action == "cmd" { "cmd_id" } else { "path" };
@@ -115,11 +168,14 @@ pub fn plan(scan_lines: &[String], items: &[Value]) -> Plan {
         else {
             continue;
         };
+        if !seen.insert((action.to_string(), value.to_string())) {
+            continue;
+        }
         let bytes = int_of(item.get("bytes"));
         let reason = if action == "cmd" {
             command(value).is_none().then_some("unknown command id")
         } else {
-            rm_rejection(scan_lines, action, value, &home, tmp_base.as_deref())
+            rm_rejection(index, action, value, &home, tmp_base.as_deref())
         };
         if let Some(reason) = reason {
             plan.rejected.push((reason.to_string(), value.to_string()));
@@ -136,107 +192,106 @@ pub fn plan(scan_lines: &[String], items: &[Value]) -> Plan {
 }
 
 fn rm_rejection(
-    scan_lines: &[String],
+    index: &ScanIndex,
     action: &str,
     value: &str,
     home: &str,
     tmp_base: Option<&str>,
 ) -> Option<&'static str> {
-    let scan_actions: Vec<&str> = scan_lines
-        .iter()
-        .map(|l| l.split('\t').collect::<Vec<_>>())
-        .filter(|cols| cols.len() == 13 && cols[8] == value)
-        .map(|cols| cols[5])
-        .collect();
-    if scan_actions.is_empty() {
-        return Some("not in scan");
+    if value.contains('\n') {
+        return Some("newline in path");
     }
-    if !scan_actions.contains(&action) {
+    if !is_canonical(value) {
+        return Some("not a canonical path");
+    }
+    let Some(scanned_actions) = index.get(value) else {
+        return Some("not in scan");
+    };
+    if !scanned_actions.iter().any(|a| a == action) {
         return Some("action does not match scan");
     }
     if !is_allowed(value, home, tmp_base) {
         return Some("protected path");
     }
-    if !Path::new(value).exists() {
+    if fs::symlink_metadata(value).is_err() {
         return Some("already gone");
     }
-    if value.contains('\n') {
-        return Some("newline in path");
-    }
-    None
+    safe_to_remove(action, value, home, tmp_base).err()
 }
 
-fn rest_after<'a>(p: &'a str, prefix: &str) -> Option<&'a str> {
-    p.strip_prefix(prefix).filter(|r| !r.is_empty())
+pub fn is_canonical(p: &str) -> bool {
+    p.strip_prefix('/').is_some_and(|rest| {
+        rest.split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+    })
 }
 
-fn dir_or_under(rest: &str, name: &str) -> bool {
-    rest == name || rest.starts_with(&format!("{name}/"))
+fn inside(p: &str, root: &str) -> bool {
+    p.strip_prefix(root)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
-pub fn is_allowed(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
-    if p.contains("..") {
-        return false;
-    }
-    if rest_after(p, "/private/tmp/").is_some() {
+fn is_protected(p: &str, home: &str) -> bool {
+    let (p, home) = (p.to_ascii_lowercase(), home.to_ascii_lowercase());
+    if p == home || inside(&home, &p) {
         return true;
-    }
-    if let Some(base) = tmp_base.filter(|b| !b.is_empty())
-        && ["T", "C", "X"]
-            .iter()
-            .any(|s| rest_after(p, &format!("{base}/{s}/")).is_some())
-    {
-        return true;
-    }
-    if p == home || p == format!("{home}/") || p == "/" || p == "/Users" {
-        return false;
-    }
-    let blocked = [
-        "/System",
-        "/Library",
-        "/Applications",
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/etc",
-        "/var",
-        "/private",
-        "/opt",
-    ];
-    if blocked.iter().any(|b| p.starts_with(b)) {
-        return false;
     }
     let Some(rest) = p.strip_prefix(&format!("{home}/")) else {
         return false;
     };
-    if rest.is_empty() {
-        return false;
-    }
-    let personal = [
-        "Documents",
-        "Desktop",
-        "Pictures",
-        "Movies",
-        "Music",
-        ".ssh",
-        ".gnupg",
-        ".aws",
-        ".kube",
-        ".claude",
-        "Library/Mail",
-        "Library/Messages",
-    ];
-    if personal.iter().any(|n| dir_or_under(rest, n)) {
-        return false;
-    }
-    if rest == "Library"
+    let personal = PERSONAL
+        .iter()
+        .any(|name| rest == *name || inside(rest, name));
+    let keychains = rest == "library"
         || rest
-            .strip_prefix("Library/")
-            .is_some_and(|r| r.contains("Keychains"))
-    {
-        return false;
+            .strip_prefix("library/")
+            .is_some_and(|r| r.contains("keychains"));
+    personal || keychains
+}
+
+fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
+    let in_user_temp = tmp_base.filter(|b| !b.is_empty()).is_some_and(|base| {
+        ["T", "C", "X"]
+            .iter()
+            .any(|sub| inside(p, &format!("{base}/{sub}")))
+    });
+    if inside(p, "/private/tmp") || in_user_temp {
+        return true;
     }
-    !p.contains("..")
+    inside(p, home) && !SYSTEM.iter().any(|s| p == *s || inside(p, s))
+}
+
+pub fn is_allowed(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
+    is_canonical(p)
+        && is_canonical(home)
+        && !is_protected(p, home)
+        && in_allowed_root(p, home, tmp_base)
+}
+
+pub fn safe_to_remove(
+    action: &str,
+    target: &str,
+    home: &str,
+    tmp_base: Option<&str>,
+) -> Result<(), &'static str> {
+    if !is_allowed(target, home, tmp_base) {
+        return Err("protected path");
+    }
+    let path = Path::new(target);
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err("not a canonical path");
+    };
+    let Ok(real_parent) = fs::canonicalize(parent) else {
+        return Err("its folder is gone");
+    };
+    if real_parent.join(name) != path {
+        return Err(PATH_CHANGED);
+    }
+    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if action == "worktree" && is_link {
+        return Err("the worktree folder is now a symlink");
+    }
+    Ok(())
 }
 
 fn int_of(v: Option<&Value>) -> i64 {
@@ -255,12 +310,129 @@ fn lines(items: &[String]) -> String {
     items.iter().map(|s| format!("{s}\n")).collect()
 }
 
+fn print_dry_run(plan: &Plan) {
+    println!("# dry run: nothing is deleted. These are the steps clean would take.");
+    println!(
+        "# delete: right before each removal the path is resolved again; it is kept if a parent folder"
+    );
+    println!(
+        "# now resolves elsewhere or it became protected, and a symlink is removed itself, never followed."
+    );
+    for line in plan.commands() {
+        println!("{line}");
+    }
+    for (reason, value) in &plan.rejected {
+        println!("# rejected ({reason}): {}", shell_quote(value));
+    }
+    println!("# {} items, {} bytes", plan.count(), plan.bytes);
+}
+
+fn take_lock(dir: &Path) -> io::Result<Option<fs::File>> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(LOCK))?;
+    for _ in 0..LOCK_TRIES {
+        if file.try_lock().is_ok() {
+            return Ok(Some(file));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(None)
+}
+
+fn lock_is_free(dir: &Path) -> bool {
+    match fs::File::open(dir.join(LOCK)) {
+        Ok(file) => file.try_lock_shared().is_ok(),
+        Err(_) => true,
+    }
+}
+
+fn pass_lock(cmd: &mut Command, fd: RawFd) {
+    cmd.env(LOCK_FD, fd.to_string());
+    // SAFETY: in the forked child, fcntl only clears close-on-exec on the lock fd so the worker inherits the lock.
+    unsafe {
+        cmd.pre_exec(move || match libc::fcntl(fd, libc::F_SETFD, 0) {
+            -1 => Err(io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
+}
+
+fn keep_lock_from_commands() {
+    if let Some(fd) = std::env::var(LOCK_FD)
+        .ok()
+        .and_then(|v| v.parse::<RawFd>().ok())
+    {
+        // SAFETY: only sets close-on-exec on the inherited lock fd, so commands the worker runs never hold the lock.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+}
+
+fn remove_if_present(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+fn fresh_events(dir: &Path) -> io::Result<fs::File> {
+    let path = dir.join(EVENTS);
+    remove_if_present(&path)?;
+    fs::OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(path)
+}
+
+pub fn abandon(dir: &Path, status: &str, reason: &str) -> io::Result<()> {
+    let mut events = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(EVENTS))?;
+    writeln!(
+        events,
+        "{}",
+        json!({"event": "abandoned", "reason": reason})
+    )?;
+    fs::write(dir.join(STATUS), format!("{status}\n"))
+}
+
+pub fn run_status(dir: &Path) -> String {
+    let status = fs::read_to_string(dir.join(STATUS)).unwrap_or_default();
+    let status = status.trim();
+    if status == "pending" && lock_is_free(dir) {
+        let _ = abandon(
+            dir,
+            "interrupted",
+            "the cleanup process exited before it finished",
+        );
+        return "interrupted".to_string();
+    }
+    status.to_string()
+}
+
+pub fn clear_previous_run(dir: &Path) -> io::Result<()> {
+    if !lock_is_free(dir) {
+        return Ok(());
+    }
+    remove_if_present(&dir.join(EVENTS))?;
+    remove_if_present(&dir.join(STATUS))
+}
+
 pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     let dir = Path::new(run_dir);
-    if run_dir.is_empty() || !dir.join("selection.json").is_file() {
-        eprintln!(
-            "usage: disk-clean clean [--dry-run] <run_dir>  (run_dir must contain selection.json)"
-        );
+    if run_dir.is_empty() {
+        eprintln!("usage: disk-clean clean [--dry-run] <run_dir>");
+        return Ok(2);
+    }
+    if !dir.is_dir() {
+        eprintln!("no run directory at {run_dir}");
+        return Ok(2);
+    }
+    if !dir.join("selection.json").is_file() {
+        eprintln!("no selection.json in {run_dir}: approve a selection in the review page first");
         return Ok(2);
     }
     let scan_path = dir.join("scan.tsv");
@@ -281,25 +453,22 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let plan = plan(&util::read_lines(&scan_path), &items);
+    let plan = plan(&index_scan(&util::read_lines(&scan_path)), &items);
+
+    if dry_run {
+        print_dry_run(&plan);
+        return Ok(if plan.count() == 0 { 3 } else { 0 });
+    }
+
+    let Some(lock) = take_lock(dir)? else {
+        eprintln!("another clean is already running for {run_dir}");
+        return Ok(ALREADY_RUNNING);
+    };
     let rejected: String = plan
         .rejected
         .iter()
         .map(|(reason, value)| format!("{reason}\t{value}\n"))
         .collect();
-
-    if dry_run {
-        println!("# dry run: nothing is deleted. These are the commands clean would run.");
-        for line in plan.commands() {
-            println!("{line}");
-        }
-        for (reason, value) in &plan.rejected {
-            println!("# rejected ({reason}): {}", shell_quote(value));
-        }
-        println!("# {} items, {} bytes", plan.count(), plan.bytes);
-        return Ok(0);
-    }
-
     fs::write(dir.join("rm-list"), lines(&plan.rm))?;
     fs::write(dir.join("cmd-list"), lines(&plan.cmds))?;
     fs::write(dir.join("wt-list"), lines(&plan.worktrees))?;
@@ -308,10 +477,16 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     let (kept, total_bytes) = (plan.count(), plan.bytes);
     if kept == 0 {
         eprintln!("nothing passed validation. see {run_dir}/rejected");
+        drop(fresh_events(dir)?);
+        abandon(
+            dir,
+            "abandoned",
+            "nothing passed the safety checks, so nothing was deleted",
+        )?;
         return Ok(3);
     }
 
-    fs::write(dir.join("status"), "pending\n")?;
+    fs::write(dir.join(STATUS), "pending\n")?;
     let log_path = dir.join("clean.log");
     let log = fs::File::create(&log_path)?;
     let mut cmd = Command::new(std::env::current_exe()?);
@@ -319,6 +494,7 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
+    pass_lock(&mut cmd, lock.as_raw_fd());
     let child = util::spawn_detached(&mut cmd)?;
     let pid = child.id();
     fs::write(dir.join("worker.pid"), format!("{pid}\n"))?;
@@ -337,13 +513,8 @@ struct Events {
 
 impl Events {
     fn open(dir: &Path) -> Events {
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("clean.events"))
-            .ok();
         Events {
-            file: file.map(Mutex::new),
+            file: fresh_events(dir).ok().map(Mutex::new),
             start: Instant::now(),
         }
     }
@@ -379,30 +550,27 @@ fn planned_bytes(dir: &Path) -> HashMap<String, i64> {
         .collect()
 }
 
-fn remove_tree(path: &Path) -> io::Result<()> {
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return Ok(());
-    };
-    if !meta.is_dir() {
-        return fs::remove_file(path);
+fn remove_path(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
     }
-    let mut first = Ok(());
-    match fs::read_dir(path) {
-        Ok(entries) => {
-            for entry in entries {
-                let removed = entry.and_then(|e| remove_tree(&e.path()));
-                first = first.and(removed);
-            }
-        }
-        Err(e) => first = Err(e),
-    }
-    let removed = fs::remove_dir(path);
-    first.and(removed)
 }
 
-fn rm_one(target: &str, bytes: i64, events: &Events) -> String {
+type Check<'a> = &'a (dyn Fn(&str) -> Result<(), &'static str> + Sync);
+
+fn rm_one(target: &str, bytes: i64, events: &Events, check: Check) -> (String, bool) {
+    if let Err(reason) = check(target) {
+        events.emit(
+            "kept",
+            json!({"path": target, "bytes": bytes, "reason": reason}),
+        );
+        return (format!("KEPT    {target} ({reason})"), false);
+    }
     let start = Instant::now();
-    let result = remove_tree(Path::new(target));
+    let result = remove_path(Path::new(target));
     if fs::symlink_metadata(target).is_ok() {
         let reason = match &result {
             Err(e) => format!("still present after removal: {}", e.kind()),
@@ -412,18 +580,18 @@ fn rm_one(target: &str, bytes: i64, events: &Events) -> String {
             "failed",
             json!({"path": target, "bytes": bytes, "reason": reason}),
         );
-        format!(
+        let line = format!(
             "FAILED  {target} (still present, exit {})",
             if result.is_ok() { 0 } else { 1 }
-        )
-    } else {
-        let secs = start.elapsed();
-        events.emit(
-            "removed",
-            json!({"path": target, "bytes": bytes, "secs": secs.as_secs_f64()}),
         );
-        format!("removed {target}  ({}s)", secs.as_secs())
+        return (line, false);
     }
+    let secs = start.elapsed();
+    events.emit(
+        "removed",
+        json!({"path": target, "bytes": bytes, "secs": secs.as_secs_f64()}),
+    );
+    (format!("removed {target}  ({}s)", secs.as_secs()), true)
 }
 
 fn run_logged(label: &str, program: &str, args: &[&str]) -> bool {
@@ -447,28 +615,38 @@ fn sample_free(events: &Events, stop: mpsc::Receiver<()>) {
     }
 }
 
-fn non_empty(dir: &Path, name: &str) -> Vec<String> {
+fn listed(dir: &Path, name: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
     util::read_lines(&dir.join(name))
         .into_iter()
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !l.trim().is_empty() && seen.insert(l.clone()))
         .collect()
 }
 
 pub fn worker(run_dir: &str) -> io::Result<i32> {
+    keep_lock_from_commands();
     let dir = Path::new(run_dir);
     let parallel = util::env_num("DISK_CLEAN_PARALLEL", 4usize).max(1);
     let events = Events::open(dir);
+    let run = format!("{}-{}", util::now(), std::process::id());
     println!("started {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
 
-    let rm_list = non_empty(dir, "rm-list");
-    let wt_list = non_empty(dir, "wt-list");
-    let cmd_list = non_empty(dir, "cmd-list");
+    let rm_list = listed(dir, "rm-list");
+    let wt_list = listed(dir, "wt-list");
+    let cmd_list = listed(dir, "cmd-list");
     let planned = planned_bytes(dir);
     let bytes_of = |key: &str| planned.get(key).copied().unwrap_or(0);
+    let home = util::home();
+    let tmp_base = util::user_tmp_base();
+    let rm_check = |target: &str| safe_to_remove("rm", target, &home, tmp_base.as_deref());
+    let worktree_check = |target: &str| {
+        safe_to_remove("worktree", target, &home, tmp_base.as_deref()).map_err(str::to_string)
+    };
     let free_at_start = util::free_bytes() as i64;
     events.emit(
         "started",
         json!({
+            "run": run,
             "free": free_at_start,
             "paths": rm_list.len(),
             "worktrees": wt_list.len(),
@@ -476,6 +654,12 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
             "bytes": rm_list.iter().chain(&wt_list).chain(&cmd_list).map(|k| bytes_of(k)).sum::<i64>(),
         }),
     );
+    let removed = AtomicUsize::new(0);
+    let removed_bytes = AtomicI64::new(0);
+    let tally = |bytes: i64| {
+        removed.fetch_add(1, Ordering::SeqCst);
+        removed_bytes.fetch_add(bytes, Ordering::SeqCst);
+    };
 
     let (working, stop) = mpsc::channel::<()>();
     std::thread::scope(|s| -> io::Result<()> {
@@ -489,7 +673,11 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
                 for _ in 0..parallel {
                     s.spawn(|| {
                         while let Some(target) = rm_list.get(next.fetch_add(1, Ordering::SeqCst)) {
-                            let line = rm_one(target, bytes_of(target), &events);
+                            let bytes = bytes_of(target);
+                            let (line, gone) = rm_one(target, bytes, &events, &rm_check);
+                            if gone {
+                                tally(bytes);
+                            }
                             if let Ok(mut o) = out.lock() {
                                 let _ = writeln!(o, "{line}");
                             }
@@ -504,17 +692,25 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
                 "removing {} worktrees (each re-checked first)",
                 wt_list.len()
             );
-            worktrees::remove(&wt_list, &mut io::stdout(), &mut |path, kept| {
-                events.emit(
-                    "worktree",
-                    json!({
-                        "path": path,
-                        "bytes": bytes_of(path),
-                        "outcome": if kept.is_some() { "kept" } else { "removed" },
-                        "reason": kept.unwrap_or(""),
-                    }),
-                );
-            })?;
+            worktrees::remove(
+                &wt_list,
+                &mut io::stdout(),
+                &worktree_check,
+                &mut |path, kept| {
+                    if kept.is_none() {
+                        tally(bytes_of(path));
+                    }
+                    events.emit(
+                        "worktree",
+                        json!({
+                            "path": path,
+                            "bytes": bytes_of(path),
+                            "outcome": if kept.is_some() { "kept" } else { "removed" },
+                            "reason": kept.unwrap_or(""),
+                        }),
+                    );
+                },
+            )?;
         }
 
         for cmd_id in &cmd_list {
@@ -535,18 +731,26 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
     })?;
 
     let after = util::free_bytes() as i64;
-    let before: i64 = fs::read_to_string(dir.join("free-before"))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
-    println!("free before: {before} bytes");
-    println!("free after:  {after} bytes");
-    println!("reclaimed:   {} bytes", after - before);
+    let (count, bytes) = (
+        removed.load(Ordering::SeqCst),
+        removed_bytes.load(Ordering::SeqCst),
+    );
+    println!("removed: {count} items, {bytes} bytes");
+    println!(
+        "free space changed by {} bytes since the cleanup started ({free_at_start} -> {after})",
+        after - free_at_start
+    );
     println!("finished {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
     events.emit(
         "done",
-        json!({"free_before": free_at_start, "free_after": after, "reclaimed": after - free_at_start}),
+        json!({
+            "removed": count,
+            "removed_bytes": bytes,
+            "reclaimed": bytes,
+            "free_before": free_at_start,
+            "free_after": after,
+        }),
     );
-    fs::write(dir.join("status"), "done\n")?;
+    fs::write(dir.join(STATUS), "done\n")?;
     Ok(0)
 }

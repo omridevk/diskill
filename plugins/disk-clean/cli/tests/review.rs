@@ -20,12 +20,15 @@ fn request(port: u16, raw: String) -> (u16, String) {
     (status, body)
 }
 
+fn get(port: u16, target: &str) -> (u16, String) {
+    request(
+        port,
+        format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+    )
+}
+
 fn post(port: u16, body: &str) -> u16 {
-    let raw = format!(
-        "POST /decide HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    request(port, raw).0
+    post_to(port, "/decide", body)
 }
 
 #[test]
@@ -33,16 +36,26 @@ fn review_serves_page_and_writes_selection() {
     let t = common::temp_dir("review");
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
+    let home = t.0.join("h");
+    fs::create_dir_all(&home).unwrap();
+    let h = home.to_string_lossy().into_owned();
     let rows = [
-        "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/a\t/h/Library/Caches/a\t2048\tnote\t3\texact",
-        "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/b\t/h/Library/Caches/b\t4096\tnote\t-\texact",
-        "big-files\tLarge files (report only)\tdesc\treport\t0\trm\t-\t~/big.iso\t/h/big.iso\t9999999\tReview manually.\t10\texact",
-        "docker\tDocker\tdesc\treview\t0\tcmd\tdocker-prune\tdocker system prune -f\tcmd:docker-prune\t1000\tnote\t-\tvm",
+        format!(
+            "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/a\t{h}/Library/Caches/a\t2048\tnote\t3\texact"
+        ),
+        format!(
+            "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/b\t{h}/Library/Caches/b\t4096\tnote\t-\texact"
+        ),
+        format!(
+            "big-files\tLarge files (report only)\tdesc\treport\t0\trm\t-\t~/big.iso\t{h}/big.iso\t9999999\tReview manually.\t10\texact"
+        ),
+        "docker\tDocker\tdesc\treview\t0\tcmd\tdocker-prune\tdocker system prune -f\tcmd:docker-prune\t1000\tnote\t-\tvm"
+            .to_string(),
     ];
     fs::write(run.join("scan.tsv"), rows.join("\n") + "\n").unwrap();
     fs::write(
         run.join("map.tsv"),
-        "500\t/h/Library\n1000\t7\t1700000000\t/h\n",
+        format!("500\t{h}/Library\n1000\t7\t1700000000\t{h}\n"),
     )
     .unwrap();
     fs::write(
@@ -50,12 +63,18 @@ fn review_serves_page_and_writes_selection() {
         "total\t100000\nused\t60000\nfree\t40000\nhome\t1000\nsnapshots\t0\n",
     )
     .unwrap();
+    fs::write(
+        run.join("clean.events"),
+        r#"{"event":"started","run":"old","free":1,"paths":1,"worktrees":0,"commands":0,"bytes":1,"elapsed_ms":0}"#,
+    )
+    .unwrap();
+    fs::write(run.join("status"), "done\n").unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
         .args(["review", &run.to_string_lossy()])
         .env("DISK_CLEAN_NO_BROWSER", "1")
         .env("DISK_CLEAN_WATCH_START", "3")
-        .env("HOME", "/h")
+        .env("HOME", &home)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -76,7 +95,7 @@ fn review_serves_page_and_writes_selection() {
         .parse()
         .unwrap();
 
-    let (status, page) = request(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_string());
+    let (status, page) = get(port, "/");
     assert_eq!(status, 200);
     assert!(!page.contains("__DATA__") && !page.contains("__TOKEN__"));
     let json = page
@@ -89,7 +108,7 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(data["categories"][0]["bytes"], 6144);
     assert_eq!(
         data["categories"][0]["items"][0]["path"],
-        "/h/Library/Caches/b"
+        format!("{h}/Library/Caches/b")
     );
     assert_eq!(data["categories"][0]["items"][0]["age"], Value::Null);
     assert_eq!(
@@ -111,14 +130,8 @@ fn review_serves_page_and_writes_selection() {
         .expect("token meta");
     assert_eq!(token.len(), 22);
 
-    assert_eq!(
-        request(port, "GET /favicon.ico HTTP/1.1\r\n\r\n".to_string()).0,
-        204
-    );
-    assert_eq!(
-        request(port, "GET /nope HTTP/1.1\r\n\r\n".to_string()).0,
-        404
-    );
+    assert_eq!(get(port, "/favicon.ico").0, 204);
+    assert_eq!(get(port, "/nope").0, 404);
     assert_eq!(
         post(
             port,
@@ -130,7 +143,7 @@ fn review_serves_page_and_writes_selection() {
 
     let raw_preview = |body: String| {
         format!(
-            "POST /preview HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+            "POST /preview HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
     };
@@ -146,8 +159,8 @@ fn review_serves_page_and_writes_selection() {
         port,
         raw_preview(format!(
             r#"{{"token": "{token}", "items": [
-                {{"path": "/h/Library/Caches/a"}},
-                {{"path": "/h/big.iso"}},
+                {{"path": "{h}/Library/Caches/a"}},
+                {{"path": "{h}/big.iso"}},
                 {{"path": "cmd:docker-prune"}}
             ]}}"#
         )),
@@ -158,15 +171,15 @@ fn review_serves_page_and_writes_selection() {
         plan["commands"],
         serde_json::json!(["docker system prune -f"])
     );
-    assert_eq!(plan["rejected"][0]["path"], "/h/Library/Caches/a");
+    assert_eq!(plan["rejected"][0]["path"], format!("{h}/Library/Caches/a"));
     assert_eq!(plan["rejected"][0]["reason"], "already gone");
     assert_eq!(plan["count"], 1);
     assert!(!run.join("selection.json").exists());
 
     let approve = format!(
         r#"{{"token": "{token}", "decision": "approve", "items": [
-            {{"path": "/h/Library/Caches/a", "category": "caches"}},
-            {{"path": "/h/big.iso", "category": "big-files"}},
+            {{"path": "{h}/Library/Caches/a", "category": "caches"}},
+            {{"path": "{h}/big.iso", "category": "big-files"}},
             {{"path": "/etc/passwd", "category": "caches"}},
             {{"path": "cmd:docker-prune", "category": "docker"}}
         ]}}"#
@@ -191,11 +204,18 @@ fn review_serves_page_and_writes_selection() {
         .iter()
         .map(|i| i["path"].as_str().unwrap())
         .collect();
-    assert_eq!(paths, ["/h/Library/Caches/a", "cmd:docker-prune"]);
+    assert_eq!(
+        paths,
+        [format!("{h}/Library/Caches/a").as_str(), "cmd:docker-prune"]
+    );
     assert_eq!(sel["items"][1]["cmd_id"], "docker-prune");
     assert_eq!(sel["items"][1]["action"], "cmd");
     assert_eq!(sel["total_bytes"], 3048);
 
+    assert!(
+        !run.join("clean.events").exists() && !run.join("status").exists(),
+        "a new approval clears the previous cleanup's events and status"
+    );
     let after = events(port, &token, "waiting");
     assert_eq!(
         after[0].0, "waiting",
@@ -233,6 +253,7 @@ fn render_keeps_hostile_paths_inside_the_data_script() {
     let (json, _) = rest.split_once("</script>").expect("script end");
     let parsed: Value = serde_json::from_str(json).unwrap();
     assert_eq!(parsed, data);
+    assert!(!json.contains('<'), "{json}");
     assert!(page.contains(r#"<meta name="disk-clean-token" content="tok""#));
 }
 
@@ -255,7 +276,13 @@ fn open_events(port: u16, token: &str) -> BufReader<TcpStream> {
             }
         }
     };
-    write!(s, "GET /events?token={token} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .unwrap();
+    write!(
+        s,
+        "GET /events?token={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+    )
+    .unwrap();
     let mut reader = BufReader::new(s);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
@@ -284,7 +311,7 @@ fn read_until(reader: &mut BufReader<TcpStream>, until: &str) -> Vec<(String, Va
 
 fn post_to(port: u16, route: &str, body: &str) -> u16 {
     let raw = format!(
-        "POST {route} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+        "POST {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
     request(port, raw).0
@@ -320,7 +347,7 @@ fn review_without_run_dir_streams_the_scan() {
         .unwrap();
     let (mut child, port, token) = spawn_live(&home, &bin);
 
-    let (status, page) = request(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_string());
+    let (status, page) = get(port, "/");
     assert_eq!(status, 200);
     let json = page
         .split_once(r#"<script id="disk-clean-data" type="application/json">"#)
@@ -332,14 +359,7 @@ fn review_without_run_dir_streams_the_scan() {
         serde_json::json!({"live": true})
     );
     assert!(page.contains(&token));
-    assert_eq!(
-        request(
-            port,
-            "GET /events?token=wrong HTTP/1.1\r\nHost: x\r\n\r\n".to_string()
-        )
-        .0,
-        403
-    );
+    assert_eq!(get(port, "/events?token=wrong").0, 403);
 
     let mut first = events(port, &token, "walked");
     assert_eq!(
@@ -474,7 +494,7 @@ fn spawn_live(home: &Path, bin: &Path) -> (std::process::Child, u16, String) {
         .unwrap()
         .parse()
         .unwrap();
-    let (_, page) = request(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_string());
+    let (_, page) = get(port, "/");
     let token = page
         .split_once(r#"<meta name="disk-clean-token" content=""#)
         .and_then(|(_, rest)| rest.split_once('"'))
@@ -600,4 +620,149 @@ fn rescan_restarts_the_scan_in_place() {
         .map(|i| i["path"].as_str().unwrap())
         .collect();
     assert_eq!(chosen, [new.to_str().unwrap()]);
+}
+
+fn finished_review(tag: &str) -> (common::TempDir, std::process::Child, u16, String) {
+    let t = common::temp_dir(tag);
+    let home = t.0.join("h");
+    let run = t.0.join("run");
+    let cache = home.join("Library/Caches/a");
+    fs::create_dir_all(&cache).unwrap();
+    fs::create_dir_all(&run).unwrap();
+    fs::write(
+        run.join("scan.tsv"),
+        format!(
+            "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/a\t{}\t2048\tnote\t3\texact\n",
+            cache.display()
+        ),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        .args(["review", &run.to_string_lossy()])
+        .env("HOME", &home)
+        .env("DISK_CLEAN_NO_BROWSER", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    stderr.read_line(&mut line).unwrap();
+    let port: u16 = line
+        .trim()
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+    let (_, page) = get(port, "/");
+    let token = page
+        .split_once(r#"<meta name="disk-clean-token" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(token, _)| token.to_string())
+        .expect("token meta");
+    (t, child, port, token)
+}
+
+fn raw(method: &str, target: &str, headers: &str, body: &str) -> String {
+    format!(
+        "{method} {target} HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[test]
+fn a_foreign_host_or_origin_is_refused_everywhere() {
+    let (_t, mut child, port, token) = finished_review("rebind");
+    let body = format!(r#"{{"token": "{token}", "decision": "cancel", "items": []}}"#);
+    let json = "Content-Type: application/json\r\n";
+    for host in [
+        format!("evil.example:{port}"),
+        "evil.example".to_string(),
+        "127.0.0.1".to_string(),
+        format!("127.0.0.2:{port}"),
+    ] {
+        let headers = format!("Host: {host}\r\nOrigin: http://{host}\r\n{json}");
+        for (method, target) in [
+            ("GET", "/".to_string()),
+            ("GET", format!("/events?token={token}")),
+            ("POST", "/preview".to_string()),
+            ("POST", "/rescan".to_string()),
+            ("POST", "/decide".to_string()),
+        ] {
+            let sent = if method == "GET" { "" } else { body.as_str() };
+            assert_eq!(
+                request(port, raw(method, &target, &headers, sent)).0,
+                403,
+                "{method} {target} with Host {host}"
+            );
+        }
+    }
+    let local = format!("Host: 127.0.0.1:{port}\r\n");
+    let preview = format!(r#"{{"token": "{token}", "items": []}}"#);
+    let plain = format!("{local}Content-Type: text/plain\r\n");
+    assert_eq!(
+        request(port, raw("POST", "/preview", &plain, &preview)).0,
+        403
+    );
+    assert_eq!(
+        request(port, raw("POST", "/preview", &local, &preview)).0,
+        403
+    );
+    let foreign = format!("{local}{json}Origin: http://evil.example\r\n");
+    assert_eq!(
+        request(port, raw("POST", "/preview", &foreign, &preview)).0,
+        403
+    );
+    let own = format!("{local}{json}Origin: http://127.0.0.1:{port}\r\n");
+    assert_eq!(
+        request(port, raw("POST", "/preview", &own, &preview)).0,
+        200
+    );
+    let named = format!("Host: localhost:{port}\r\n");
+    assert_eq!(request(port, raw("GET", "/", &named, "")).0, 200);
+    assert_eq!(post(port, &body), 200);
+    assert_eq!(child.wait().unwrap().code(), Some(5));
+}
+
+#[test]
+fn oversized_slow_and_excess_requests_are_turned_away() {
+    let (_t, mut child, port, token) = finished_review("limits");
+    let local = format!("Host: 127.0.0.1:{port}\r\n");
+    let padded = format!("{local}X-Pad: {}\r\n", "a".repeat(17 * 1024));
+    assert_eq!(request(port, raw("GET", "/", &padded, "")).0, 431);
+    let huge = format!(
+        "POST /preview HTTP/1.1\r\n{local}Content-Type: application/json\r\nContent-Length: 2000000\r\n\r\n"
+    );
+    assert_eq!(request(port, huge).0, 413);
+
+    let started = std::time::Instant::now();
+    let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(slow, "GET / HTTP/1.1\r\n{local}").unwrap();
+    let mut answer = String::new();
+    slow.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.0 408"), "{answer}");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(9));
+
+    let streams: Vec<_> = (0..64).map(|_| open_events(port, &token)).collect();
+    assert_eq!(get(port, "/").0, 503);
+    drop(streams);
+    let dropped = std::time::Instant::now();
+    while get(port, "/").0 != 200 {
+        assert!(
+            dropped.elapsed() < std::time::Duration::from_millis(1500),
+            "closed event streams still hold their slots"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        post(
+            port,
+            &format!(r#"{{"token": "{token}", "decision": "cancel"}}"#)
+        ),
+        200
+    );
+    assert_eq!(child.wait().unwrap().code(), Some(5));
 }

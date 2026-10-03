@@ -29,8 +29,13 @@ Cancel. When it exits, the **first line of stdout is `RUN_DIR`**; on approval a 
 path of `$RUN_DIR/selection.json`. Read `RUN_DIR` from the background task's output before stage 3.
 
 The run directory holds `scan.tsv` (cleanable items), `map.tsv` (size tree), `disk.tsv` (volume
-totals and snapshot count), `insights.json` (home files by modified day, age per folder, kind, and
-the largest files), and on approval `selection.json`.
+totals, snapshot count, and `too_deep`: folders nested too deep to read, also reported on stderr),
+`insights.json` (home files by modified day, age per folder, kind, and the largest files), and on
+approval `selection.json`.
+
+`HOME` is resolved to its real path once at startup and that path is used everywhere (scan, map,
+safety rules, clean); when it differs (a symlinked home) the resolved path is printed on stderr.
+Every command refuses to run with an empty, relative or missing `HOME`.
 
 Tunable via environment variables: `DISK_CLEAN_MIN_BYTES` (default 10 MB floor per item),
 `DISK_CLEAN_STALE_DAYS` (default 90), `DISK_CLEAN_BIGFILE_BYTES` (default 1 GB),
@@ -56,16 +61,22 @@ The page has three tabs, a summary strip (disk donut, selected total, scan statu
   *cannot* reclaim shows up.
 - **Insights** — read-only charts: bytes by last-modified day over the past year, the age of the
   largest folders under `~`, bytes by file kind, cleanup sections by idle time, and the largest files.
-- **Preview commands** (footer) — a dry run. Shows the exact shell commands Approve would run for the
-  current selection (`rm -rf -- '<path>'`, `git -C <repo> worktree remove <path>`, the fixed
+- **Preview commands** (footer) — a dry run. Shows the exact steps Approve would take for the
+  current selection (`delete '<path>'`, `git -C <repo> worktree remove <path>`, the fixed
   commands), plus anything the safety checks reject. Nothing runs; the list is built by the same
-  validation code `clean` uses. Worktree safety checks are not repeated here; `clean` re-runs them
-  right before each removal.
+  validation code `clean` uses. `delete` is the worker's own removal, not `rm -rf`: right before
+  each path goes it is resolved again (see Safety rules), and a symlink is removed itself, never
+  followed. Worktree safety checks are not repeated here; `clean` re-runs them right before each
+  removal.
 - **Approve and delete** (footer) — starts a few-second undo window (a burning fuse; Undo or Escape
   cancels). The approval is sent only when the window runs out. Cancel has the same undo window.
   After approval the page stays on the review app with a progress bar at the top: first "Claude is
   showing the commands in your terminal" (the dry run below), then the real deletion once stage 3
-  starts (freed bytes, items done, current path), then what was actually freed. Clicking the bar opens
+  starts (freed bytes, items done, current path), then what was freed: the bytes of the items actually
+  removed. The volume's free-space change since the deletion started is shown separately and labelled
+  "free space changed by" (other apps write to the disk too). If `clean` never runs, finds nothing
+  that passes the safety checks, or its worker dies, the bar says the cleanup did not start (or
+  stopped) and why. Clicking the bar opens
   a live log of every removal, kept worktree, failure (with its reason) and command; the cleanup list
   marks each approved row as it goes. A "Watch the movie" button there plays the cleanup film on
   demand. A reload keeps the bar and log. A small read-only helper keeps serving the page after `review`
@@ -89,15 +100,21 @@ bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean "$RUN_DI
 ```
 
 Returns immediately with a pid and a log path. Deletion runs detached, four paths at a time,
-largest first. Check progress with:
+largest first. Only one `clean` runs per run directory at a time. Exit codes (the dry run uses the
+same ones): `0` queued, `2` no run directory / `selection.json` / `scan.tsv`, `3` nothing passed the
+safety checks (see `$RUN_DIR/rejected`), `4` another `clean` is already running for this run
+directory. Check progress with:
 
 ```bash
 tail -20 "$RUN_DIR/clean.log"; cat "$RUN_DIR/status" 2>/dev/null
 ```
 
-`status` reads `pending` while running and `done` when finished. The tail of the log reports
-free space before and after. The review tab shows the same run live (from `$RUN_DIR/clean.events`),
-so the user can watch it there instead of waiting on the terminal.
+`status` reads `pending` while running, `done` when finished, `interrupted` if the worker died
+before finishing, and `abandoned` when nothing passed the safety checks or `clean` was never run
+after the approval. The tail of the log reports `removed: N items, X bytes` (what was freed) and,
+separately, how much the volume's free space changed since the worker started. Each run starts a
+fresh `$RUN_DIR/clean.events`; the review tab shows the current run live from it, so the user can
+watch it there instead of waiting on the terminal.
 
 ## What the scan covers
 
@@ -151,15 +168,25 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
 ## Safety rules
 
 - `clean` deletes a path only if it appeared in that run's `scan.tsv`. The UI cannot smuggle
-  in an arbitrary path.
-- Hard-blocked regardless of selection: `$HOME` itself, anything outside `$HOME` other than
-  `/private/tmp` entries and the per-user `$TMPDIR` tree, and
+  in an arbitrary path. Duplicate selections run once.
+- Paths must be canonical: anything with `//`, a `.` or `..` component, or a trailing `/` is
+  rejected, never normalised.
+- Hard-blocked regardless of selection: `$HOME` itself and every folder above it, anything outside
+  `$HOME` other than `/private/tmp` entries and the per-user `$TMPDIR` tree, and
   `Documents`, `Desktop`, `Pictures`, `Movies`, `Music`, `.ssh`, `.gnupg`, `.aws`, `.kube`,
-  `.claude`, `Library/Mail`, `Library/Messages`, Keychains. Rejects land in `$RUN_DIR/rejected`.
+  `.claude`, `Library/Mail`, `Library/Messages`, Keychains (names matched case-insensitively). These
+  protections apply even when `$HOME` itself lives inside the temp folders. Rejects land in
+  `$RUN_DIR/rejected`.
+- Right before each removal (files, folders and worktrees alike) the path is resolved again: its
+  parent's real path plus its name must still equal the scanned path, and that path must still be
+  allowed. A path whose parent was swapped for a symlink after the scan is kept and logged `KEPT`
+  with the reason. A symlink is removed itself, never followed.
 - Only three shell commands can ever run, by fixed id: `xcrun simctl delete unavailable`,
   `docker system prune -f` (dangling only, never named volumes), `brew cleanup --prune=all -s`.
-- Worktrees are never `rm -rf`'d: they are only removed with `git worktree remove`
+- Worktrees are never deleted directly: they are only removed with `git worktree remove`
   after a fresh re-check. A worktree that changed after the scan is kept and logged as `KEPT`.
+- The review page and its helper answer only requests addressed to `127.0.0.1:<port>` or
+  `localhost:<port>`; changes also need a JSON body from the page's own origin and its token.
 - No `sudo`, ever. System-level caches under `/Library` and `/private/var` are out of scope.
 - Deletion is permanent — items go straight out, not to the Trash.
 

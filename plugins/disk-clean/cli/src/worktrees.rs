@@ -603,12 +603,14 @@ pub fn removable(path_s: &str, real: &[String]) -> Result<PathBuf, String> {
 pub fn remove(
     paths: &[String],
     out: &mut impl Write,
+    still_safe: &dyn Fn(&str) -> Result<(), String>,
     on_outcome: &mut dyn FnMut(&str, Option<&str>),
 ) -> std::io::Result<()> {
     let real = real_cwds(&process_cwds());
     let mut touched: Vec<PathBuf> = Vec::new();
     for path_s in paths {
-        let repo = match removable(path_s, &real) {
+        let repo = match removable(path_s, &real).and_then(|repo| still_safe(path_s).map(|()| repo))
+        {
             Ok(repo) => repo,
             Err(reason) => {
                 writeln!(out, "KEPT    {path_s} ({reason})")?;

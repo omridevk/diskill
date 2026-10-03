@@ -41,3 +41,33 @@ pub fn sh(cwd: &Path, script: &str) {
         .unwrap();
     assert!(status.success(), "script failed: {script}");
 }
+
+pub fn cli(args: &[&str], home: &Path, env: &[(&str, &str)]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        .args(args)
+        .env("HOME", home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .envs(env.iter().copied())
+        .output()
+        .unwrap()
+}
+
+pub fn wait_for(what: &str, limit: std::time::Duration, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + limit;
+    while !ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+pub fn events_of(run: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(run.join("clean.events"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}

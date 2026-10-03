@@ -1,12 +1,28 @@
-use disk_clean::{clean, review, scan, watch};
+use disk_clean::{clean, review, scan, util, watch};
 use std::process::ExitCode;
 
 const USAGE: &str =
     "usage: disk-clean scan [RUN_DIR] | review [RUN_DIR] | clean [--dry-run] RUN_DIR";
 
+fn announce_home() -> Result<(), String> {
+    let home = util::checked_home()?;
+    let raw = std::env::var("HOME").unwrap_or_default();
+    if raw != home {
+        eprintln!("disk-clean: HOME {raw} resolves to {home}, using {home}");
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |i: usize| args.get(i).cloned();
+    let commands = ["scan", "review", "watch", "clean"];
+    if args.first().is_some_and(|a| commands.contains(&a.as_str()))
+        && let Err(e) = announce_home()
+    {
+        eprintln!("disk-clean: {e}");
+        return ExitCode::from(1);
+    }
     let result = match args.first().map(String::as_str) {
         Some("scan") => scan::run(arg(1)),
         Some("review") => review::run(arg(1)),

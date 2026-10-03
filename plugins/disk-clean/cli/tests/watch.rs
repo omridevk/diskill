@@ -46,9 +46,19 @@ fn request(port: u16, raw: &str) -> u16 {
     out.split_whitespace().nth(1).unwrap().parse().unwrap()
 }
 
+fn host(port: u16) -> String {
+    format!("Host: 127.0.0.1:{port}\r\n")
+}
+
 fn open_events(port: u16) -> BufReader<TcpStream> {
     let mut s = connect(port);
-    write!(s, "GET /events?token={TOKEN} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(
+        s,
+        "GET /events?token={TOKEN} HTTP/1.1\r\n{}\r\n",
+        host(port)
+    )
+    .unwrap();
     let mut reader = BufReader::new(s);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
@@ -105,21 +115,36 @@ fn watch_replays_and_tails_the_worker_events_read_only() {
     let mut first = open_events(port);
     assert_eq!(read_until(&mut first, "waiting"), ["waiting"]);
     assert_eq!(
-        request(port, "GET /events?token=wrong HTTP/1.1\r\n\r\n"),
+        request(
+            port,
+            &format!("GET /events?token=wrong HTTP/1.1\r\n{}\r\n", host(port))
+        ),
         403
     );
     assert_eq!(
         request(
             port,
-            &format!("POST /events?token={TOKEN} HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+            &format!(
+                "POST /events?token={TOKEN} HTTP/1.1\r\n{}Content-Length: 0\r\n\r\n",
+                host(port)
+            )
         ),
         405
     );
     assert_eq!(
-        request(port, "POST /decide HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}"),
+        request(
+            port,
+            &format!(
+                "POST /decide HTTP/1.1\r\n{}Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}",
+                host(port)
+            )
+        ),
         405
     );
-    assert_eq!(request(port, "GET / HTTP/1.1\r\n\r\n"), 404);
+    assert_eq!(
+        request(port, &format!("GET / HTTP/1.1\r\n{}\r\n", host(port))),
+        404
+    );
 
     append(
         &run,
@@ -175,8 +200,18 @@ fn watch_gives_up_when_clean_never_starts_or_runs_too_long() {
     fs::create_dir_all(&run).unwrap();
     let port = free_port();
     let mut never = watch(&run, port, &[("DISK_CLEAN_WATCH_START", "0.5")]);
-    let _stream = open_events(port);
+    let mut stream = open_events(port);
+    assert_eq!(
+        read_until(&mut stream, "abandoned"),
+        ["waiting", "abandoned"]
+    );
     assert!(exits_within(&mut never, Duration::from_secs(5)));
+    assert_eq!(
+        fs::read_to_string(run.join("status")).unwrap(),
+        "abandoned\n"
+    );
+    fs::remove_file(run.join("status")).unwrap();
+    fs::remove_file(run.join("clean.events")).unwrap();
 
     append(&run, &[r#"{"event":"started","elapsed_ms":0}"#]);
     let port = free_port();
@@ -222,7 +257,7 @@ fn watch_serves_the_approved_page_for_a_reload() {
     let mut child = watch(&run, port, &[("DISK_CLEAN_WATCH_START", "5")]);
 
     let mut s = connect(port);
-    s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    write!(s, "GET / HTTP/1.1\r\n{}\r\n", host(port)).unwrap();
     let mut out = String::new();
     s.read_to_string(&mut out).unwrap();
     assert!(out.starts_with("HTTP/1.0 200"), "{out}");
@@ -242,7 +277,93 @@ fn watch_serves_the_approved_page_for_a_reload() {
     )));
 
     fs::remove_file(run.join("selection.json")).unwrap();
-    assert_eq!(request(port, "GET / HTTP/1.1\r\n\r\n"), 404);
+    assert_eq!(
+        request(port, &format!("GET / HTTP/1.1\r\n{}\r\n", host(port))),
+        404
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn watch_refuses_a_foreign_host() {
+    let t = common::temp_dir("watch-host");
+    let run = t.0.join("run");
+    fs::create_dir_all(&run).unwrap();
+    fs::write(run.join("selection.json"), r#"{"items":[]}"#).unwrap();
+    let port = free_port();
+    let mut child = watch(&run, port, &[]);
+    connect(port);
+    for target in ["/".to_string(), format!("/events?token={TOKEN}")] {
+        for host in [format!("evil.example:{port}"), "evil.example".to_string()] {
+            assert_eq!(
+                request(
+                    port,
+                    &format!("GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n")
+                ),
+                403,
+                "{target} with Host {host}"
+            );
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn watch_notices_a_closed_page_within_a_second() {
+    let t = common::temp_dir("watch-closed");
+    let run = t.0.join("run");
+    fs::create_dir_all(&run).unwrap();
+    let port = free_port();
+    let mut child = watch(&run, port, &[("DISK_CLEAN_WATCH_IDLE", "0.3")]);
+    let mut stream = open_events(port);
+    assert_eq!(read_until(&mut stream, "waiting"), ["waiting"]);
+    fs::write(run.join("status"), "done\n").unwrap();
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(child.try_wait().unwrap().is_none(), "a page is still open");
+    drop(stream);
+    assert!(
+        exits_within(&mut child, Duration::from_millis(1200)),
+        "the closed stream was not noticed"
+    );
+}
+
+#[test]
+fn watch_follows_a_fresh_event_file_for_a_new_run() {
+    let t = common::temp_dir("watch-rerun");
+    let run = t.0.join("run");
+    fs::create_dir_all(&run).unwrap();
+    append(
+        &run,
+        &[
+            r#"{"event":"started","run":"one","free":1,"paths":9,"worktrees":0,"commands":0,"bytes":8,"elapsed_ms":0}"#,
+            r#"{"event":"removed","path":"/x/a-long-path-from-the-first-run","bytes":4,"secs":0.1,"elapsed_ms":5}"#,
+            r#"{"event":"removed","path":"/x/another-long-path-from-the-first-run","bytes":4,"secs":0.1,"elapsed_ms":6}"#,
+        ],
+    );
+    let port = free_port();
+    let mut child = watch(&run, port, &[]);
+    let mut stream = open_events(port);
+    assert_eq!(read_until(&mut stream, "removed"), ["started", "removed"]);
+    read_until(&mut stream, "removed");
+    fs::remove_file(run.join("clean.events")).unwrap();
+    append(
+        &run,
+        &[
+            r#"{"event":"started","run":"two","free":1,"paths":1,"worktrees":0,"commands":0,"bytes":1,"elapsed_ms":0}"#,
+        ],
+    );
+    let mut line = String::new();
+    let data = loop {
+        line.clear();
+        assert!(stream.read_line(&mut line).unwrap() > 0);
+        match line.trim_end().strip_prefix("data: ") {
+            Some(d) if d.contains(r#""event":"started""#) => break d.to_string(),
+            _ => continue,
+        }
+    };
+    assert!(data.contains(r#""run":"two""#), "{data}");
     let _ = child.kill();
     let _ = child.wait();
 }

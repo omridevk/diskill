@@ -73,6 +73,18 @@ fn is_allowed_table() {
         "/Users/someone/Library/Mail/V10",
         "/Users/someone/Library/Messages",
         "/Users/someone/Library/Messages/chat.db",
+        "/private/tmp//x",
+        "/private/tmp/./x",
+        "/private/tmp/x/",
+        "/Users/someone//Documents",
+        "/Users/someone/./Documents",
+        "/Users/someone/Library/./Keychains",
+        "/Users/someone/Library/Caches/x/",
+        "/Users/someone/documents",
+        "/Users/someone/DESKTOP/a",
+        "/Users/someone/.SSH/id_rsa",
+        "/Users/someone/library/keychains",
+        "/Users/someone/LIBRARY",
     ];
     for p in allowed {
         assert!(is_allowed(p, HOME, Some(BASE)), "should allow {p}");
@@ -86,6 +98,33 @@ fn is_allowed_table() {
         None
     ));
     assert!(is_allowed("/private/tmp/x", HOME, None));
+    assert!(is_allowed("/private/tmp/ok..name", HOME, None));
+}
+
+#[test]
+fn a_home_inside_the_temp_folder_keeps_its_protection() {
+    let home = format!("{BASE}/T/sandbox/home");
+    for p in [
+        home.clone(),
+        format!("{BASE}/T/sandbox"),
+        format!("{home}/Documents"),
+        format!("{home}/.ssh/id_rsa"),
+        format!("{home}/Library"),
+        format!("{home}/Library/Keychains/login.keychain-db"),
+    ] {
+        assert!(!is_allowed(&p, &home, Some(BASE)), "should block {p}");
+    }
+    assert!(is_allowed(
+        &format!("{home}/Library/Caches/x"),
+        &home,
+        Some(BASE)
+    ));
+    for bad_home in ["", "/", "relative", "/Users/someone/"] {
+        assert!(
+            !is_allowed("/private/tmp/x", bad_home, Some(BASE)),
+            "home {bad_home:?} must allow nothing"
+        );
+    }
 }
 
 fn scan_row(cat: &str, action: &str, path: &str) -> String {
@@ -126,7 +165,7 @@ fn clean_end_to_end_on_fixture() {
     ]
     .concat();
     fs::write(run.join("scan.tsv"), scan).unwrap();
-    fs::write(run.join("free-before"), "123\n").unwrap();
+    fs::write(run.join("free-before"), "987654321987\n").unwrap();
     let items = [
         selection_item("rm", &p(&doomed)),
         selection_item("rm", &p(&doomed_file)),
@@ -151,13 +190,14 @@ fn clean_end_to_end_on_fixture() {
     let plan = String::from_utf8_lossy(&dry.stdout);
     assert!(dry.status.success(), "{plan}");
     assert!(
-        plan.contains(&format!("\nrm -rf -- {}\n", p(&doomed))),
+        plan.contains(&format!("\ndelete {}\n", p(&doomed))),
         "{plan}"
     );
     assert!(
-        plan.contains(&format!("\nrm -rf -- {}\n", p(&doomed_file))),
+        plan.contains(&format!("\ndelete {}\n", p(&doomed_file))),
         "{plan}"
     );
+    assert!(!plan.contains("rm -rf"), "{plan}");
     assert!(
         plan.contains(&format!("# kept, not a registered worktree: {}", p(&repo))),
         "{plan}"
@@ -234,8 +274,12 @@ fn clean_end_to_end_on_fixture() {
         log.contains(&format!("KEPT    {} (not a registered worktree)", p(&repo))),
         "{log}"
     );
-    assert!(log.contains("free before: 123 bytes"), "{log}");
-    assert!(log.contains("reclaimed:   "), "{log}");
+    assert!(log.contains("removed: 2 items, 8192 bytes"), "{log}");
+    assert!(log.contains("free space changed by "), "{log}");
+    assert!(
+        !log.contains("987654321987"),
+        "the scan-time free-before is never used: {log}"
+    );
     assert!(!doomed.exists() && !doomed_file.exists());
     assert!(not_in_scan.exists() && repo.join("a").exists() && Path::new("/etc/hosts").exists());
 }
@@ -258,6 +302,20 @@ fn clean_rejects_everything() {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nothing passed validation"));
     assert!(!run.join("clean.log").exists());
+    assert_eq!(
+        fs::read_to_string(run.join("status")).unwrap(),
+        "abandoned\n"
+    );
+    let events = common::events_of(&run);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["event"], "abandoned");
+    assert!(
+        events[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("nothing passed the safety checks"),
+        "{events:?}"
+    );
 }
 
 #[test]
@@ -286,7 +344,7 @@ fn dry_run_quotes_paths_and_lists_fixed_commands() {
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     let quoted = format!("'{}'", odd_s.replace('\'', r"'\''"));
-    assert!(plan.contains(&format!("\nrm -rf -- {quoted}\n")), "{plan}");
+    assert!(plan.contains(&format!("\ndelete {quoted}\n")), "{plan}");
     assert!(plan.contains("\ndocker system prune -f\n"), "{plan}");
     assert!(odd.exists());
 }
@@ -436,15 +494,392 @@ fn worker_writes_one_event_per_outcome() {
     );
     let done = events.last().unwrap();
     assert_eq!(done["event"], "done");
-    assert_eq!(
-        done["reclaimed"].as_i64().unwrap(),
-        done["free_after"].as_i64().unwrap() - done["free_before"].as_i64().unwrap()
-    );
+    assert_eq!(done["removed"], 2);
+    assert_eq!(done["removed_bytes"], 2 * 4096, "{done}");
+    assert_eq!(done["free_before"], started["free"]);
+    assert!(done["free_after"].is_i64());
     assert!(events.iter().all(|e| e["elapsed_ms"].is_u64()));
     let log = fs::read_to_string(run.join("clean.log")).unwrap();
     assert!(
         log.contains(&format!("FAILED  {} (still present, exit 1)", p(&stuck))),
         "{log}"
     );
+    assert!(log.contains("removed: 2 items, 8192 bytes"), "{log}");
     assert!(!doomed.exists() && !gone.exists() && dirty.exists() && stuck.exists());
+}
+
+fn write_run(run: &Path, scan: &str, items: &[String], lists: Option<(&str, &str)>) {
+    fs::create_dir_all(run).unwrap();
+    fs::write(run.join("scan.tsv"), scan).unwrap();
+    fs::write(
+        run.join("selection.json"),
+        format!(r#"{{"items": [{}]}}"#, items.join(",")),
+    )
+    .unwrap();
+    if let Some((rm, wt)) = lists {
+        fs::write(run.join("rm-list"), rm).unwrap();
+        fs::write(run.join("wt-list"), wt).unwrap();
+        fs::write(run.join("cmd-list"), "").unwrap();
+    }
+}
+
+fn text(p: &Path) -> String {
+    p.to_string_lossy().into_owned()
+}
+
+#[test]
+fn an_unusable_home_is_refused() {
+    let t = common::temp_dir("clean-home");
+    let run = t.0.join("run");
+    let doomed = t.0.join("doomed");
+    fs::create_dir_all(&doomed).unwrap();
+    write_run(
+        &run,
+        &scan_row("caches", "rm", &text(&doomed)),
+        &[selection_item("rm", &text(&doomed))],
+        None,
+    );
+    for home in ["", "relative/home", "/nonexistent/disk-clean-home"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+            .args(["clean", "--dry-run", &text(&run)])
+            .env("HOME", home)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "HOME={home:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("HOME"), "HOME={home:?}: {err}");
+        assert!(String::from_utf8_lossy(&out.stdout).is_empty());
+    }
+}
+
+#[test]
+fn a_symlink_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
+    let home_t = common::temp_dir("swap-home");
+    let decoy_t = common::temp_dir("swap-decoy");
+    let home = &home_t.0;
+    let app = home.join("Library/Caches/app");
+    let target = app.join("victim");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("cache"), b"x").unwrap();
+    let decoy = decoy_t.0.join("app/victim");
+    fs::create_dir_all(&decoy).unwrap();
+    fs::write(decoy.join("precious"), b"keep me").unwrap();
+    let run = home.join("run");
+    write_run(
+        &run,
+        &scan_row("caches", "rm", &text(&target)),
+        &[selection_item("rm", &text(&target))],
+        Some((&format!("{}\n", text(&target)), "")),
+    );
+    fs::rename(&app, home.join("Library/Caches/app-moved")).unwrap();
+    std::os::unix::fs::symlink(decoy_t.0.join("app"), &app).unwrap();
+
+    let dry = common::cli(&["clean", "--dry-run", &text(&run)], home, &[]);
+    let plan = String::from_utf8_lossy(&dry.stdout);
+    assert!(
+        plan.contains(&format!(
+            "# rejected (path changed since the scan): {}",
+            text(&target)
+        )),
+        "{plan}"
+    );
+    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    assert!(out.status.success());
+    let log = fs::read_to_string(run.join("clean.log")).unwrap_or_default()
+        + &String::from_utf8_lossy(&out.stdout);
+    assert!(
+        decoy.join("precious").exists(),
+        "the decoy was deleted\n{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "KEPT    {} (path changed since the scan)",
+            text(&target)
+        )),
+        "{log}"
+    );
+    let kept: Vec<_> = common::events_of(&run)
+        .into_iter()
+        .filter(|e| e["event"] == "kept")
+        .collect();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0]["path"], text(&target));
+}
+
+#[test]
+fn a_leaf_symlink_is_unlinked_never_followed() {
+    let home_t = common::temp_dir("leaf-home");
+    let decoy_t = common::temp_dir("leaf-decoy");
+    let home = &home_t.0;
+    let caches = home.join("Library/Caches");
+    fs::create_dir_all(&caches).unwrap();
+    fs::write(decoy_t.0.join("precious"), b"keep me").unwrap();
+    let link = caches.join("link");
+    std::os::unix::fs::symlink(&decoy_t.0, &link).unwrap();
+    let run = home.join("run");
+    write_run(
+        &run,
+        &scan_row("caches", "rm", &text(&link)),
+        &[selection_item("rm", &text(&link))],
+        Some((&format!("{}\n", text(&link)), "")),
+    );
+    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    assert!(out.status.success());
+    assert!(fs::symlink_metadata(&link).is_err(), "the link itself goes");
+    assert!(decoy_t.0.join("precious").exists(), "its target stays");
+}
+
+#[test]
+fn a_worktree_swapped_for_another_checkout_keeps_the_decoy() {
+    let home_t = common::temp_dir("wt-swap-home");
+    let decoy_t = common::temp_dir("wt-swap-decoy");
+    let home = &home_t.0;
+    common::sh(
+        home,
+        "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q -b wt ../wts/a/wt main",
+    );
+    common::sh(
+        &decoy_t.0,
+        "git init -q -b main repo2 && cd repo2 && echo b >b && git add b && git commit -qm init && git worktree add -q -b wt2 ../a/wt main",
+    );
+    let target = home.join("wts/a/wt");
+    let decoy = decoy_t.0.join("a/wt");
+    let run = home.join("run");
+    write_run(
+        &run,
+        &scan_row("worktrees", "worktree", &text(&target)),
+        &[selection_item("worktree", &text(&target))],
+        Some(("", &format!("{}\n", text(&target)))),
+    );
+    fs::rename(home.join("wts/a"), home.join("wts/a-moved")).unwrap();
+    std::os::unix::fs::symlink(decoy_t.0.join("a"), home.join("wts/a")).unwrap();
+
+    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    assert!(out.status.success());
+    let log = fs::read_to_string(run.join("clean.log")).unwrap_or_default()
+        + &String::from_utf8_lossy(&out.stdout);
+    assert!(
+        decoy.join("b").exists(),
+        "the decoy checkout was emptied\n{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "KEPT    {} (path changed since the scan)",
+            text(&target)
+        )),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_second_run_starts_a_fresh_event_file() {
+    let t = common::temp_dir("clean-rerun");
+    let root = &t.0;
+    let (a, b) = (root.join("a"), root.join("b"));
+    for dir in [&a, &b] {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("f"), b"x").unwrap();
+    }
+    let run = root.join("run");
+    let scan = scan_row("caches", "rm", &text(&a)) + &scan_row("caches", "rm", &text(&b));
+    let items = [
+        selection_item("rm", &text(&a)),
+        selection_item("rm", &text(&b)),
+    ];
+    write_run(&run, &scan, &items, Some((&format!("{}\n", text(&a)), "")));
+    assert!(
+        common::cli(&["clean", "--worker", &text(&run)], root, &[])
+            .status
+            .success()
+    );
+    let first = common::events_of(&run);
+    let first_run = first[0]["run"].as_str().unwrap().to_string();
+    assert!(!first_run.is_empty());
+
+    fs::write(run.join("rm-list"), format!("{}\n", text(&b))).unwrap();
+    assert!(
+        common::cli(&["clean", "--worker", &text(&run)], root, &[])
+            .status
+            .success()
+    );
+    let second = common::events_of(&run);
+    let started: Vec<_> = second.iter().filter(|e| e["event"] == "started").collect();
+    assert_eq!(started.len(), 1, "{second:?}");
+    assert_ne!(started[0]["run"], first_run.as_str());
+    assert!(
+        second.iter().all(|e| e["path"] != text(&a).as_str()),
+        "{second:?}"
+    );
+    assert_eq!(second.iter().filter(|e| e["event"] == "done").count(), 1);
+}
+
+#[test]
+fn duplicate_selection_paths_are_planned_once() {
+    let t = common::temp_dir("clean-dupes");
+    let dir = t.0.join("dup");
+    fs::create_dir_all(&dir).unwrap();
+    let run = t.0.join("run");
+    write_run(
+        &run,
+        &scan_row("caches", "rm", &text(&dir)),
+        &[
+            selection_item("rm", &text(&dir)),
+            selection_item("rm", &text(&dir)),
+            r#"{"action": "cmd", "cmd_id": "docker-prune", "bytes": 7}"#.to_string(),
+            r#"{"action": "cmd", "cmd_id": "docker-prune", "bytes": 7}"#.to_string(),
+        ],
+        None,
+    );
+    let out = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
+    let plan = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        plan.matches(&format!("delete {}\n", text(&dir))).count(),
+        1,
+        "{plan}"
+    );
+    assert_eq!(
+        plan.matches("docker system prune -f\n").count(),
+        1,
+        "{plan}"
+    );
+    assert!(plan.contains("# 2 items, 4103 bytes"), "{plan}");
+
+    let cats = disk_clean::review::load_scan(&run);
+    let picked = disk_clean::review::selection(
+        &cats,
+        &[
+            serde_json::json!({"path": text(&dir)}),
+            serde_json::json!({"path": text(&dir)}),
+        ],
+    )
+    .unwrap();
+    assert_eq!(picked["items"].as_array().unwrap().len(), 1);
+    assert_eq!(picked["total_bytes"], 4096);
+}
+
+#[test]
+fn dry_run_exit_codes_match_the_real_run() {
+    let t = common::temp_dir("clean-codes");
+    let missing = t.0.join("no-such-run");
+    let out = common::cli(&["clean", "--dry-run", &text(&missing)], &t.0, &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no run directory at"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run = t.0.join("run");
+    write_run(&run, "", &[selection_item("rm", "/etc/hosts")], None);
+    let dry = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
+    assert_eq!(dry.status.code(), Some(3));
+    let real = common::cli(&["clean", &text(&run)], &t.0, &[]);
+    assert_eq!(real.status.code(), Some(3));
+}
+
+#[test]
+fn planning_ten_thousand_items_takes_well_under_a_second() {
+    let t = common::temp_dir("clean-fast");
+    let path = |i: usize| format!("{}/item-{i}", t.0.display());
+    let scan: Vec<String> = (0..14_000)
+        .map(|i| scan_row("caches", "rm", &path(i)).trim_end().to_string())
+        .collect();
+    let items: Vec<serde_json::Value> = (0..10_000)
+        .map(|i| serde_json::from_str(&selection_item("rm", &path(i))).unwrap())
+        .collect();
+    let started = Instant::now();
+    let plan = disk_clean::clean::plan(&disk_clean::clean::index_scan(&scan), &items);
+    let took = started.elapsed();
+    assert_eq!(plan.rejected.len(), 10_000);
+    assert!(
+        plan.rejected
+            .iter()
+            .all(|(reason, _)| reason == "already gone")
+    );
+    assert!(took < Duration::from_secs(1), "planning took {took:?}");
+}
+
+#[test]
+fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
+    let t = common::temp_dir("clean-lock");
+    let root = &t.0;
+    let (run, bin, gate, ran) = (
+        root.join("run"),
+        root.join("bin"),
+        root.join("gate"),
+        root.join("ran"),
+    );
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(
+        bin.join("docker"),
+        format!(
+            "#!/bin/sh\ntouch '{0}'\nwhile [ ! -e '{1}' ]; do sleep 0.05; done\nrm -f '{0}'\n",
+            ran.display(),
+            gate.display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(bin.join("docker"))
+        .status()
+        .unwrap();
+    write_run(
+        &run,
+        "",
+        &[r#"{"action": "cmd", "cmd_id": "docker-prune", "bytes": 1}"#.to_string()],
+        None,
+    );
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let env = [("PATH", path.as_str())];
+    let first = common::cli(&["clean", &text(&run)], root, &env);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    common::wait_for("the worker to run docker", Duration::from_secs(10), || {
+        ran.exists()
+    });
+
+    let second = common::cli(&["clean", &text(&run)], root, &env);
+    assert_eq!(second.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("already running"),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let pid = fs::read_to_string(run.join("worker.pid")).unwrap();
+    assert!(
+        Command::new("kill")
+            .args(["-9", pid.trim()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut watcher = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        .args(["watch", &text(&run)])
+        .env("HOME", root)
+        .env("DISK_CLEAN_WATCH_TOKEN", "tok")
+        .env("DISK_CLEAN_WATCH_PORT", port.to_string())
+        .spawn()
+        .unwrap();
+    common::wait_for("the watcher to exit", Duration::from_secs(10), || {
+        watcher.try_wait().unwrap().is_some()
+    });
+    fs::write(&gate, "").unwrap();
+    common::wait_for("the fake docker to exit", Duration::from_secs(10), || {
+        !ran.exists()
+    });
+    assert_eq!(
+        fs::read_to_string(run.join("status")).unwrap(),
+        "interrupted\n"
+    );
+    let last = common::events_of(&run).pop().unwrap();
+    assert_eq!(last["event"], "abandoned", "{last}");
 }

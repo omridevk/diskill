@@ -47,7 +47,7 @@ add changed-after-scan
         .collect();
     paths.sort();
     let mut out = Vec::new();
-    worktrees::remove(&paths, &mut out, &mut |_, _| {}).unwrap();
+    worktrees::remove(&paths, &mut out, &|_| Ok(()), &mut |_, _| {}).unwrap();
     let _ = sleeper.kill();
     let _ = sleeper.wait();
     let log = String::from_utf8(out).unwrap();

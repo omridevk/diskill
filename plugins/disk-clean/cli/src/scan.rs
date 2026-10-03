@@ -570,6 +570,10 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             return Err(interrupted());
         }
         eprintln!("  walked the disk in {}s", started.elapsed().as_secs());
+        let too_deep = walked.too_deep;
+        if too_deep > 0 {
+            eprintln!("  skipped {too_deep} folders nested too deep to read");
+        }
         let insights = insights::to_json(std::mem::take(&mut walked.insights), &days, now, home);
         let finished_early = {
             let mut waiting = waiting.lock().unwrap_or_else(PoisonError::into_inner);
@@ -667,12 +671,8 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         fs::write(
             run_dir.join("disk.tsv"),
             format!(
-                "total\t{total}\nused\t{used}\nfree\t{free}\nhome\t{home_bytes}\nsnapshots\t{snapshots}\n"
+                "total\t{total}\nused\t{used}\nfree\t{free}\nhome\t{home_bytes}\nsnapshots\t{snapshots}\ntoo_deep\t{too_deep}\n"
             ),
-        )?;
-        fs::write(
-            run_dir.join("free-before"),
-            format!("{}\n", util::free_bytes()),
         )?;
         eprintln!("  found {} items", out.order.len());
         emit(sink, started, "done", json!({"reclaimable": reclaimable}));

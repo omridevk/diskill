@@ -5,9 +5,31 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
+
+static HOME: OnceLock<Result<String, String>> = OnceLock::new();
+
+fn resolve_home(raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Err("HOME is empty".to_string());
+    }
+    if !raw.starts_with('/') {
+        return Err(format!("HOME is not an absolute path: {raw}"));
+    }
+    let real = fs::canonicalize(raw).map_err(|e| format!("HOME {raw} cannot be resolved: {e}"))?;
+    match real.to_str() {
+        Some(s) if real.is_dir() && s != "/" => Ok(s.to_string()),
+        _ => Err(format!("HOME {raw} is not a usable home folder")),
+    }
+}
+
+pub fn checked_home() -> Result<String, String> {
+    HOME.get_or_init(|| resolve_home(&std::env::var("HOME").unwrap_or_default()))
+        .clone()
+}
 
 pub fn home() -> String {
-    std::env::var("HOME").unwrap_or_default()
+    checked_home().unwrap_or_default()
 }
 
 pub fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {

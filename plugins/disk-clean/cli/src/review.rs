@@ -1,10 +1,11 @@
 use crate::clean;
+use crate::http::{self, constant_eq, query_token, refuse, respond};
 use crate::scan::{self, Sink};
 use crate::util;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +16,7 @@ const PAGE: &str = include_str!("../assets/page.html");
 const TIMEOUT: Duration = Duration::from_secs(1800);
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(15);
+const PROBE_EVERY: Duration = Duration::from_secs(1);
 const NOTHING_FOUND: &str = "nothing-found";
 
 #[derive(Serialize, Clone)]
@@ -274,23 +276,14 @@ pub fn token() -> String {
 }
 
 pub fn render(data: &Value, token: &str) -> String {
-    let json = data.to_string().replace("</", "<\\/");
+    let json = data.to_string().replace('<', "\\u003c");
     PAGE.replacen("__TOKEN__", token, 1)
         .replacen("__DATA__", &json, 1)
 }
 
-pub(crate) fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) {
-    let head = format!(
-        "HTTP/1.0 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body);
-}
-
 struct Finished {
     categories: Vec<Category>,
-    scan_lines: Vec<String>,
+    index: clean::ScanIndex,
 }
 
 #[derive(Default)]
@@ -355,7 +348,7 @@ impl Sink for Live {
         if event == "done" {
             *lock(&self.finished) = Some(Arc::new(Finished {
                 categories: load_scan(&self.dir),
-                scan_lines: util::read_lines(&self.dir.join("scan.tsv")),
+                index: clean::index_scan(&util::read_lines(&self.dir.join("scan.tsv"))),
             }));
         }
         let mut log = lock(&self.log);
@@ -374,12 +367,13 @@ fn stream_events(out: &mut TcpStream, live: &Live) {
         return;
     }
     let (mut generation, mut sent) = (0, 0);
+    let mut quiet = Instant::now();
     loop {
         let batch = {
             let log = lock(&live.log);
             let (log, _) = live
                 .changed
-                .wait_timeout_while(log, HEARTBEAT, |l| {
+                .wait_timeout_while(log, PROBE_EVERY, |l| {
                     l.generation == generation && l.events.len() == sent
                 })
                 .unwrap_or_else(PoisonError::into_inner);
@@ -390,20 +384,20 @@ fn stream_events(out: &mut TcpStream, live: &Live) {
             sent = log.events.len();
             batch
         };
-        let chunk = if batch.is_empty() { ":\n\n" } else { &batch };
+        let chunk = if !batch.is_empty() {
+            batch
+        } else if http::client_gone(out) {
+            return;
+        } else if quiet.elapsed() >= HEARTBEAT {
+            ":\n\n".to_string()
+        } else {
+            continue;
+        };
         if out.write_all(chunk.as_bytes()).is_err() {
             return;
         }
+        quiet = Instant::now();
     }
-}
-
-pub(crate) fn query_token(target: &str) -> &str {
-    target
-        .split_once('?')
-        .map_or("", |(_, q)| q)
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("token="))
-        .unwrap_or("")
 }
 
 struct Pages {
@@ -411,45 +405,38 @@ struct Pages {
     live: String,
 }
 
+fn post_payload(body: &[u8]) -> Option<Value> {
+    if body.is_empty() {
+        return Some(json!({}));
+    }
+    match serde_json::from_slice(body) {
+        Ok(v @ Value::Object(_)) => Some(v),
+        _ => None,
+    }
+}
+
 fn handle(
-    stream: TcpStream,
+    mut stream: TcpStream,
+    port: u16,
     pages: &Pages,
     token: &str,
     decided: &mpsc::Sender<Value>,
     live: &Arc<Live>,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let Ok(mut write) = stream.try_clone() else {
-        return;
+    let req = match http::read_request(&mut stream) {
+        Ok(req) => req,
+        Err(Some(status)) => return refuse(&mut stream, status),
+        Err(None) => return,
     };
-    let mut reader = BufReader::new(stream);
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() {
-        return;
+    if !http::is_local_host(&req, port) {
+        return refuse(&mut stream, "403 Forbidden");
     }
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("");
-    let mut length = 0usize;
-    loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) if line.trim().is_empty() => break,
-            Ok(_) => {
-                if let Some((k, v)) = line.split_once(':')
-                    && k.trim().eq_ignore_ascii_case("content-length")
-                {
-                    length = v.trim().parse().unwrap_or(0);
-                }
-            }
-        }
-    }
-    match method {
+    let target = req.target.as_str();
+    match req.method.as_str() {
         "GET" => {
             let route = target.split('?').next().unwrap_or("");
             if route == "/favicon.ico" {
-                respond(&mut write, "204 No Content", "text/plain", b"");
+                respond(&mut stream, "204 No Content", "text/plain", b"");
             } else if route == "/" {
                 let html = if lock(&live.log).generation > 0 {
                     &pages.live
@@ -457,41 +444,30 @@ fn handle(
                     &pages.first
                 };
                 respond(
-                    &mut write,
+                    &mut stream,
                     "200 OK",
                     "text/html; charset=utf-8",
                     html.as_bytes(),
                 );
             } else if route == "/events" {
                 if constant_eq(query_token(target).as_bytes(), token.as_bytes()) {
-                    stream_events(&mut write, live);
+                    stream_events(&mut stream, live);
                 } else {
-                    respond(&mut write, "403 Forbidden", "text/plain", b"forbidden");
+                    refuse(&mut stream, "403 Forbidden");
                 }
             } else {
-                respond(&mut write, "404 Not Found", "text/plain", b"not found");
+                refuse(&mut stream, "404 Not Found");
             }
         }
         "POST" => {
             if !["/decide", "/preview", "/rescan"].contains(&target) {
-                respond(&mut write, "404 Not Found", "text/plain", b"not found");
-                return;
+                return refuse(&mut stream, "404 Not Found");
             }
-            let mut body = vec![0u8; length.min(64 << 20)];
-            if reader.read_exact(&mut body).is_err() {
-                respond(&mut write, "400 Bad Request", "text/plain", b"bad request");
-                return;
+            if !http::is_trusted_post(&req) {
+                return refuse(&mut stream, "403 Forbidden");
             }
-            let payload: Value = if body.is_empty() {
-                json!({})
-            } else {
-                match serde_json::from_slice(&body) {
-                    Ok(v @ Value::Object(_)) => v,
-                    _ => {
-                        respond(&mut write, "400 Bad Request", "text/plain", b"bad request");
-                        return;
-                    }
-                }
+            let Some(payload) = post_payload(&req.body) else {
+                return refuse(&mut stream, "400 Bad Request");
             };
             let sent = match payload.get("token") {
                 Some(Value::String(s)) => s.clone(),
@@ -499,8 +475,7 @@ fn handle(
                 None => String::new(),
             };
             if !constant_eq(sent.as_bytes(), token.as_bytes()) {
-                respond(&mut write, "403 Forbidden", "text/plain", b"forbidden");
-                return;
+                return refuse(&mut stream, "403 Forbidden");
             }
             if target == "/rescan" {
                 if live
@@ -508,18 +483,18 @@ fn handle(
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_err()
                 {
-                    respond(&mut write, "409 Conflict", "text/plain", b"scan running");
+                    respond(&mut stream, "409 Conflict", "text/plain", b"scan running");
                     return;
                 }
                 live.restart();
                 start_scan(Arc::clone(live), decided.clone(), false);
-                respond(&mut write, "202 Accepted", "application/json", b"{}");
+                respond(&mut stream, "202 Accepted", "application/json", b"{}");
                 return;
             }
             let approve = payload.get("decision").and_then(Value::as_str) == Some("approve");
             let finished = live.finished();
             if finished.is_none() && (target == "/preview" || approve) {
-                respond(&mut write, "409 Conflict", "text/plain", b"scan not done");
+                respond(&mut stream, "409 Conflict", "text/plain", b"scan not done");
                 return;
             }
             if let (Some(f), "/preview") = (&finished, target) {
@@ -528,35 +503,27 @@ fn handle(
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                let body = preview(&f.categories, &f.scan_lines, &items).to_string();
-                respond(&mut write, "200 OK", "application/json", body.as_bytes());
+                let body = preview(&f.categories, &f.index, &items).to_string();
+                respond(&mut stream, "200 OK", "application/json", body.as_bytes());
                 return;
             }
             if !approve {
                 live.cancel.store(true, Ordering::Relaxed);
             }
-            respond(&mut write, "200 OK", "application/json", b"{}");
+            respond(&mut stream, "200 OK", "application/json", b"{}");
             let _ = decided.send(if approve {
                 payload
             } else {
                 json!({"decision": "cancel"})
             });
         }
-        _ => respond(
-            &mut write,
-            "501 Not Implemented",
-            "text/plain",
-            b"not implemented",
-        ),
+        _ => refuse(&mut stream, "501 Not Implemented"),
     }
-}
-
-pub(crate) fn constant_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
     let mut valid: HashMap<&str, &Item> = HashMap::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     for item in categories
         .iter()
         .flat_map(|c| &c.items)
@@ -570,6 +537,7 @@ pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
             .get("path")
             .and_then(Value::as_str)
             .and_then(|p| valid.get(p))
+            .filter(|known| seen.insert(&known.path))
         else {
             continue;
         };
@@ -593,11 +561,11 @@ pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
     Some(json!({"items": chosen, "total_bytes": total}))
 }
 
-pub fn preview(categories: &[Category], scan_lines: &[String], items: &[Value]) -> Value {
+pub fn preview(categories: &[Category], index: &clean::ScanIndex, items: &[Value]) -> Value {
     let chosen = selection(categories, items)
         .and_then(|s| s.get("items").and_then(Value::as_array).cloned())
         .unwrap_or_default();
-    let plan = clean::plan(scan_lines, &chosen);
+    let plan = clean::plan(index, &chosen);
     let rejected: Vec<Value> = plan
         .rejected
         .iter()
@@ -701,15 +669,9 @@ fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(
     let url = format!("http://127.0.0.1:{port}/");
     let served = (port, token.clone());
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let (pages, token, tx, live) = (
-                Arc::clone(&pages),
-                token.clone(),
-                tx.clone(),
-                Arc::clone(&live),
-            );
-            std::thread::spawn(move || handle(stream, &pages, &token, &tx, &live));
-        }
+        http::serve(listener, move |stream| {
+            handle(stream, port, &pages, &token, &tx, &live)
+        });
     });
     eprintln!("review UI: {url}");
     if std::env::var("DISK_CLEAN_NO_BROWSER").is_ok_and(|v| v == "1") {
@@ -766,6 +728,7 @@ fn decide(rx: &mpsc::Receiver<Value>, live: &Live) -> io::Result<(i32, Option<Pa
         eprintln!("no deletable items were selected");
         return Ok((5, None));
     };
+    clean::clear_previous_run(&live.dir)?;
     let out = live.dir.join("selection.json");
     std::fs::write(
         &out,

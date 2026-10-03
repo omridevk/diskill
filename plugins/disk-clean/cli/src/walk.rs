@@ -6,7 +6,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, PoisonError};
 
@@ -81,6 +81,13 @@ pub struct Walk {
     pub insights: Insights,
     pub files: u64,
     pub bytes: u64,
+    pub too_deep: u64,
+}
+
+const DAY: i64 = 86_400;
+
+fn plausible(mtime: i64, now: i64) -> i64 {
+    if mtime > now + DAY { 0 } else { mtime }
 }
 
 const NM_TOP: &[&str] = &[
@@ -275,7 +282,7 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     if let Some(p) = stack.last_mut() {
         p.blocks += f.blocks;
         p.files += f.files;
-        p.mtime = p.mtime.max(f.mtime);
+        p.mtime = p.mtime.max(plausible(f.mtime, plan.now));
     }
     if f.track {
         out.sizes.insert(f.path.clone(), f.blocks);
@@ -408,10 +415,10 @@ fn parse_entry(rec: &[u8]) -> Option<(OsString, Option<Meta>)> {
     Some((name, Some(meta)))
 }
 
-fn read_dir_bulk(dir: &Path) -> Vec<(OsString, Option<Meta>)> {
+fn read_dir_bulk(dir: &Path) -> std::io::Result<Vec<(OsString, Option<Meta>)>> {
     let mut out = Vec::new();
     let Ok(c) = CString::new(dir.as_os_str().as_bytes()) else {
-        return out;
+        return Ok(out);
     };
     // SAFETY: open has no memory preconditions beyond a valid C string.
     let fd = unsafe {
@@ -421,7 +428,7 @@ fn read_dir_bulk(dir: &Path) -> Vec<(OsString, Option<Meta>)> {
         )
     };
     if fd < 0 {
-        return out;
+        return Err(std::io::Error::last_os_error());
     }
     let mut list = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
@@ -462,7 +469,7 @@ fn read_dir_bulk(dir: &Path) -> Vec<(OsString, Option<Meta>)> {
     }
     // SAFETY: fd was opened above and is closed once.
     unsafe { libc::close(fd) };
-    out
+    Ok(out)
 }
 
 #[derive(Clone)]
@@ -472,13 +479,26 @@ struct Reader {
     cancel: Arc<AtomicBool>,
     home_first: Option<Arc<Path>>,
     scout: Option<Arc<Scout>>,
+    too_deep: Arc<AtomicU64>,
+}
+
+fn read_listing(dir: &Path, reader: &Reader) -> Vec<(OsString, Option<Meta>)> {
+    match read_dir_bulk(dir) {
+        Ok(listing) => listing,
+        Err(e) => {
+            if e.raw_os_error() == Some(libc::ENAMETOOLONG) {
+                reader.too_deep.fetch_add(1, Ordering::Relaxed);
+            }
+            Vec::new()
+        }
+    }
 }
 
 fn list(dir: &Path, reader: &Reader) -> Vec<Entry> {
     if reader.cancel.load(Ordering::Relaxed) {
         return Vec::new();
     }
-    let mut found: Vec<(OsString, Meta)> = read_dir_bulk(dir)
+    let mut found: Vec<(OsString, Meta)> = read_listing(dir, reader)
         .into_iter()
         .filter_map(|(name, meta)| {
             let meta = meta.or_else(|| {
@@ -592,6 +612,7 @@ pub fn walk(
                 repo_depth: plan.repo_depth,
             })
         }),
+        too_deep: Arc::default(),
     };
     let next = (root_meta.kind == Kind::Dir).then(|| descend(root.to_path_buf(), &reader));
     let root_entry = Entry {
@@ -704,7 +725,7 @@ pub fn walk(
                 path,
                 blocks: own,
                 files: 0,
-                mtime: meta.mtime,
+                mtime: plausible(meta.mtime, plan.now),
                 track,
                 collect_children,
                 home,
@@ -752,7 +773,7 @@ pub fn walk(
         if let Some(p) = stack.last_mut() {
             p.blocks += own;
             p.files += u64::from(meta.kind == Kind::File);
-            p.mtime = p.mtime.max(meta.mtime);
+            p.mtime = p.mtime.max(plausible(meta.mtime, plan.now));
         }
     }
     while !stack.is_empty() {
@@ -761,6 +782,7 @@ pub fn walk(
             total = Some(blocks);
         }
     }
+    out.too_deep += reader.too_deep.load(Ordering::Relaxed);
     total
 }
 
