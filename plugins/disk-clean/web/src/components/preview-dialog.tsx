@@ -1,5 +1,5 @@
 import {Check, Copy} from 'lucide-react'
-import {useState} from 'react'
+import {useState, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
@@ -48,7 +48,19 @@ function stats(plan: Plan) {
   ]
 }
 
-export function PreviewDialog({plan, open, onOpenChange, onApprove}: {plan: Plan | null; open: boolean; onOpenChange: (open: boolean) => void; onApprove: () => void}) {
+export function PreviewDialog({
+  plan,
+  open,
+  onOpenChange,
+  onApprove,
+  returnFocus,
+}: {
+  plan: Plan | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onApprove: () => void
+  returnFocus?: RefObject<HTMLButtonElement | null>
+}) {
   const [copied, setCopied] = useState(false)
   const copy = () => {
     if (!plan) return
@@ -59,7 +71,7 @@ export function PreviewDialog({plan, open, onOpenChange, onApprove}: {plan: Plan
   }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="sm:max-w-3xl" finalFocus={returnFocus}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2.5">
             Dry run <Badge className="bg-emerald-500/15 text-emerald-300">nothing has run</Badge>

@@ -1,7 +1,7 @@
 import {useEffect, useReducer, useState} from 'react'
 import {rescan as requestRescan} from './api'
 import type {EventSourceLike, Loaded, OpenEvents} from './data'
-import {scanReducer, startScan, type ScanEvent} from './scan'
+import {scanBatchReducer, startScan, type ScanEvent} from './scan'
 
 const TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan']
 const FINAL = new Set<ScanEvent['type']>(['done', 'error'])
@@ -40,20 +40,43 @@ function listen(source: EventSourceLike, emit: (event: ScanEvent) => void) {
   source.addEventListener('error', onConnectionError(source, emit))
 }
 
+export function perFrame<T>(dispatch: (events: T[]) => void) {
+  let queue: T[] = []
+  let frame = 0
+  const flush = () => {
+    frame = 0
+    if (queue.length > 0) dispatch(queue)
+    queue = []
+  }
+  const take = (event: T) => {
+    queue.push(event)
+    if (frame === 0) frame = requestAnimationFrame(flush)
+  }
+  const stop = () => {
+    cancelAnimationFrame(frame)
+    flush()
+  }
+  return {take, stop}
+}
+
 export function useScan(loaded: Loaded) {
-  const [scan, dispatch] = useReducer(scanReducer, loaded, startScan)
+  const [scan, dispatch] = useReducer(scanBatchReducer, loaded, startScan)
   const [stream, setStream] = useState(loaded.live ? 1 : 0)
   useEffect(() => {
     if (stream === 0) return
     const source = (loaded.openEvents ?? openEventSource)(`/events?token=${encodeURIComponent(loaded.token)}`)
-    listen(source, dispatch)
-    return () => source.close()
+    const batch = perFrame(dispatch)
+    listen(source, batch.take)
+    return () => {
+      source.close()
+      batch.stop()
+    }
   }, [loaded, stream])
   const rescan = () => {
-    dispatch({type: 'rescan', data: {elapsed_ms: 0}})
+    dispatch([{type: 'rescan', data: {elapsed_ms: 0}}])
     requestRescan(loaded.token).then(
       () => setStream(n => n + 1),
-      (e: unknown) => dispatch({type: 'error', data: {message: e instanceof Error ? e.message : String(e), elapsed_ms: 0}}),
+      (e: unknown) => dispatch([{type: 'error', data: {message: e instanceof Error ? e.message : String(e), elapsed_ms: 0}}]),
     )
   }
   return {scan, rescan}

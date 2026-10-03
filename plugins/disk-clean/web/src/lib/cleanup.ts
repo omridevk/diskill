@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useReducer, useState} from 'react'
 import type {Category, EventSourceLike, Item, OpenEvents} from './data'
-import {messageData, openEventSource} from './live'
+import {messageData, openEventSource, perFrame} from './live'
 
 type Timed<T> = T & {elapsed_ms: number}
 
@@ -16,15 +16,41 @@ export type CleanupEvent =
 
 type Of<K extends CleanupEvent['type']> = Extract<CleanupEvent, {type: K}>['data']
 
+export interface Keys {
+  has: (key: string) => boolean
+}
+
 export interface Cleanup {
   log: CleanupEvent[]
-  keys: ReadonlySet<string>
+  keys: Keys
   started: Of<'started'> | null
   done: Of<'done'> | null
   free: Of<'free'> | null
 }
 
-export const NO_CLEANUP: Cleanup = {log: [], keys: new Set(), started: null, done: null, free: null}
+interface Seen {
+  at: Map<string, number>
+  size: number
+}
+
+const seenBy = new WeakMap<Keys, Seen>()
+const extentOf = new WeakMap<Map<string, number>, number>()
+
+function keysOf(at: Map<string, number>, size: number): Keys {
+  const keys = {has: (key: string) => (at.get(key) ?? size) < size}
+  seenBy.set(keys, {at, size})
+  extentOf.set(at, size)
+  return keys
+}
+
+function extended(keys: Keys, fresh: readonly string[]): Keys {
+  const {at, size} = seenBy.get(keys) ?? {at: new Map<string, number>(), size: 0}
+  const own = extentOf.get(at) === size ? at : new Map([...at].filter(([, index]) => index < size))
+  fresh.forEach((key, offset) => own.set(key, size + offset))
+  return keysOf(own, size + fresh.length)
+}
+
+export const NO_CLEANUP: Cleanup = {log: [], keys: keysOf(new Map(), 0), started: null, done: null, free: null}
 
 const TYPES: CleanupEvent['type'][] = ['waiting', 'started', 'removed', 'failed', 'worktree', 'command', 'free', 'done']
 
@@ -43,20 +69,28 @@ function keyOf(event: CleanupEvent) {
   }
 }
 
-export function cleanupReducer(cleanup: Cleanup, events: readonly CleanupEvent[]): Cleanup {
-  const log = [...cleanup.log]
-  const keys = new Set(cleanup.keys)
-  let {started, done, free} = cleanup
+function freshEvents(cleanup: Cleanup, events: readonly CleanupEvent[]) {
+  const keys = new Set<string>()
+  const fresh: CleanupEvent[] = []
   for (const event of events) {
     const key = keyOf(event)
-    if (keys.has(key)) continue
+    if (cleanup.keys.has(key) || keys.has(key)) continue
     keys.add(key)
-    log.push(event)
+    fresh.push(event)
+  }
+  return {keys, fresh}
+}
+
+export function cleanupReducer(cleanup: Cleanup, events: readonly CleanupEvent[]): Cleanup {
+  const {keys, fresh} = freshEvents(cleanup, events)
+  if (fresh.length === 0) return cleanup
+  let {started, done, free} = cleanup
+  for (const event of fresh) {
     if (event.type === 'started') started = event.data
     if (event.type === 'done') done = event.data
     if (event.type === 'free' && event.data.elapsed_ms >= (free?.elapsed_ms ?? 0)) free = event.data
   }
-  return log.length === cleanup.log.length ? cleanup : {log, keys, started, done, free}
+  return {log: cleanup.log.concat(fresh), keys: extended(cleanup.keys, [...keys]), started, done, free}
 }
 
 function isWorkerDone(type: CleanupEvent['type'], data: unknown) {
@@ -86,22 +120,12 @@ function useCleanup(token: string, active: boolean, openEvents: OpenEvents = ope
   const [lost, setLost] = useState(false)
   useEffect(() => {
     if (!active) return
-    let queue: CleanupEvent[] = []
-    let frame = 0
-    const flush = () => {
-      frame = 0
-      dispatch(queue)
-      queue = []
-    }
-    const take = (event: CleanupEvent) => {
-      queue.push(event)
-      if (frame === 0) frame = requestAnimationFrame(flush)
-    }
+    const batch = perFrame(dispatch)
     const source = openEvents(`/events?token=${encodeURIComponent(token)}`)
-    listenCleanup(source, take, setLost)
+    listenCleanup(source, batch.take, setLost)
     return () => {
-      cancelAnimationFrame(frame)
       source.close()
+      batch.stop()
     }
   }, [token, active, openEvents])
   return {cleanup, lost}
@@ -196,19 +220,31 @@ export function outcomeOf(plan: FilmPlan, event: CleanupEvent): Outcome | null {
   return {...outcome, at: 'elapsed_ms' in event.data ? event.data.elapsed_ms : 0, secs: event.type === 'removed' ? event.data.secs : 0}
 }
 
-export function outcomes(plan: FilmPlan, log: readonly CleanupEvent[]) {
-  return log.flatMap(e => outcomeOf(plan, e) ?? [])
+interface Derived {
+  log: readonly CleanupEvent[]
+  all: readonly Outcome[]
 }
 
+const derived = new WeakMap<FilmPlan, Derived>()
+
+function extendsLog(known: readonly CleanupEvent[], log: readonly CleanupEvent[]) {
+  const last = known.length - 1
+  return known.length <= log.length && (last < 0 || log[last] === known[last])
+}
+
+export function outcomes(plan: FilmPlan, log: readonly CleanupEvent[]): readonly Outcome[] {
+  const known = derived.get(plan)
+  if (known?.log === log) return known.all
+  const reuse = known && extendsLog(known.log, log) ? known : {log: [], all: []}
+  const all = reuse.all.concat(log.slice(reuse.log.length).flatMap(e => outcomeOf(plan, e) ?? []))
+  derived.set(plan, {log, all})
+  return all
+}
+
+const NO_OUTCOMES: readonly Outcome[] = []
+
 function useOutcomes(plan: FilmPlan | null, log: readonly CleanupEvent[]) {
-  const cache = useMemo(() => new WeakMap<CleanupEvent, Outcome | null>(), [plan])
-  return useMemo(() => {
-    if (!plan) return []
-    return log.flatMap(e => {
-      if (!cache.has(e)) cache.set(e, outcomeOf(plan, e))
-      return cache.get(e) ?? []
-    })
-  }, [plan, log, cache])
+  return useMemo(() => (plan ? outcomes(plan, log) : NO_OUTCOMES), [plan, log])
 }
 
 export interface CleanupProgress {

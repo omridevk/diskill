@@ -56,17 +56,28 @@ function reclaimableOf(categories: readonly Category[]) {
   return sum(categories.filter(c => c.risk !== 'report').flatMap(c => c.items.filter(isExact)))
 }
 
-function upsert(categories: readonly Category[], head: CategoryHead, item: Item): Category[] {
-  const current = categories.find(c => c.id === head.id) ?? {...head, items: [], bytes: 0}
-  const items = [...current.items.filter(i => i.path !== item.path), item].toSorted((a, b) => b.bytes - a.bytes)
-  return [...categories.filter(c => c.id !== head.id), {...current, items, bytes: sum(items)}].toSorted(byRiskThenSize)
+type Found = {category: CategoryHead; item: Item}
+
+function upsert(categories: readonly Category[], found: readonly Found[]): Category[] {
+  const touched = new Map<string, {head: CategoryHead; items: Map<string, Item>}>()
+  for (const {category, item} of found) {
+    const known = touched.get(category.id) ?? {head: category, items: new Map((categories.find(c => c.id === category.id)?.items ?? []).map(i => [i.path, i]))}
+    known.items.delete(item.path)
+    known.items.set(item.path, item)
+    touched.set(category.id, known)
+  }
+  const rebuilt = [...touched.values()].map(({head, items}) => {
+    const sorted = [...items.values()].toSorted((a, b) => b.bytes - a.bytes)
+    return {...(categories.find(c => c.id === head.id) ?? head), items: sorted, bytes: sum(sorted)}
+  })
+  return [...categories.filter(c => !touched.has(c.id)), ...rebuilt].toSorted(byRiskThenSize)
 }
 
 const withData = (scan: Scan, patch: Partial<ScanData>): Scan => ({...scan, data: {...scan.data, ...patch}})
 
-function withItem(scan: Scan, {category, item}: {category: CategoryHead; item: Item}) {
-  const categories = upsert(scan.data.categories, category, item)
-  const reported = scan.reported && new Set([...scan.reported, item.path])
+function withItems(scan: Scan, found: readonly Found[]): Scan {
+  const categories = upsert(scan.data.categories, found)
+  const reported = scan.reported && new Set([...scan.reported, ...found.map(f => f.item.path)])
   return {...withData(scan, {categories, reclaimable: reclaimableOf(categories)}), reported}
 }
 
@@ -85,7 +96,7 @@ type Handlers = {[K in ScanEvent['type']]: (scan: Scan, data: Extract<ScanEvent,
 const HANDLERS: Handlers = {
   disk: (scan, {total, used, free, snapshots}) => withData(scan, {total, used, free, snapshots}),
   progress: (scan, {files, bytes, dir}) => ({...scan, progress: {files, bytes, dir}}),
-  item: withItem,
+  item: (scan, found) => withItems(scan, [found]),
   walked: (scan, {home, tree, insights, worktrees, elapsed_ms}) => ({
     ...withData(scan, {home, tree, insights}),
     walked: true,
@@ -116,4 +127,33 @@ export function scanReducer(scan: Scan, event: ScanEvent): Scan {
   const handle = HANDLERS[event.type] as (scan: Scan, data: ScanEvent['data']) => Scan
   const next = handle(scan, event.data)
   return {...next, elapsed: Math.max(next.elapsed, event.data.elapsed_ms)}
+}
+
+function foundIn(events: readonly ScanEvent[], from: number) {
+  const found: Found[] = []
+  let elapsed = 0
+  for (let at = from; at < events.length; at++) {
+    const event = events[at]
+    if (event?.type !== 'item') break
+    found.push(event.data)
+    elapsed = Math.max(elapsed, event.data.elapsed_ms)
+  }
+  return {found, elapsed}
+}
+
+export function scanBatchReducer(scan: Scan, events: readonly ScanEvent[]): Scan {
+  let next = scan
+  for (let at = 0; at < events.length; ) {
+    const event = events[at]
+    if (!event) break
+    if (event.type !== 'item') {
+      next = scanReducer(next, event)
+      at++
+      continue
+    }
+    const {found, elapsed} = foundIn(events, at)
+    next = {...withItems(next, found), elapsed: Math.max(next.elapsed, elapsed)}
+    at += found.length
+  }
+  return next
 }
