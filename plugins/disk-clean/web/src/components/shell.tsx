@@ -2,8 +2,8 @@ import {Navigate, Outlet, useChildMatches, useMatch, useNavigate, useRouter} fro
 import {HardDrive} from 'lucide-react'
 import {createContext, use, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs'
-import {decide, preview} from '@/lib/api'
-import {filmPlan, useCleanupProgress, type CleanupProgress, type FilmPlan} from '@/lib/cleanup'
+import {decide, heldAction, preview, type Plan} from '@/lib/api'
+import {filmPlan, freeOffer, useCleanupProgress, type CleanupProgress, type FilmPlan} from '@/lib/cleanup'
 import type {Item, Loaded, ScanData} from '@/lib/data'
 import {useScan} from '@/lib/live'
 import type {Scan} from '@/lib/scan'
@@ -11,8 +11,9 @@ import {useShownOnMount} from '@/lib/motion'
 import {useBack} from '@/lib/navigation'
 import {useSelection, type Selection} from '@/lib/selection'
 import {ActionBar} from './action-bar'
-import {BarText, CleanupTracker, DetailsButton, ProgressTrack} from './cleanup-progress'
-import {PreviewDialog, type Plan} from './preview-dialog'
+import {BarText, CleanupTracker, DetailsButton, HeldActions, ProgressTrack} from './cleanup-progress'
+import {ConfirmDialog} from './confirm-dialog'
+import {FreeDialog} from './free-dialog'
 import {ScanCounter, useScanHero} from './scan-hero'
 import {RescanButton, ScanStatus} from './scan-status'
 import {SkeletonReveal} from './skeleton-reveal'
@@ -125,16 +126,13 @@ function useDecisions(token: string, selection: Selection, data: ScanData, appro
   const run = (task: Promise<unknown>, onDone: () => void) =>
     task.then(onDone).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
 
-  const check = (onChecked: () => void = () => {}) => {
+  const check = () => {
     const items = selection.selected
     setPreviewing(true)
     setError('')
-    run(
-      preview(token, items).then(plan => setChecked({plan, items})),
-      onChecked,
-    ).finally(() => setPreviewing(false))
+    run(preview(token, items).then(plan => setChecked({plan, items})), () => {}).finally(() => setPreviewing(false))
   }
-  const openPreview = () => check(() => navigate({to: '/cleanup/confirm', search: true}))
+  const openConfirm = () => navigate({to: '/cleanup/confirm', search: true})
   const approve = () => {
     if (selection.selected.length === 0) return
     run(decide(token, 'approve', selection.selected), () => setFilm(planOf(data, selection)))
@@ -142,7 +140,11 @@ function useDecisions(token: string, selection: Selection, data: ScanData, appro
   const cancel = () => run(decide(token, 'cancel', []), () => setDone({title: 'Cancelled', body: 'Nothing was deleted. You can close this tab.'}))
   const plan = checked?.items === selection.selected ? checked.plan : null
 
-  return {plan, previewing, done, film, error, check, openPreview, approve, cancel}
+  return {plan, previewing, done, film, error, check, openConfirm, approve, cancel}
+}
+
+function isLocked(scan: Scan) {
+  return !scan.done || scan.error !== ''
 }
 
 function scanProgressOf(live: boolean, scan: Scan) {
@@ -156,7 +158,7 @@ function ScanSummary({live, scan, selection, progress, approved, onRescan}: {liv
     <Summary
       data={scan.data}
       selection={selection}
-      bytes={progress ? progress.freed : hero.bytes}
+      bytes={progress ? (progress.held > 0 ? progress.held : progress.freed) : hero.bytes}
       overlay={hero.overlay}
       counter={tracking && <ScanCounter scan={scan} />}
       status={
@@ -180,8 +182,12 @@ interface ConfirmProps {
   returnFocus: RefObject<HTMLButtonElement | null>
 }
 
-function ConfirmDialog({plan, ready, approved, onCheck, onApprove, returnFocus}: ConfirmProps) {
-  const open = useMatch({from: '/cleanup/confirm', shouldThrow: false, select: () => true}) ?? false
+function useRouteOpen(to: '/cleanup/confirm' | '/cleanup/free') {
+  return useMatch({from: to, shouldThrow: false, select: () => true}) ?? false
+}
+
+function DeleteConfirm({plan, ready, approved, onCheck, onApprove, returnFocus}: ConfirmProps) {
+  const open = useRouteOpen('/cleanup/confirm')
   const navigate = useNavigate()
   const back = useBack()
   const wanted = open && ready && !plan && !approved
@@ -194,14 +200,51 @@ function ConfirmDialog({plan, ready, approved, onCheck, onApprove, returnFocus}:
     onApprove()
   }
   return (
-    <PreviewDialog
+    <ConfirmDialog
       plan={plan}
       open={open}
       onOpenChange={next => next || back({to: '/cleanup', search: true})}
-      onApprove={approve}
+      onConfirm={approve}
       returnFocus={returnFocus}
     />
   )
+}
+
+function FreeConfirm({progress, onFree}: {progress: CleanupProgress | null; onFree: () => void}) {
+  const open = useRouteOpen('/cleanup/free')
+  const back = useBack()
+  const navigate = useNavigate()
+  const offer = freeOffer(progress)
+  if (open && offer === 'refused') return <Navigate to="/cleanup" search replace />
+  if (!progress) return null
+  const free = () => {
+    navigate({to: '/cleanup', search: true, replace: true})
+    onFree()
+  }
+  return <FreeDialog progress={progress} open={open && offer === 'offered'} onOpenChange={next => next || back({to: '/cleanup', search: true})} onFree={free} />
+}
+
+function useHeld(token: string, progress: CleanupProgress | null) {
+  const navigate = useNavigate()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const send = (action: 'undo' | 'free') => {
+    setBusy(true)
+    setError('')
+    heldAction(token, action)
+      .catch((e: unknown) => setError(`${action === 'undo' ? 'Undo' : 'Free'} did not start (${e instanceof Error ? e.message : String(e)}). From the terminal: disk-clean ${action} RUN_DIR`))
+      .finally(() => setBusy(false))
+  }
+  const actions = progress && (
+    <HeldActions
+      progress={progress}
+      busy={busy}
+      error={error}
+      onUndo={() => send('undo')}
+      onFree={() => navigate({to: '/cleanup/free', search: true})}
+    />
+  )
+  return {actions, free: () => send('free')}
 }
 
 function useTabSwitch(tab: Tab | undefined) {
@@ -234,51 +277,43 @@ export function Shell({loaded}: {loaded: Loaded}) {
   const {settled} = scanProgressOf(live, scan)
   const {data} = scan
   const selection = useSelection(data.categories, loaded.approved)
-  const {plan, previewing, done, film, error, check, openPreview, approve, cancel} = useDecisions(loaded.token, selection, data, loaded.approved !== undefined)
+  const {plan, previewing, done, film, error, check, openConfirm, approve, cancel} = useDecisions(loaded.token, selection, data, loaded.approved !== undefined)
   const {progress, lost} = useCleanupProgress(loaded.token, film, loaded.openEvents)
+  const held = useHeld(loaded.token, progress)
   const approved = film !== null
   const navigate = useNavigate()
   const tab = useChildMatches({select: matches => TABS.find(t => matches[0]?.routeId === `/${t}`)})
   const switchTab = useTabSwitch(tab)
   const detailsRef = useRef<HTMLButtonElement>(null)
-  const previewRef = useRef<HTMLButtonElement>(null)
+  const deleteRef = useRef<HTMLButtonElement>(null)
   const openDetails = () => navigate({to: '.', search: prev => ({...prev, overlay: 'progress'})})
   const cleanable = useMemo(
     () => new Set(data.categories.flatMap(c => c.items.filter(i => !i.report).map(i => i.path))),
     [data.categories],
   )
   const itemCount = data.categories.reduce((sum, c) => sum + c.items.length, 0)
-  const locked = !scan.done || scan.error !== ''
+  const locked = isLocked(scan)
 
   if (done) return <Finished {...done} />
 
   return (
     <AppContext value={{data, live, settled, selection, progress, cleanable}}>
       <Tabs value={tab ?? null} onValueChange={value => switchTab(String(value))} className="flex h-svh flex-col gap-0">
-        {progress && <CleanupTracker progress={progress} returnFocus={detailsRef} />}
+        {progress && <CleanupTracker progress={progress} returnFocus={detailsRef} held={held.actions} />}
         <Header items={itemCount} progress={progress} lost={lost} onDetails={openDetails} detailsRef={detailsRef} />
         <ScanSummary live={live} scan={scan} selection={selection} progress={progress} approved={approved} onRescan={rescan} />
         <Problems scanError={scan.error} error={error} />
         <TabPanel tab={tab} />
-        <ActionBar
-          key={scan.rescans}
-          selection={selection}
-          locked={locked}
-          progress={progress}
-          previewing={previewing}
-          previewRef={previewRef}
-          onCancel={cancel}
-          onPreview={openPreview}
-          onApprove={approve}
-        />
-        <ConfirmDialog
+        <ActionBar key={scan.rescans} selection={selection} locked={locked} progress={progress} deleteRef={deleteRef} held={held.actions} onCancel={cancel} onDelete={openConfirm} />
+        <DeleteConfirm
           plan={plan}
           ready={!locked && !previewing && error === '' && selection.selected.length > 0}
           approved={approved}
           onCheck={check}
           onApprove={approve}
-          returnFocus={previewRef}
+          returnFocus={deleteRef}
         />
+        <FreeConfirm progress={progress} onFree={held.free} />
       </Tabs>
     </AppContext>
   )

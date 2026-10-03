@@ -75,11 +75,14 @@ const OUTCOME_TEXT: Record<Outcome['kind'], [string, string]> = {
   ran: ['ran', 'text-muted-foreground'],
   kept: ['kept', 'text-amber-300'],
   failed: ['not removed', 'text-red-300'],
+  held: ['held · not freed yet', 'text-sky-300'],
+  freed: ['freed', 'text-muted-foreground'],
+  restored: ['restored', 'text-foreground'],
 }
 
 function pendingText(progress: CleanupProgress) {
   if (progress.cleanup.done || progress.cleanup.abandoned) return 'not run'
-  return progress.cleanup.started ? 'deleting' : 'queued'
+  return progress.cleanup.started ? 'in progress' : 'queued'
 }
 
 function ItemStatus({path, progress}: {path: string; progress: CleanupProgress}) {

@@ -1,5 +1,16 @@
-import type {Plan} from '@/components/preview-dialog'
 import type {Item} from './data'
+
+export interface Plan {
+  hold: {path: string; bytes: number; held: string}[]
+  hold_bytes: number
+  hold_until: number
+  final: string[]
+  final_bytes: number
+  final_count: number
+  rejected: {reason: string; path: string}[]
+  count: number
+  bytes: number
+}
 
 const body = (token: string, items: readonly Item[], extra: object) =>
   JSON.stringify({token, items: items.map(i => ({path: i.path})), ...extra})
@@ -20,4 +31,8 @@ export function rescan(token: string) {
 
 export function decide(token: string, decision: 'approve' | 'cancel', items: readonly Item[]) {
   return post('/decide', body(token, decision === 'approve' ? items : [], {decision}))
+}
+
+export function heldAction(token: string, action: 'undo' | 'free') {
+  return post(`/${action}`, JSON.stringify({token}))
 }

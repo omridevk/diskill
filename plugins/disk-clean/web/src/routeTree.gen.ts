@@ -15,6 +15,7 @@ import { Route as InsightsRouteImport } from './routes/insights'
 import { Route as StorageRouteImport } from './routes/storage'
 import { Route as CleanupSectionRouteImport } from './routes/cleanup.$section'
 import { Route as CleanupConfirmRouteImport } from './routes/cleanup.confirm'
+import { Route as CleanupFreeRouteImport } from './routes/cleanup.free'
 import { Route as StorageSplatRouteImport } from './routes/storage.$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -47,6 +48,11 @@ const CleanupConfirmRoute = CleanupConfirmRouteImport.update({
   path: '/confirm',
   getParentRoute: () => CleanupRoute,
 } as any)
+const CleanupFreeRoute = CleanupFreeRouteImport.update({
+  id: '/free',
+  path: '/free',
+  getParentRoute: () => CleanupRoute,
+} as any)
 const StorageSplatRoute = StorageSplatRouteImport.update({
   id: '/$',
   path: '/$',
@@ -60,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/storage': typeof StorageRouteWithChildren
   '/cleanup/$section': typeof CleanupSectionRoute
   '/cleanup/confirm': typeof CleanupConfirmRoute
+  '/cleanup/free': typeof CleanupFreeRoute
   '/storage/$': typeof StorageSplatRoute
 }
 export interface FileRoutesByTo {
@@ -69,6 +76,7 @@ export interface FileRoutesByTo {
   '/storage': typeof StorageRouteWithChildren
   '/cleanup/$section': typeof CleanupSectionRoute
   '/cleanup/confirm': typeof CleanupConfirmRoute
+  '/cleanup/free': typeof CleanupFreeRoute
   '/storage/$': typeof StorageSplatRoute
 }
 export interface FileRoutesById {
@@ -79,6 +87,7 @@ export interface FileRoutesById {
   '/storage': typeof StorageRouteWithChildren
   '/cleanup/$section': typeof CleanupSectionRoute
   '/cleanup/confirm': typeof CleanupConfirmRoute
+  '/cleanup/free': typeof CleanupFreeRoute
   '/storage/$': typeof StorageSplatRoute
 }
 export interface FileRouteTypes {
@@ -90,6 +99,7 @@ export interface FileRouteTypes {
     | '/storage'
     | '/cleanup/$section'
     | '/cleanup/confirm'
+    | '/cleanup/free'
     | '/storage/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -99,6 +109,7 @@ export interface FileRouteTypes {
     | '/storage'
     | '/cleanup/$section'
     | '/cleanup/confirm'
+    | '/cleanup/free'
     | '/storage/$'
   id:
     | '__root__'
@@ -108,6 +119,7 @@ export interface FileRouteTypes {
     | '/storage'
     | '/cleanup/$section'
     | '/cleanup/confirm'
+    | '/cleanup/free'
     | '/storage/$'
   fileRoutesById: FileRoutesById
 }
@@ -162,6 +174,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CleanupConfirmRouteImport
       parentRoute: typeof CleanupRoute
     }
+    '/cleanup/free': {
+      id: '/cleanup/free'
+      path: '/free'
+      fullPath: '/cleanup/free'
+      preLoaderRoute: typeof CleanupFreeRouteImport
+      parentRoute: typeof CleanupRoute
+    }
     '/storage/$': {
       id: '/storage/$'
       path: '/$'
@@ -175,11 +194,13 @@ declare module '@tanstack/react-router' {
 interface CleanupRouteChildren {
   CleanupSectionRoute: typeof CleanupSectionRoute
   CleanupConfirmRoute: typeof CleanupConfirmRoute
+  CleanupFreeRoute: typeof CleanupFreeRoute
 }
 
 const CleanupRouteChildren: CleanupRouteChildren = {
   CleanupSectionRoute: CleanupSectionRoute,
   CleanupConfirmRoute: CleanupConfirmRoute,
+  CleanupFreeRoute: CleanupFreeRoute,
 }
 
 const CleanupRouteWithChildren =

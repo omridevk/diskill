@@ -89,10 +89,12 @@ interface Removal {
   count: number
 }
 
+const CLEARED = new Set(['removed', 'held', 'freed'])
+
 function removalsOf(progress: CleanupProgress | null) {
   const removals = new Map<string, Removal>()
-  for (const outcome of progress?.outcomes ?? []) {
-    if (outcome.kind !== 'removed') continue
+  for (const outcome of progress?.byKey.values() ?? []) {
+    if (!CLEARED.has(outcome.kind)) continue
     const known = removals.get(outcome.section) ?? {bytes: 0, count: 0}
     removals.set(outcome.section, {bytes: known.bytes + outcome.bytes, count: known.count + 1})
   }
@@ -113,7 +115,7 @@ function pickedLabel(group: Group, on: RowSelectionState, progressed: Progressed
   if (group.category.risk === 'report') return `${rows.length} listed`
   if (progressed) {
     const plan = planned(group.category.id, progressed)
-    return plan ? `${progressed.removals.get(group.category.id)?.count ?? 0} of ${plan.count} removed` : 'not approved'
+    return plan ? `${progressed.removals.get(group.category.id)?.count ?? 0} of ${plan.count} done` : 'not approved'
   }
   return `${pickedCount(rows, on)}/${selectableCount(rows)}`
 }
@@ -147,7 +149,7 @@ function SectionBar({group, max, progressed}: {group: Group; max: number; progre
   return (
     <span
       role="progressbar"
-      aria-label={`${category.title} removed`}
+      aria-label={`${category.title} done`}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(share * 100)}

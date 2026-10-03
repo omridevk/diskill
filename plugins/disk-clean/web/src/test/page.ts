@@ -1,3 +1,4 @@
+import {vi} from 'vitest'
 import type {ScanEvent} from '@/lib/scan'
 
 export function fakeEventSource() {
@@ -32,4 +33,26 @@ export function sendRaw(source: EventTarget, type: string, data: object) {
 
 export function sendAll(source: EventTarget, events: readonly {type: string; data: object}[]) {
   for (const event of events) sendRaw(source, event.type, event.data)
+}
+
+const GB = 1024 ** 3
+
+export const PLAN = {
+  hold: ['app-a', 'app-b', 'app-c', 'app-d'].map((name, i) => ({
+    path: `/Users/you/Library/Caches/${name}`,
+    bytes: [2, 1, 0.5, 0.25][i]! * GB,
+    held: `/Users/you/.cache/disk-clean/held/run-1/${i + 1}`,
+  })),
+  hold_bytes: 3.75 * GB,
+  hold_until: 1_800_000_000,
+  final: ['git -C /Users/you/code worktree remove /Users/you/code/wt', 'git -C /Users/you/code worktree prune', 'docker system prune -f'],
+  final_bytes: 6 * GB,
+  final_count: 2,
+  rejected: [{reason: 'already gone', path: '/Users/you/old'}],
+  count: 6,
+  bytes: 9.75 * GB,
+}
+
+export function mockServer(plan: object = PLAN) {
+  return vi.spyOn(window, 'fetch').mockImplementation(async input => new Response(String(input) === '/preview' ? JSON.stringify(plan) : '{}', {status: String(input) === '/preview' || String(input) === '/decide' ? 200 : 202}))
 }

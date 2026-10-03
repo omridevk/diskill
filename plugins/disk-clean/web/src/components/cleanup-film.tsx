@@ -4,7 +4,7 @@ import {ChevronDown, X} from 'lucide-react'
 import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
-import {formatDuration, totalsOf, useOutcomes, type Cleanup, type FilmPlan, type Outcome, type Totals} from '@/lib/cleanup'
+import {formatDuration, formatUntil, totalsOf, useOutcomes, type Cleanup, type FilmPlan, type Outcome, type Totals} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
 import {createFilm, gaugeOf, pump, type Film as FilmState, type ParticlePhase} from '@/lib/film'
 import {cssMs} from '@/lib/motion'
@@ -133,6 +133,11 @@ function Tiles({totals}: {totals: Totals}) {
       <Tile label="items removed">
         <span data-ticker={totals.removed.length}>{totals.removed.length}</span>
       </Tile>
+      {totals.held.length > 0 && (
+        <Tile label="held, not freed yet">
+          <span data-ticker={totals.held.length}>{totals.held.length}</span>
+        </Tile>
+      )}
       <Tile label="sections">
         <span data-ticker={totals.sections}>{totals.sections}</span>
       </Tile>
@@ -147,7 +152,7 @@ function Tiles({totals}: {totals: Totals}) {
 function CreditList({plan, totals}: {plan: FilmPlan; totals: Totals}) {
   return (
     <>
-      {bySection(plan, totals.removed).map(({section, items}) => (
+      {bySection(plan, [...totals.removed, ...totals.held]).map(({section, items}) => (
         <li key={section.id} className="flex flex-col gap-1">
           <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{section.title}</span>
           {items.map(o => (
@@ -266,7 +271,7 @@ function Stage({plan, all, startFree, shred}: {plan: FilmPlan; all: readonly Out
         <div className="flex min-w-0 flex-col items-center justify-center gap-8">
           <div data-film="leave">
             <div data-film="counter-box" className="flex flex-col items-center gap-1 opacity-0">
-              <output data-film="counter" aria-label="Freed" className="inline-block min-w-[7ch] text-center text-7xl leading-none font-bold tracking-tighter tabular-nums [contain:layout_paint]">
+              <output data-film="counter" aria-label="Cleared" className="inline-block min-w-[7ch] text-center text-7xl leading-none font-bold tracking-tighter tabular-nums [contain:layout_paint]">
                 0 B
               </output>
               <div className="text-sm text-muted-foreground">
@@ -376,6 +381,7 @@ interface FinaleProps {
   cleanup: Cleanup
   all: readonly Outcome[]
   particles: ParticlePhase
+  held: ReactNode
   onLanded: () => void
   onReplay: () => void
 }
@@ -393,24 +399,40 @@ function emptySummary(totals: Totals, all: readonly Outcome[]) {
 
 function headingOf(cleanup: Cleanup, totals: Totals, all: readonly Outcome[]) {
   if (cleanup.abandoned) return cleanup.started ? 'The cleanup stopped before it finished' : 'The cleanup did not start'
+  if (totals.held.length > 0) return 'Moved to hold'
   return totals.removed.length === 0 ? emptyHeading(totals, all) : 'You freed'
 }
 
 function figureOf(cleanup: Cleanup, totals: Totals, all: readonly Outcome[], freed: number) {
   if (cleanup.abandoned) return freed > 0 ? `${cleanup.abandoned.reason} · freed ${formatBytes(freed)}` : cleanup.abandoned.reason
+  if (totals.held.length > 0) return formatBytes(totals.heldBytes)
   return totals.removed.length === 0 ? emptySummary(totals, all) : formatBytes(freed)
 }
 
-function Finale({plan, cleanup, all, particles, onLanded, onReplay}: FinaleProps) {
+function HeldNote({cleanup, totals, held}: {cleanup: Cleanup; totals: Totals; held: ReactNode}) {
+  if (totals.held.length === 0 || cleanup.abandoned) return null
+  return (
+    <div data-film="held-actions" className="flex flex-col items-center gap-3">
+      <p className="text-sm text-muted-foreground">
+        held, not freed yet · undo until {formatUntil(cleanup.done?.hold_until ?? null)}
+        {totals.reclaimed > 0 && ` · freed ${formatBytes(totals.reclaimed)}`}
+      </p>
+      {held}
+    </div>
+  )
+}
+
+function Finale({plan, cleanup, all, particles, held, onLanded, onReplay}: FinaleProps) {
   const {done, abandoned} = cleanup
   const totals = useMemo(() => totalsOf(all, done), [all, done])
   const freed = totals.reclaimed
-  const empty = totals.removed.length === 0 || abandoned !== null
+  const empty = (totals.removed.length === 0 && totals.held.length === 0) || abandoned !== null
+  const heading = headingOf(cleanup, totals, all)
   return (
     <div data-film="finale" className="invisible absolute inset-0 overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
-        <h2 data-film="freed-heading" className="text-2xl font-semibold tracking-tight">
-          {headingOf(cleanup, totals, all)}
+        <h2 key={heading} data-film="freed-heading" className="text-2xl font-semibold tracking-tight">
+          {heading}
         </h2>
         <div className="relative grid min-h-24 w-full place-items-center">
           <div data-film="freed" className={empty ? 'text-lg text-muted-foreground opacity-0' : 'text-[96px] leading-none font-bold opacity-0'}>
@@ -420,6 +442,7 @@ function Finale({plan, cleanup, all, particles, onLanded, onReplay}: FinaleProps
             {particles !== 'off' && <Particles text={formatBytes(freed)} landing={particles === 'landing'} onLanded={onLanded} />}
           </div>
         </div>
+        <HeldNote cleanup={cleanup} totals={totals} held={held} />
         {done && <FinaleGauge plan={plan} done={done} freed={freed} />}
         <Tiles totals={totals} />
         <div
@@ -476,12 +499,13 @@ function useFilm(container: HTMLElement | null, plan: FilmPlan, cleanup: Cleanup
 }
 
 interface TakeProps extends FilmProps {
+  held: ReactNode
   container: HTMLElement | null
   running: (on: boolean) => void
   onReplay: () => void
 }
 
-function Take({container, plan, cleanup, running, onReplay}: TakeProps) {
+function Take({container, plan, cleanup, held, running, onReplay}: TakeProps) {
   const {shred, particles, landed} = useFilm(container, plan, cleanup, running)
   const all = useOutcomes(plan, cleanup.log)
   const waiting = cleanup.waiting && !cleanup.started
@@ -502,12 +526,12 @@ function Take({container, plan, cleanup, running, onReplay}: TakeProps) {
         </p>
       </section>
       <Stage plan={plan} all={all} startFree={cleanup.started?.free ?? cleanup.done?.free_before ?? 0} shred={shred} />
-      {(cleanup.done || cleanup.abandoned) && <Finale plan={plan} cleanup={cleanup} all={all} particles={particles} onLanded={landed} onReplay={onReplay} />}
+      {(cleanup.done || cleanup.abandoned) && <Finale plan={plan} cleanup={cleanup} all={all} particles={particles} held={held} onLanded={landed} onReplay={onReplay} />}
     </>
   )
 }
 
-function Film({plan, cleanup, take, onReplay}: FilmProps & {take: number; onReplay: () => void}) {
+function Film({plan, cleanup, take, held, onReplay}: FilmProps & {take: number; held: ReactNode; onReplay: () => void}) {
   const [running, setRunning] = useState(true)
   const [container, setContainer] = useState<HTMLDivElement | null>(null)
   const replay = () => {
@@ -521,12 +545,13 @@ function Film({plan, cleanup, take, onReplay}: FilmProps & {take: number; onRepl
           <BurningFilm running={running} className="absolute inset-0" />
         </div>
       </div>
-      <Take key={take} container={container} plan={plan} cleanup={cleanup} running={setRunning} onReplay={replay} />
+      <Take key={take} container={container} plan={plan} cleanup={cleanup} held={held} running={setRunning} onReplay={replay} />
     </div>
   )
 }
 
 interface CleanupFilmProps extends FilmProps {
+  held?: ReactNode
   open: boolean
   take: number
   onReplay: () => void
@@ -534,7 +559,7 @@ interface CleanupFilmProps extends FilmProps {
   returnFocus?: RefObject<HTMLButtonElement | null>
 }
 
-export function CleanupFilm({plan, cleanup, open, take, onReplay, onClose, returnFocus}: CleanupFilmProps) {
+export function CleanupFilm({plan, cleanup, held, open, take, onReplay, onClose, returnFocus}: CleanupFilmProps) {
   const close = useRef<HTMLButtonElement>(null)
   const replay = () => {
     onReplay()
@@ -544,7 +569,7 @@ export function CleanupFilm({plan, cleanup, open, take, onReplay, onClose, retur
     <DialogPrimitive.Root open={open} onOpenChange={next => next || onClose()}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Popup aria-label="Cleanup movie" initialFocus={close} finalFocus={returnFocus} className="fixed inset-0 z-50 outline-none">
-          <Film plan={plan} cleanup={cleanup} take={take} onReplay={replay} />
+          <Film plan={plan} cleanup={cleanup} take={take} held={held} onReplay={replay} />
           <DialogPrimitive.Close render={<Button ref={close} variant="secondary" size="sm" className="absolute top-4 right-4 z-10" />}>
             <X /> Close
           </DialogPrimitive.Close>

@@ -5,18 +5,15 @@ import {userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import type {Loaded} from './lib/data'
-import {at, cleanupEvents, fixture} from './test/fixture'
-import {fakeEventSource, ringPoints, sendAll} from './test/page'
+import {at, cleanupEvents, fixture, heldEvents} from './test/fixture'
+import {fakeEventSource, mockServer, ringPoints, sendAll} from './test/page'
 import './index.css'
-
-const GB = 1024 ** 3
 
 type Screen = Awaited<ReturnType<typeof render>>
 
 const details = (screen: Screen) => screen.getByRole('button', {name: 'Details'})
 
 describe('the URL', () => {
-  const PLAN = {commands: ['delete /Users/you/Library/Caches/app-a'], rejected: [], count: 1, bytes: 2 * GB}
   const APPROVED = ['/Users/you/Library/Caches/app-a', '/Users/you/code/web/node_modules']
 
   beforeEach(() => gsap.globalTimeline.timeScale(20))
@@ -27,7 +24,7 @@ describe('the URL', () => {
 
   const where = (history: RouterHistory) => history.location.pathname
   const query = (history: RouterHistory) => Object.fromEntries(new URLSearchParams(history.location.search))
-  const planned = () => vi.spyOn(window, 'fetch').mockImplementation(async () => new Response(JSON.stringify(PLAN)))
+  const planned = () => mockServer()
 
   async function open(url: string, loaded: Loaded = fixture) {
     const history = at(url)
@@ -85,15 +82,15 @@ describe('the URL', () => {
     history.forward()
     await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
 
-    await screen.getByRole('button', {name: 'Preview commands'}).click()
+    await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
     const dialog = screen.getByRole('dialog')
-    await expect.element(dialog.getByText('paths deleted')).toBeVisible()
+    await expect.element(dialog.getByText('6 items in total')).toBeVisible()
     expect(where(history)).toBe('/cleanup/confirm')
     history.back()
     await expect.element(dialog).not.toBeInTheDocument()
     expect(where(history)).toBe('/cleanup/node')
     history.forward()
-    await expect.element(dialog.getByText('paths deleted')).toBeVisible()
+    await expect.element(dialog.getByText('6 items in total')).toBeVisible()
   })
 
   test('filters round-trip through the URL: typing replaces the entry, toggles push one', async () => {
@@ -151,19 +148,44 @@ describe('the URL', () => {
     planned()
     const cold = await open('/cleanup/confirm?q=you')
     const dialog = cold.screen.getByRole('dialog')
-    await expect.element(dialog.getByText('paths deleted')).toBeVisible()
+    await expect.element(dialog.getByText('6 items in total')).toBeVisible()
     expect(window.fetch).toHaveBeenCalledWith('/preview', expect.objectContaining({method: 'POST'}))
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
     expect(cold.history.location.href).toBe('/cleanup?q=you')
 
     await cold.screen.getByRole('link', {name: /^node_modules/}).click()
-    await cold.screen.getByRole('button', {name: 'Preview commands'}).click()
-    await expect.element(dialog.getByText('paths deleted')).toBeVisible()
+    await cold.screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
+    await expect.element(dialog.getByText('6 items in total')).toBeVisible()
     expect(cold.history.location.href).toBe('/cleanup/confirm?q=you')
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
     expect(cold.history.location.href).toBe('/cleanup/node?q=you')
+  })
+
+  test('the Free confirm has its own URL over a held run: Escape goes back, forward and a reload reopen it', async () => {
+    mockServer()
+    const {source} = fakeEventSource()
+    const loaded = {...fixture, approved: APPROVED, openEvents: () => source}
+    const {history, screen} = await open('/cleanup?q=you', loaded)
+    sendAll(source, heldEvents)
+    await screen.getByRole('contentinfo').getByRole('button', {name: 'Free the space now'}).click()
+    const dialog = screen.getByRole('dialog', {name: 'Free the space now?'})
+    await expect.element(dialog).toBeVisible()
+    expect(history.location.href).toBe('/cleanup/free?q=you')
+    await userEvent.keyboard('{Escape}')
+    await expect.element(dialog).not.toBeInTheDocument()
+    expect(history.location.href).toBe('/cleanup?q=you')
+    history.forward()
+    await expect.element(dialog).toBeVisible()
+
+    const again = await reload(screen, history, loaded)
+    sendAll(source, heldEvents)
+    await expect.element(again.screen.getByRole('dialog', {name: 'Free the space now?'})).toBeVisible()
+    expect(again.history.location.href).toBe('/cleanup/free?q=you')
+    await again.screen.unmount()
+    const refused = await open('/cleanup/free?q=you')
+    await expect.poll(() => refused.history.location.href).toBe('/cleanup?q=you')
   })
 
   test('the progress panel and the movie open from the URL, and Escape returns to the previous URL', async () => {

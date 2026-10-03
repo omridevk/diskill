@@ -109,3 +109,35 @@ export function withSection(extra: Category): Loaded {
   const [first, ...rest] = categories
   return {data: {...data, categories: first ? [first, extra, ...rest] : [extra]}, token: 'test-token'}
 }
+
+const CACHES = ['app-a', 'app-b', 'app-c', 'app-d'].map((name, i) => ({path: `/Users/you/Library/Caches/${name}`, bytes: [2, 1, 0.5, 0.25][i]! * GB}))
+
+const HOLD_UNTIL = 1_800_000_000
+
+export const heldEvents = [
+  {type: 'started', data: {run: 'run-h', free: 50 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 4.75 * GB, elapsed_ms: 0}},
+  ...CACHES.map((c, i) => ({type: 'held', data: {...c, held_path: `/Users/you/.cache/disk-clean/held/run-h/${i + 1}`, elapsed_ms: 100 + i}})),
+  {type: 'worktree', data: {path: '/Users/you/code/wt', bytes: GB, outcome: 'removed', reason: '', elapsed_ms: 900}},
+  {type: 'done', data: {removed: 1, removed_bytes: GB, held: 4, held_bytes: 3.75 * GB, hold_until: HOLD_UNTIL, free_before: 50 * GB, free_after: 51 * GB, elapsed_ms: 1000}},
+] as const
+
+const item_of = (job: string, c: (typeof CACHES)[number], i: number, outcome: string) => ({
+  job,
+  ...c,
+  held_path: `/Users/you/.cache/disk-clean/held/run-h/${i + 1}`,
+  outcome,
+  reason: '',
+  elapsed_ms: 10 + i,
+})
+
+export const undoEvents = [
+  {type: 'undo_started', data: {job: 'j-undo', count: 4, bytes: 3.75 * GB, elapsed_ms: 0}},
+  ...CACHES.map((c, i) => ({type: 'undone', data: item_of('j-undo', c, i, 'restored')})),
+  {type: 'undo_done', data: {job: 'j-undo', restored: 4, restored_bytes: 3.75 * GB, kept: 0, held: 0, held_bytes: 0, elapsed_ms: 50}},
+] as const
+
+export const freeEvents = [
+  {type: 'free_started', data: {job: 'j-free', count: 4, bytes: 3.75 * GB, free: 51 * GB, elapsed_ms: 0}},
+  ...CACHES.map((c, i) => ({type: 'freed', data: item_of('j-free', c, i, 'freed')})),
+  {type: 'free_done', data: {job: 'j-free', freed: 4, freed_bytes: 3.75 * GB, kept: 0, held: 0, held_bytes: 0, free_before: 51 * GB, free_after: 54.75 * GB, elapsed_ms: 80}},
+] as const

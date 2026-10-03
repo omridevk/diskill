@@ -70,6 +70,7 @@ interface Point {
 
 interface Gauges {
   reclaimed: number
+  cleared: number
   gone: Map<string, number>
   accounted: Map<string, number>
   failed: Set<string>
@@ -167,20 +168,28 @@ function settle(film: Film) {
   film.root.dataset.settled = 'true'
 }
 
+function unsettle(film: Film) {
+  delete film.root.dataset.settled
+}
+
 function sectionPct(film: Film, id: string, gone: number, accounted: number) {
   const section = film.plan.sections.find(s => s.id === id)
   if (!section) return 0
   return section.bytes > 0 ? (gone / section.bytes) * 100 : (accounted / section.count) * 100
 }
 
+const CLEARED = new Set<Outcome['kind']>(['removed', 'held'])
+const bytesOf = (touched: Outcome[], kinds: ReadonlySet<Outcome['kind']>) => touched.filter(o => kinds.has(o.kind)).reduce((sum, o) => sum + o.bytes, 0)
+const REMOVED = new Set<Outcome['kind']>(['removed'])
+
 function account(film: Film, id: string, touched: Outcome[]) {
   const {gauges} = film
-  const removed = touched.filter(o => o.kind === 'removed').reduce((sum, o) => sum + o.bytes, 0)
+  const removed = bytesOf(touched, CLEARED)
   const before = gauges.gone.get(id) ?? 0
   const counted = (gauges.accounted.get(id) ?? 0) + touched.length
   gauges.gone.set(id, before + removed)
   gauges.accounted.set(id, counted)
-  if (touched.some(o => o.kind !== 'removed')) gauges.failed.add(id)
+  if (touched.some(o => !CLEARED.has(o.kind))) gauges.failed.add(id)
   const from = sectionPct(film, id, before, counted - touched.length)
   const to = Math.min(100, sectionPct(film, id, before + removed, counted))
   return {before, removed, counted, from, to}
@@ -239,9 +248,11 @@ function countingBeat(film: Film, at: number) {
 }
 
 function gauges(film: Film, touched: Outcome[], at: number) {
-  const bytes = touched.filter(o => o.kind === 'removed').reduce((sum, o) => sum + o.bytes, 0)
-  if (bytes > 0 && !film.counting) countingBeat(film, at)
-  ticker(film, part(film, 'counter'), film.gauges.reclaimed, film.gauges.reclaimed + bytes, at)
+  const cleared = bytesOf(touched, CLEARED)
+  const bytes = bytesOf(touched, REMOVED)
+  if (cleared > 0 && !film.counting) countingBeat(film, at)
+  ticker(film, part(film, 'counter'), film.gauges.cleared, film.gauges.cleared + cleared, at)
+  film.gauges.cleared += cleared
   if (bytes > 0) {
     const start = film.gauges.startFree
     film.tl.fromTo(
@@ -318,7 +329,7 @@ function stackBeat(film: Film, outcomes: Outcome[]) {
 
 function floodBeat(film: Film, outcomes: Outcome[]) {
   const at = film.tl.duration()
-  chip(film, `×${outcomes.length} removed`, at, TICK - 0.15)
+  chip(film, `×${outcomes.length} done`, at, TICK - 0.15)
   gauges(film, outcomes, at)
 }
 
@@ -502,13 +513,33 @@ function openingBeats(film: Film, cleanup: Cleanup, types: ReadonlySet<string>) 
 function workBeats(film: Film, found: Outcome[], flood: boolean) {
   const commands = found.filter(o => o.key.startsWith('cmd:'))
   const files = found.filter(o => !o.key.startsWith('cmd:'))
-  const removed = files.filter(o => o.kind === 'removed')
-  const problems = files.filter(o => o.kind !== 'removed')
+  const removed = files.filter(o => CLEARED.has(o.kind))
+  const problems = files.filter(o => !CLEARED.has(o.kind))
   if (removed.length > 0) removalBeat(film, removed, flood)
   if (problems.length > 0) problemBeat(film, problems)
   for (const command of commands) commandBeat(film, command)
   if (found.length === 0) freeBeat(film, film.tl.duration())
 }
+
+function payoffBeat(film: Film, bytes: number) {
+  const {tl, tokens} = film
+  const at = tl.duration()
+  tl.call(unsettle, [film], at)
+  const heading = part(film, 'freed-heading')
+  const words = heading ? SplitText.create(heading, {type: 'words'}).words : []
+  tl.fromTo(words, {opacity: 0, y: 12, filter: 'blur(3px)'}, {opacity: 1, y: 0, filter: 'blur(0px)', duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, at)
+  tl.fromTo(all(film, '[data-film="held-actions"]'), {autoAlpha: 1}, {autoAlpha: 0, duration: tokens.fast, ease: 'smooth-out'}, at)
+  film.gauges.reclaimed = bytes
+  const swapped = particleBeat(film, at + tokens.stagger, false)
+  tl.call(settle, [film], swapped + tokens.verySlow + tokens.fast)
+}
+
+function afterFinale(film: Film, pending: CleanupEvent[]) {
+  const freed = pending.findLast(e => e.type === 'free_done')
+  if (freed?.type === 'free_done' && freed.data.freed_bytes > 0) payoffBeat(film, freed.data.freed_bytes)
+}
+
+const isHolding = (cleanup: Cleanup) => (cleanup.done?.held ?? 0) > 0
 
 function build(film: Film, cleanup: Cleanup, pending: CleanupEvent[]) {
   const types = new Set(pending.map(e => e.type))
@@ -522,11 +553,11 @@ function build(film: Film, cleanup: Cleanup, pending: CleanupEvent[]) {
   const sample = pending.findLast(e => e.type === 'free')
   if (sample?.type === 'free') film.gauges.free = sample.data.free
   workBeats(film, outcomesOf(film, pending), film.flood || ending)
-  if (ending) finaleBeat(film, abandoned)
+  if (ending) finaleBeat(film, abandoned || isHolding(cleanup))
   film.flood = false
 }
 
-const OUTCOMES: ReadonlySet<CleanupEvent['type']> = new Set(['removed', 'failed', 'kept', 'worktree', 'command'])
+const OUTCOMES: ReadonlySet<CleanupEvent['type']> = new Set(['removed', 'held', 'failed', 'kept', 'worktree', 'command'])
 const ENDINGS: ReadonlySet<CleanupEvent['type']> = new Set(['done', 'abandoned'])
 
 function recapSize(film: Film, log: readonly CleanupEvent[]) {
@@ -548,10 +579,11 @@ export function pump(film: Film | null, cleanup: Cleanup, fromTail = false) {
   if (!film?.ready || document.hidden) return
   if (film.tl.isActive() && !fromTail) return
   const before = film.tl.duration()
-  while (!film.finished && film.processed < cleanup.log.length && film.tl.duration() <= before) {
+  while (film.processed < cleanup.log.length && film.tl.duration() <= before) {
     const pending = nextBatch(film, cleanup.log)
     film.processed += pending.length
-    build(film, cleanup, pending)
+    if (film.finished) afterFinale(film, pending)
+    else build(film, cleanup, pending)
   }
   if (film.tl.duration() <= before) return
   film.tl.call(() => film.onTail(), [], film.tl.duration())
@@ -580,7 +612,7 @@ export function createFilm(root: HTMLElement, plan: FilmPlan, set: Setters, onTa
     plan,
     tokens: readTokens(),
     set,
-    gauges: {reclaimed: 0, gone: new Map(), accounted: new Map(), failed: new Set(), free: null, shownFree: null, startFree: 0},
+    gauges: {reclaimed: 0, cleared: 0, gone: new Map(), accounted: new Map(), failed: new Set(), free: null, shownFree: null, startFree: 0},
     rings: new Map(),
     slot: {x: 0, y: 0},
     pool: -1,

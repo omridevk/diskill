@@ -3,23 +3,40 @@ import type {Category, EventSourceLike, Item, OpenEvents} from './data'
 import {messageData, openEventSource, perFrame} from './live'
 
 type Timed<T> = T & {elapsed_ms: number}
+type HeldItem = {job: string; path: string; held_path: string; bytes: number; reason: string}
+type JobCounts = {job: string; kept: number; held: number; held_bytes: number}
 
 export type CleanupEvent =
   | {type: 'waiting'; data: object}
-  | {type: 'started'; data: Timed<{run: string; free: number; paths: number; worktrees: number; commands: number; bytes: number}>}
+  | {type: 'started'; data: Timed<{run: string; free: number; paths: number; worktrees: number; frees?: number; commands: number; bytes: number}>}
   | {type: 'removed'; data: Timed<{path: string; bytes: number; secs: number}>}
   | {type: 'failed'; data: Timed<{path: string; bytes: number; reason: string}>}
   | {type: 'kept'; data: Timed<{path: string; bytes: number; reason: string}>}
   | {type: 'worktree'; data: Timed<{path: string; bytes: number; outcome: 'removed' | 'kept'; reason: string}>}
   | {type: 'command'; data: Timed<{id: string; label: string; status: 'ok' | 'failed'}>}
   | {type: 'free'; data: Timed<{free: number}>}
-  | {type: 'done'; data: Timed<{free_before: number; free_after: number}>}
+  | {type: 'held'; data: Timed<{path: string; bytes: number; held_path: string}>}
+  | {type: 'done'; data: Timed<{free_before: number; free_after: number; held?: number; held_bytes?: number; hold_until?: number | null}>}
   | {type: 'abandoned'; data: {reason: string}}
+  | {type: 'freed'; data: Timed<HeldItem & {outcome: 'freed' | 'kept'}>}
+  | {type: 'undone'; data: Timed<HeldItem & {outcome: 'restored' | 'kept' | 'gone'}>}
+  | {type: 'free_started'; data: Timed<{job: string; count: number; bytes: number; free: number}>}
+  | {type: 'free_done'; data: Timed<JobCounts & {freed: number; freed_bytes: number; free_before: number; free_after: number}>}
+  | {type: 'undo_started'; data: Timed<{job: string; count: number; bytes: number}>}
+  | {type: 'undo_done'; data: Timed<JobCounts & {restored: number; restored_bytes: number}>}
 
 type Of<K extends CleanupEvent['type']> = Extract<CleanupEvent, {type: K}>['data']
 
 export interface Keys {
   has: (key: string) => boolean
+}
+
+export interface Job {
+  kind: 'free' | 'undo'
+  id: string
+  count: number
+  bytes: number
+  done: Of<'free_done'> | Of<'undo_done'> | null
 }
 
 export interface Cleanup {
@@ -30,6 +47,7 @@ export interface Cleanup {
   done: Of<'done'> | null
   free: Of<'free'> | null
   abandoned: Of<'abandoned'> | null
+  job: Job | null
 }
 
 interface Seen {
@@ -62,29 +80,49 @@ export const NO_CLEANUP: Cleanup = {
   done: null,
   free: null,
   abandoned: null,
+  job: null,
 }
 
-const TYPES: CleanupEvent['type'][] = ['waiting', 'started', 'removed', 'failed', 'kept', 'worktree', 'command', 'free', 'done', 'abandoned']
-const FINAL = new Set<CleanupEvent['type']>(['done', 'abandoned'])
+const TYPES: CleanupEvent['type'][] = [
+  'waiting',
+  'started',
+  'removed',
+  'held',
+  'failed',
+  'kept',
+  'worktree',
+  'command',
+  'free',
+  'done',
+  'abandoned',
+  'freed',
+  'undone',
+  'free_started',
+  'free_done',
+  'undo_started',
+  'undo_done',
+]
+const SETTLING = new Set<CleanupEvent['type']>(['done', 'free_done', 'undo_done'])
 
 function keyOf(event: CleanupEvent) {
-  switch (event.type) {
-    case 'removed':
-    case 'failed':
-    case 'kept':
-    case 'worktree':
-      return event.data.path
-    case 'command':
-      return `cmd:${event.data.id}`
-    case 'free':
-      return `free:${event.data.elapsed_ms}`
-    default:
-      return event.type
-  }
+  const data = event.data
+  const job = 'job' in data ? `${event.type}:${data.job}` : ''
+  if ('path' in data) return job ? `${job}:${data.path}` : data.path
+  if (job) return job
+  if (event.type === 'command') return `cmd:${event.data.id}`
+  return event.type === 'free' ? `free:${event.data.elapsed_ms}` : event.type
 }
 
 function isNewRun(cleanup: Cleanup, event: CleanupEvent) {
   return event.type === 'started' && cleanup.started !== null && cleanup.started.run !== event.data.run
+}
+
+function absorbJob(cleanup: Cleanup, event: CleanupEvent): Cleanup {
+  if (event.type === 'free_started' || event.type === 'undo_started') {
+    return {...cleanup, job: {kind: event.type === 'free_started' ? 'free' : 'undo', id: event.data.job, count: event.data.count, bytes: event.data.bytes, done: null}}
+  }
+  const finished = (event.type === 'free_done' || event.type === 'undo_done') && cleanup.job?.id === event.data.job
+  return finished && cleanup.job ? {...cleanup, job: {...cleanup.job, done: event.data}} : cleanup
 }
 
 function absorb(cleanup: Cleanup, event: CleanupEvent): Cleanup {
@@ -100,7 +138,7 @@ function absorb(cleanup: Cleanup, event: CleanupEvent): Cleanup {
     case 'free':
       return event.data.elapsed_ms >= (cleanup.free?.elapsed_ms ?? 0) ? {...cleanup, free: event.data} : cleanup
     default:
-      return cleanup
+      return absorbJob(cleanup, event)
   }
 }
 
@@ -125,14 +163,19 @@ function isWorkerDone(type: CleanupEvent['type'], data: unknown) {
 
 const CONNECTING = 0
 
+function nothingLeft(type: CleanupEvent['type'], data: object) {
+  if (type === 'abandoned') return true
+  return SETTLING.has(type) && !('held' in data && typeof data.held === 'number' && data.held > 0)
+}
+
 function listenCleanup(source: EventSourceLike, take: (event: CleanupEvent) => void, setLost: (lost: boolean) => void) {
   for (const type of TYPES) {
     source.addEventListener(type, message => {
       const data = messageData(message)
-      if (data === null || !isWorkerDone(type, data)) return
+      if (typeof data !== 'object' || data === null || !isWorkerDone(type, data)) return
       setLost(false)
       take({type, data} as CleanupEvent)
-      if (FINAL.has(type)) source.close()
+      if (nothingLeft(type, data)) source.close()
     })
   }
   source.addEventListener('open', () => setLost(false))
@@ -202,7 +245,9 @@ export function filmPlan(categories: readonly Category[], selected: readonly Ite
 }
 
 export interface Outcome {
-  kind: 'removed' | 'failed' | 'kept' | 'ran'
+  kind: 'removed' | 'failed' | 'kept' | 'ran' | 'held' | 'freed' | 'restored'
+  id: string
+  job: boolean
   key: string
   label: string
   bytes: number
@@ -217,35 +262,47 @@ function planned(plan: FilmPlan, key: string, bytes: number, label = key): Pick<
   return {label: known?.label ?? label, bytes: known?.bytes ?? bytes, section: known?.section ?? ''}
 }
 
-function described(plan: FilmPlan, event: CleanupEvent): Omit<Outcome, 'at' | 'secs'> | null {
-  switch (event.type) {
-    case 'removed':
-      return {kind: 'removed', key: event.data.path, reason: '', ...planned(plan, event.data.path, event.data.bytes)}
-    case 'failed':
-      return {kind: 'failed', key: event.data.path, reason: event.data.reason, ...planned(plan, event.data.path, event.data.bytes)}
-    case 'kept':
-      return {kind: 'kept', key: event.data.path, reason: event.data.reason, ...planned(plan, event.data.path, event.data.bytes)}
-    case 'worktree':
-      return {
-        kind: event.data.outcome === 'kept' ? 'kept' : 'removed',
-        key: event.data.path,
-        reason: event.data.reason,
-        ...planned(plan, event.data.path, event.data.bytes),
-      }
-    case 'command': {
-      const key = `cmd:${event.data.id}`
-      const failed = event.data.status !== 'ok'
-      return {kind: failed ? 'failed' : 'ran', key, reason: failed ? 'the command exited with an error' : '', ...planned(plan, key, 0, event.data.label)}
-    }
-    default:
-      return null
-  }
+type Described = Omit<Outcome, 'at' | 'secs' | 'id' | 'job'>
+
+const HELD_OUTCOME: Record<'freed' | 'restored' | 'kept', Outcome['kind']> = {freed: 'freed', restored: 'restored', kept: 'kept'}
+
+function heldOutcome(plan: FilmPlan, event: Extract<CleanupEvent, {type: 'freed' | 'undone'}>): Described | null {
+  const {outcome, path, bytes, reason} = event.data
+  if (outcome === 'gone') return null
+  return {kind: HELD_OUTCOME[outcome], key: path, reason, ...planned(plan, path, bytes)}
+}
+
+const PATH_KINDS: Partial<Record<CleanupEvent['type'], Outcome['kind']>> = {removed: 'removed', held: 'held', failed: 'failed', kept: 'kept'}
+
+function commandOutcome(plan: FilmPlan, event: Extract<CleanupEvent, {type: 'command'}>): Described {
+  const key = `cmd:${event.data.id}`
+  const failed = event.data.status !== 'ok'
+  return {kind: failed ? 'failed' : 'ran', key, reason: failed ? 'the command exited with an error' : '', ...planned(plan, key, 0, event.data.label)}
+}
+
+function worktreeKind(event: Extract<CleanupEvent, {type: 'worktree'}>): Outcome['kind'] {
+  return event.data.outcome === 'kept' ? 'kept' : 'removed'
+}
+
+function described(plan: FilmPlan, event: CleanupEvent): Described | null {
+  if (event.type === 'freed' || event.type === 'undone') return heldOutcome(plan, event)
+  if (event.type === 'command') return commandOutcome(plan, event)
+  const kind = event.type === 'worktree' ? worktreeKind(event) : PATH_KINDS[event.type]
+  const data = event.data
+  if (!kind || !('path' in data)) return null
+  return {kind, key: data.path, reason: 'reason' in data ? data.reason : '', ...planned(plan, data.path, data.bytes)}
 }
 
 export function outcomeOf(plan: FilmPlan, event: CleanupEvent): Outcome | null {
   const outcome = described(plan, event)
   if (!outcome) return null
-  return {...outcome, at: 'elapsed_ms' in event.data ? event.data.elapsed_ms : 0, secs: event.type === 'removed' ? event.data.secs : 0}
+  return {
+    ...outcome,
+    id: keyOf(event),
+    job: event.type === 'freed' || event.type === 'undone',
+    at: 'elapsed_ms' in event.data ? event.data.elapsed_ms : 0,
+    secs: event.type === 'removed' ? event.data.secs : 0,
+  }
 }
 
 interface Derived {
@@ -281,51 +338,117 @@ export interface CleanupProgress {
   outcomes: readonly Outcome[]
   byKey: ReadonlyMap<string, Outcome>
   freed: number
+  held: number
+  heldCount: number
+  restored: number
+  handled: number
+  holdUntil: number | null
   count: number
   total: number
   free: number | null
   freeChange: number | null
 }
 
+const sum = (all: readonly Outcome[]) => all.reduce((total, o) => total + o.bytes, 0)
+const FREED = new Set<Outcome['kind']>(['removed', 'freed'])
+const LET_GO = new Set<Outcome['kind']>(['freed', 'restored'])
+
 function removedBytes(all: readonly Outcome[]) {
-  return all.filter(o => o.kind === 'removed').reduce((sum, o) => sum + o.bytes, 0)
+  return sum(all.filter(o => FREED.has(o.kind)))
+}
+
+function stillHeld(all: readonly Outcome[], byKey: ReadonlyMap<string, Outcome>) {
+  return all.filter(o => o.kind === 'held' && !LET_GO.has(byKey.get(o.key)?.kind ?? 'held'))
+}
+
+function jobProgress(cleanup: Cleanup, all: readonly Outcome[]) {
+  const {job} = cleanup
+  const prefix = job && `${job.kind === 'free' ? 'freed' : 'undone'}:${job.id}:`
+  return prefix ? sum(all.filter(o => o.id.startsWith(prefix))) : 0
+}
+
+function freeNow({job, done, free, started}: Cleanup) {
+  const afterJob = job?.done && 'free_after' in job.done ? job.done.free_after : undefined
+  return [afterJob, done?.free_after, free?.free, started?.free].find(n => n !== undefined) ?? null
+}
+
+function totalOf(plan: FilmPlan, {started}: Cleanup) {
+  return started ? started.paths + started.worktrees + (started.frees ?? 0) + started.commands : plan.items.size
+}
+
+function handledOf(cleanup: Cleanup, all: readonly Outcome[]) {
+  if (cleanup.job && !cleanup.job.done) return jobProgress(cleanup, all)
+  return sum(all.filter(o => !o.job && (o.kind === 'removed' || o.kind === 'held')))
 }
 
 function progressOf(plan: FilmPlan, cleanup: Cleanup, all: readonly Outcome[]): CleanupProgress {
-  const {started, done} = cleanup
+  const {done} = cleanup
+  const byKey = new Map(all.map(o => [o.key, o]))
+  const latest = [...byKey.values()]
+  const held = stillHeld(all, byKey)
   return {
     plan,
     cleanup,
     outcomes: all,
-    byKey: new Map(all.map(o => [o.key, o])),
-    freed: removedBytes(all),
-    count: all.length,
-    total: started ? started.paths + started.worktrees + started.commands : plan.items.size,
-    free: done?.free_after ?? cleanup.free?.free ?? started?.free ?? null,
+    byKey,
+    freed: removedBytes(latest),
+    held: sum(held),
+    heldCount: held.length,
+    restored: sum(latest.filter(o => o.kind === 'restored')),
+    handled: handledOf(cleanup, all),
+    holdUntil: done?.hold_until ?? null,
+    count: all.filter(o => !o.job).length,
+    total: totalOf(plan, cleanup),
+    free: freeNow(cleanup),
     freeChange: done ? done.free_after - done.free_before : null,
   }
 }
 
+export type FreeOffer = 'offered' | 'refused' | 'waiting'
+
+export function freeOffer(progress: CleanupProgress | null): FreeOffer {
+  if (progress === null || progress.cleanup.abandoned) return 'refused'
+  if (progress.cleanup.done === null || jobRunning(progress)) return 'waiting'
+  return progress.held > 0 ? 'offered' : 'refused'
+}
+
+export function jobRunning(progress: CleanupProgress) {
+  return progress.cleanup.job !== null && progress.cleanup.job.done === null
+}
+
+export function formatUntil(seconds: number | null) {
+  if (seconds === null) return ''
+  return new Date(seconds * 1000).toLocaleString(undefined, {weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'})
+}
+
 export interface Totals {
   removed: Outcome[]
+  held: Outcome[]
   failed: Outcome[]
   kept: Outcome[]
   sections: number
   biggest: Outcome | null
   reclaimed: number
+  heldBytes: number
   seconds: number
 }
 
 export function totalsOf(all: readonly Outcome[], done: Of<'done'> | null): Totals {
-  const removed = all.filter(o => o.kind === 'removed')
+  const byKey = new Map(all.map(o => [o.key, o]))
+  const latest = [...byKey.values()]
+  const removed = latest.filter(o => FREED.has(o.kind))
+  const held = stillHeld(all, byKey)
+  const cleared = [...removed, ...held]
   return {
     removed,
-    failed: all.filter(o => o.kind === 'failed'),
-    kept: all.filter(o => o.kind === 'kept'),
-    sections: new Set(removed.map(o => o.section)).size,
-    biggest: removed.reduce<Outcome | null>((best, o) => (best && best.bytes >= o.bytes ? best : o), null),
+    held,
+    failed: latest.filter(o => o.kind === 'failed'),
+    kept: latest.filter(o => o.kind === 'kept'),
+    sections: new Set(cleared.map(o => o.section)).size,
+    biggest: cleared.reduce<Outcome | null>((best, o) => (best && best.bytes >= o.bytes ? best : o), null),
     reclaimed: removedBytes(removed),
-    seconds: Math.round((done?.elapsed_ms ?? Math.max(0, ...all.map(o => o.at))) / 1000),
+    heldBytes: sum(held),
+    seconds: Math.round((done?.elapsed_ms ?? Math.max(0, ...all.filter(o => !o.job).map(o => o.at))) / 1000),
   }
 }
 

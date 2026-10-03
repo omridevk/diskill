@@ -37,7 +37,7 @@ function diskFigures(data: ScanData, selection: Selection, progress: CleanupProg
   if (!progress) return {used: data.used, pending: selection.exactBytes, before: data.free, after: data.free + selection.exactBytes, free: data.free}
   const {started, done, abandoned} = progress.cleanup
   const free = progress.free ?? data.free
-  const pending = done || abandoned ? 0 : Math.max(0, progress.plan.approved - progress.freed)
+  const pending = done || abandoned ? progress.held : Math.max(0, progress.plan.approved - progress.freed)
   return {used: Math.max(0, data.total - free), pending, before: done?.free_before ?? started?.free ?? data.free, after: free, free}
 }
 
@@ -48,6 +48,11 @@ function FreeSpace({before, after, total, live}: {before: number; after: number;
       {live ? ', now' : ' to'} <b className="font-medium text-foreground">{formatBytes(after)}</b> of {formatBytes(total)}
     </>
   )
+}
+
+function progressLabel(progress: CleanupProgress | null) {
+  if (!progress) return 'Selected to free'
+  return progress.held > 0 ? 'Held, not freed yet' : 'Freed'
 }
 
 export function Summary({
@@ -78,7 +83,7 @@ export function Summary({
       <LoadingBackdrop scanning={scanning} />
       <DiskDonut used={disk.used} selected={disk.pending} free={disk.free} total={data.total} size={132} />
       <div className="flex grow flex-col gap-2">
-        <div className="text-xs text-muted-foreground">{progress ? 'Freed' : 'Selected to free'}</div>
+        <div className="text-xs text-muted-foreground">{progressLabel(progress)}</div>
         <div className="relative h-12 text-5xl leading-none font-bold tracking-tighter tabular-nums">
           <div className={overlay ? 'invisible w-fit' : 'w-fit'}>
             <SpinningBytes bytes={bytes} />

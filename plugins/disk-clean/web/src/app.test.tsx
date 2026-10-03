@@ -4,17 +4,16 @@ import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest'
 import {cdp, page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
-import {ActionBar} from './components/action-bar'
-import {PreviewDialog} from './components/preview-dialog'
+import {ConfirmDialog} from './components/confirm-dialog'
 import {gsap} from 'gsap'
 import {cleanupReducer, filmPlan, NO_CLEANUP, outcomes, totalsOf, type CleanupEvent} from './lib/cleanup'
 import {formatBytes, NO_DATA, type Category, type Loaded} from './lib/data'
 import {cssMs, useTextSwap} from './lib/motion'
 import {scanBatchReducer, scanReducer, startScan, type ScanEvent} from './lib/scan'
-import {NO_PICKS, outermost, picksReducer, useSelection} from './lib/selection'
+import {NO_PICKS, outermost, picksReducer} from './lib/selection'
 import {squarifyInBounds} from './lib/treemap-tile'
 import {at, category, cleanupEvents, fixture, item} from './test/fixture'
-import {fakeEventSource, ringPoints, sendAll, sendRaw} from './test/page'
+import {fakeEventSource, mockServer, PLAN, ringPoints, sendAll, sendRaw} from './test/page'
 import './index.css'
 
 describe('formatBytes', () => {
@@ -161,26 +160,29 @@ describe('other tabs', () => {
   })
 })
 
-describe('preview dialog', () => {
-  const plan = {
-    commands: [
-      'delete /Users/you/Library/Caches/app-a',
-      'git -C /Users/you/repo worktree remove /Users/you/repo-wt',
-      'git -C /Users/you/repo worktree prune',
-      'docker system prune -f',
-    ],
-    rejected: [{reason: 'already gone', path: '/Users/you/old'}],
-    count: 3,
-    bytes: 2 * 1024 ** 3,
-  }
+describe('confirm dialog', () => {
+  test('lists totals, every held path with its size, the steps that cannot be undone and the rejections', async () => {
+    const confirmed = vi.fn()
+    const screen = await render(<ConfirmDialog plan={PLAN} open onOpenChange={() => {}} onConfirm={confirmed} />)
+    const held = screen.getByRole('list', {name: 'Moved to hold'})
+    await expect.element(screen.getByRole('heading', {name: /^Moved to hold \(undo available\)/})).toBeVisible()
+    await expect.poll(() => held.getByRole('listitem').elements().length).toBe(4)
+    await expect.element(held.getByRole('listitem').first()).toHaveTextContent('/Users/you/Library/Caches/app-a2.0 GB')
+    await expect.element(screen.getByRole('list', {name: "Can't be undone"})).toHaveTextContent('git -C /Users/you/code worktree remove /Users/you/code/wtgit -C /Users/you/code worktree prunedocker system prune -f')
+    await expect.element(screen.getByRole('list', {name: 'Rejected by the safety checks'})).toHaveTextContent('/Users/you/old: already gone')
+    await expect.element(screen.getByText('6 items in total')).toBeVisible()
+    await screen.getByRole('button', {name: "Move 4 items to hold + 2 that can't be undone"}).click()
+    expect(confirmed).toHaveBeenCalledOnce()
+  })
 
-  test('counts each kind of command and lists rejections', async () => {
-    const screen = await render(<PreviewDialog plan={plan} open onOpenChange={() => {}} onApprove={() => {}} />)
-    await expect.element(screen.getByText('paths deleted')).toBeVisible()
-    await expect.element(screen.getByText('/Users/you/Library/Caches/app-a')).toBeVisible()
-    await screen.getByRole('tab', {name: /Rejected/}).click()
-    await expect.element(screen.getByText('/Users/you/old')).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete 2.0 GB'})).toBeEnabled()
+  test('says Delete when nothing can be held, and waits for the plan', async () => {
+    const plan = {...PLAN, hold: [], hold_bytes: 0, count: 2}
+    const screen = await render(<ConfirmDialog plan={plan} open onOpenChange={() => {}} onConfirm={() => {}} />)
+    await expect.element(screen.getByRole('button', {name: 'Delete 2 items'})).toBeEnabled()
+    await expect.element(screen.getByRole('list', {name: 'Moved to hold'})).not.toBeInTheDocument()
+    await screen.rerender(<ConfirmDialog plan={null} open onOpenChange={() => {}} onConfirm={() => {}} />)
+    await expect.element(screen.getByText('Checking the selection…')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Delete'})).toBeDisabled()
   })
 })
 
@@ -282,6 +284,7 @@ describe('live scan reducer', () => {
 })
 
 const SHOWN = {visibility: 'visible'}
+const DELETE = /^Delete \d+ items? · /
 
 describe('live page', () => {
   beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
@@ -305,18 +308,14 @@ describe('live page', () => {
     await expect.element(screen.getByText('Where your 500 GB went')).toBeVisible()
     await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
     await screen.getByRole('tab', {name: 'Cleanup'}).click()
-    await expect.element(screen.getByText(/Preview and Approve unlock when the scan finishes/)).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
-    await expect.element(screen.getByRole('button', {name: 'Preview commands'})).toBeDisabled()
+    await expect.element(screen.getByText(/Delete unlocks when the scan finishes/)).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
     for (const event of items.slice(5)) send(event)
     await expect.element(screen.getByRole('link', {name: /^Docker/})).toBeVisible()
     send(done)
     await expect.element(screen.getByText('Scan complete')).toBeVisible()
     await expect.element(screen.getByText('9.5s')).toBeVisible()
-    await screen.getByRole('button', {name: 'Approve and delete'}).click()
-    await expect.element(screen.getByRole('button', {name: 'Undo'})).toHaveStyle(SHOWN)
-    await userEvent.keyboard('{Escape}')
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toHaveStyle(SHOWN)
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeEnabled()
     await expect.element(screen.getByText(/approved for deletion/)).not.toBeInTheDocument()
   })
 
@@ -340,7 +339,7 @@ describe('live page', () => {
     await screen.getByRole('button', {name: 'Rescan'}).click()
     await expect.element(screen.getByText('Rescanning')).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Rescan'})).toBeDisabled()
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
     await expect.element(screen.getByText('Scanning your disk…')).not.toBeInTheDocument()
     expect(window.fetch).toHaveBeenCalledWith('/rescan', expect.objectContaining({body: JSON.stringify({token: 'test-token'})}))
     await expect.poll(() => sources.length).toBe(2)
@@ -349,7 +348,7 @@ describe('live page', () => {
     send({type: 'rescan', data: {elapsed_ms: 0}})
     for (const event of [disk, ...rescanned, {type: 'item', data: {category: categoryOf(fixture.data.categories[0]!.items[0]!.path), item: appE, elapsed_ms: 900}} as const, walked]) send(event)
     await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
     send(done)
     await expect.element(screen.getByText('Scan complete')).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Card view'})).toHaveAttribute('aria-pressed', 'true')
@@ -359,7 +358,7 @@ describe('live page', () => {
     await expect.element(screen.getByRole('checkbox', {name: /app-e/})).toBeChecked()
     await expect.element(screen.getByRole('checkbox', {name: /app-a/})).not.toBeChecked()
     await expect.element(screen.getByText('3 items selected · 2.5 GB')).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeEnabled()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeEnabled()
 
     await screen.getByRole('tab', {name: 'Storage'}).click()
     await screen.getByRole('button', {name: 'Treemap'}).click()
@@ -380,39 +379,7 @@ describe('live page', () => {
     send({type: 'error', data: {message: 'permission denied', elapsed_ms: 40}})
     await expect.element(screen.getByText(/The scan failed: permission denied/)).toBeVisible()
     await expect.element(screen.getByText('Scan failed')).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
-  })
-})
-
-function Bar() {
-  const selection = useSelection(fixture.data.categories)
-  const [approved, setApproved] = useState(0)
-  return (
-    <>
-      <output>{approved} approved</output>
-      <ActionBar selection={selection} locked={false} previewing={false} onCancel={() => {}} onPreview={() => {}} onApprove={() => setApproved(n => n + 1)} />
-    </>
-  )
-}
-
-describe('approve fuse', () => {
-  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
-  afterEach(() => document.documentElement.style.removeProperty('--fuse-window'))
-
-  test('approves only when the fuse runs out, and an undone press never approves', async () => {
-    const screen = await render(<Bar />)
-    const approve = screen.getByRole('button', {name: 'Approve and delete'})
-    const undo = screen.getByRole('button', {name: 'Undo'})
-    await approve.click()
-    await expect.element(undo).toHaveStyle(SHOWN)
-    await undo.click()
-    await expect.element(approve).toHaveStyle(SHOWN)
-    await expect.element(screen.getByText('0 approved')).toBeVisible()
-    await approve.click()
-    await expect.element(undo).toHaveStyle(SHOWN)
-    await expect.element(screen.getByText('1 approved')).toBeVisible()
-    await expect.element(approve).toHaveStyle(SHOWN)
-    await expect.element(screen.getByText('1 approved')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
   })
 })
 
@@ -492,11 +459,16 @@ function layoutOf(screen: Screen) {
   return {header: header.getBoundingClientRect().height, summary: summary.getBoundingClientRect().top}
 }
 
+async function confirmDelete(screen: Screen) {
+  await screen.getByRole('button', {name: DELETE}).click()
+  await screen.getByRole('dialog').getByRole('button', {name: /^Move \d+ items to hold/}).click()
+}
+
 async function approveInApp() {
-  vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
+  mockServer()
   const {source} = fakeEventSource()
   const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
-  await screen.getByRole('button', {name: 'Approve and delete'}).click()
+  await confirmDelete(screen)
   await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
   return {screen, source}
 }
@@ -517,26 +489,26 @@ describe('cleanup in the app', () => {
     const {screen, source} = await approveInApp()
     sendRaw(source, 'done', {reclaimable: 7 * GB, elapsed_ms: 9500})
     sendRaw(source, 'waiting', {})
-    for (const name of ['Approve and delete', 'Preview commands', 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).not.toBeInTheDocument()
+    for (const name of [DELETE, 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).not.toBeInTheDocument()
     await expect.element(screen.getByText('Approved: the deletion runs in the background')).toBeVisible()
     await expect.element(screen.getByRole('checkbox', {name: 'Select all in Application caches'})).toBeDisabled()
     await expect.element(screen.getByText('Selected to free')).not.toBeInTheDocument()
     expect(screen.container.querySelectorAll('[data-film]')).toHaveLength(0)
 
     sendAll(source, cleanupEvents.slice(1, 3))
-    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-a')
+    await barSays(screen, 'Cleaning up · 2.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-a')
     expect(fillOf(screen)).toMatch(/^scaleX\(0\.5333/)
-    await expect.element(screen.getByText('1 of 4 removed')).toBeVisible()
-    await expect.element(screen.getByRole('progressbar', {name: 'Application caches removed'})).toHaveAttribute('aria-valuenow', '53')
+    await expect.element(screen.getByText('1 of 4 done')).toBeVisible()
+    await expect.element(screen.getByRole('progressbar', {name: 'Application caches done'})).toHaveAttribute('aria-valuenow', '53')
     await expect.element(screen.getByText('removed', {exact: true})).toBeVisible()
-    await expect.element(screen.getByText('deleting', {exact: true}).first()).toBeVisible()
+    await expect.element(screen.getByText('in progress', {exact: true}).first()).toBeVisible()
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toHaveClass('truncate font-mono text-[12.5px]')
 
     sendAll(source, cleanupEvents.slice(3))
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
     expect(fillOf(screen)).toBe('scaleX(1)')
-    await expect.element(screen.getByText('3 of 4 removed')).toBeVisible()
-    await expect.element(screen.getByRole('progressbar', {name: 'Application caches removed'})).toHaveAttribute('aria-valuenow', '93')
+    await expect.element(screen.getByText('3 of 4 done')).toBeVisible()
+    await expect.element(screen.getByRole('progressbar', {name: 'Application caches done'})).toHaveAttribute('aria-valuenow', '93')
     await expect.element(screen.getByText('not removed: still present after removal: permission denied')).toBeVisible()
     await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
     await expect
@@ -565,7 +537,7 @@ describe('cleanup in the app', () => {
   test('the movie opens on demand, keeps up with the stream and closes back to the app', async () => {
     const {screen, source} = await approveInApp()
     sendAll(source, cleanupEvents.slice(0, 3))
-    await barSays(screen, 'Deleting ·')
+    await barSays(screen, 'Cleaning up ·')
     await details(screen).click()
     await screen.getByRole('button', {name: 'Watch the movie'}).click()
     const movie = screen.getByRole('dialog', {name: 'Cleanup movie'})
@@ -573,7 +545,7 @@ describe('cleanup in the app', () => {
     await userEvent.keyboard('{Escape}')
     await expect.element(movie).not.toBeInTheDocument()
     sendAll(source, cleanupEvents.slice(3, 6))
-    await barSays(screen, 'Deleting · 3.5 GB of 3.8 GB · 3 of 5')
+    await barSays(screen, 'Cleaning up · 3.5 GB of 3.8 GB · 3 of 5')
     await details(screen).click()
     await screen.getByRole('button', {name: 'Watch the movie'}).click()
     sendAll(source, cleanupEvents.slice(6))
@@ -599,13 +571,13 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
     source.readyState = 1
     sendAll(source, cleanupEvents.slice(0, 3))
-    await barSays(screen, 'Deleting ·')
+    await barSays(screen, 'Cleaning up ·')
     source.readyState = 0
     source.dispatchEvent(new Event('error'))
     await barSays(screen, 'Reconnecting…')
     source.readyState = 1
     source.dispatchEvent(new Event('open'))
-    await barSays(screen, 'Deleting ·')
+    await barSays(screen, 'Cleaning up ·')
   })
 
   test('a reload during the cleanup lands back in the app with the bar and panel', async () => {
@@ -615,7 +587,7 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByRole('checkbox', {name: /node_modules/})).toBeChecked()
     await expect.element(screen.getByRole('checkbox', {name: /app-b/})).not.toBeChecked()
     sendAll(source, cleanupEvents.slice(0, 3))
-    await barSays(screen, 'Deleting · 2.0 GB of 5.0 GB · 1 of 5')
+    await barSays(screen, 'Cleaning up · 2.0 GB of 5.0 GB · 1 of 5')
     await details(screen).click()
     await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'}).getByText('Removed ~/Library/Caches/app-a')).toBeVisible()
   })
@@ -632,12 +604,12 @@ describe('cleanup in the app', () => {
   })
 
   test('the header carries the progress without moving the layout, in the foreground colour', async () => {
-    vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
+    mockServer()
     const {source} = fakeEventSource()
     const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeVisible()
     const before = layoutOf(screen)
-    await screen.getByRole('button', {name: 'Approve and delete'}).click()
+    await confirmDelete(screen)
     await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
     expect(layoutOf(screen)).toEqual(before)
     expect(fillOf(screen)).toBe('scaleX(1)')
@@ -645,7 +617,7 @@ describe('cleanup in the app', () => {
     if (!status) throw new Error('no status line')
     expect(getComputedStyle(status).color).toBe(getComputedStyle(document.body).color)
     sendAll(source, cleanupEvents.slice(0, 3))
-    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5')
+    await barSays(screen, 'Cleaning up · 2.0 GB of 3.8 GB · 1 of 5')
     expect(layoutOf(screen)).toEqual(before)
     sendAll(source, cleanupEvents.slice(3))
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
@@ -713,10 +685,10 @@ describe('cleanup in the app', () => {
   test('a new run on the same page replaces the previous run instead of mixing with it', async () => {
     const {screen, source} = await approveInApp()
     sendAll(source, cleanupEvents.slice(1, 3))
-    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5')
+    await barSays(screen, 'Cleaning up · 2.0 GB of 3.8 GB · 1 of 5')
     sendRaw(source, 'started', {run: 'run-2', free: 52 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 3.75 * GB, elapsed_ms: 0})
     sendRaw(source, 'removed', {path: '/Users/you/Library/Caches/app-b', bytes: GB, secs: 1, elapsed_ms: 300})
-    await barSays(screen, 'Deleting · 1.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-b')
+    await barSays(screen, 'Cleaning up · 1.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-b')
     await details(screen).click()
     const rows = screen.getByRole('dialog', {name: 'Cleanup progress'}).getByRole('list', {name: 'Cleanup events'}).getByRole('listitem')
     await expect.poll(() => rows.elements().length).toBe(1)
@@ -811,10 +783,10 @@ describe('list fixes from QA', () => {
     await page.viewport(1440, 960)
   })
 
-  test('REV-3: closing the preview dialog returns focus to Preview commands', async () => {
-    vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({commands: ['rm -rf -- /x'], rejected: [], count: 1, bytes: GB})))
+  test('REV-3: closing the confirm dialog returns focus to Delete', async () => {
+    mockServer()
     const screen = await render(<App loaded={fixture} history={at()} />)
-    const preview = screen.getByRole('button', {name: 'Preview commands'})
+    const preview = screen.getByRole('button', {name: DELETE})
     await preview.click()
     await expect.element(screen.getByRole('dialog')).toBeVisible()
     await userEvent.keyboard('{Escape}')
@@ -825,23 +797,20 @@ describe('list fixes from QA', () => {
   test('REV-4: at 1024 px the footer buttons keep their full label and icon', async () => {
     await page.viewport(1024, 768)
     const screen = await render(<App loaded={fixture} history={at()} />)
-    for (const name of ['Cancel', 'Preview commands', 'Approve and delete']) {
+    for (const name of ['Cancel', DELETE]) {
       const button = screen.getByRole('button', {name}).element()
-      expect(button.scrollWidth, name).toBeLessThanOrEqual(button.clientWidth + 1)
-      expect(button.querySelector('svg')?.getBoundingClientRect().width, name).toBeGreaterThanOrEqual(14)
+      expect(button.scrollWidth, String(name)).toBeLessThanOrEqual(button.clientWidth + 1)
+      expect(button.querySelector('svg')?.getBoundingClientRect().width, String(name)).toBeGreaterThanOrEqual(14)
     }
   })
 
-  test('REV-5: deselecting everything while Approve is armed never approves', async () => {
-    vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
+  test('REV-5: Delete is impossible with nothing selected', async () => {
+    mockServer()
     const screen = await render(<App loaded={fixture} history={at()} />)
-    await screen.getByRole('button', {name: 'Approve and delete'}).click()
-    await expect.element(screen.getByRole('button', {name: 'Undo'})).toHaveStyle(SHOWN)
     press('d')
     await expect.element(screen.getByText('0 items selected · 0 B')).toBeVisible()
-    await settle(cssMs('--fuse-window', 300) * 2)
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
     expect(window.fetch).not.toHaveBeenCalled()
-    await expect.element(screen.getByRole('button', {name: 'Approve and delete'})).toBeDisabled()
   })
 
   test('REV-6: section sizes and counts follow the active filters', async () => {
