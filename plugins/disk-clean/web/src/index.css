@@ -142,16 +142,16 @@
     --ts-chart-tooltip-shadow: 0 12px 34px oklch(0 0 0 / 45%);
 }
 
-.storage-chart [data-ts-key*=':node:'] {
+.storage-base {
     transition: opacity var(--duration-fast) var(--ease-out);
 }
 
-.storage-chart[data-hovering] [data-ts-key*=':node:'] {
+.storage-chart[data-hovering='true'] .storage-base {
     opacity: 0.28;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .storage-chart [data-ts-key*=':node:'] {
+    .storage-base {
         transition: none;
     }
 }
