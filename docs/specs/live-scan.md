@@ -5,7 +5,8 @@
 The review page opens the moment the user runs the skill. The scan runs in the background and the
 page fills in as results arrive. The walk itself gets faster by reading directories in bulk.
 
-Decisions (2026-10-02): particle text on the loading screen; items stream as they are found;
+Decisions (2026-10-02): a scanning headline in the summary (particle text, replaced 2026-10-03 by
+the shimmer: it rendered poorly at 48px); items stream as they are found;
 bulk directory reads land in the same lane.
 
 ## Command shape
@@ -62,10 +63,8 @@ a finished run) plus the token meta.
 ## Page
 
 - No separate loading screen: the normal layout renders immediately. During the walk the summary's
-  big number slot shows ParticleText (React Bits, MIT + Commons Clause; keep its notice in the copied
-  file) drifting around "Scanning your disk…", with the live counter (files, bytes, current folder)
-  under it. On `walked` the particles gather into the reclaimable total so far, then hand over to
-  the normal spinning total. Reduced motion: static text, no particles.
+  big number slot shows "Scanning your disk…" with the transitions-dev shimmer, with the live counter
+  (files, bytes, current folder) under it. On `walked` it hands over to the selected total.
 - Items stream into Cleanup as `item` events arrive (sections appear, totals and the donut update
   through the existing transitions). Preselected items arrive selected.
 - Until `done`: a slim status line in the summary ("Checking 168 worktrees…"), Preview and Approve
