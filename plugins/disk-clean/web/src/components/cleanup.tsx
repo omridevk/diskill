@@ -9,15 +9,18 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import type {CleanupProgress} from '@/lib/cleanup'
-import {formatBytes, RISK_LABEL, type Category, type Item, type Risk} from '@/lib/data'
+import {formatBytes, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
+import {useLiveQuery} from '@tanstack/react-db'
+import {useDb, type Db} from '@/lib/db'
+import type {CleanupProgress, Removal} from '@/lib/progress'
+import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
-import {outermost, sumBytes, type Selection} from '@/lib/selection'
+import {useProgress, useSelection, type Selection} from '@/lib/page-data'
+import {useSections, useSortedEntries} from '@/lib/views'
 import {
   columns,
   enableRowSelection,
-  entriesOf,
   features,
   filtersOf,
   HIDDEN_COLUMNS,
@@ -52,59 +55,57 @@ const SORT_LABEL: Record<Sort, string> = {
 }
 const QUICK_SELECT_MIN = 4
 
+interface Section extends CategoryHead {
+  count: number
+  bytes: number
+}
+
 interface Group {
-  category: Category
+  category: Section
   row: EntryRow
 }
 
-const groupBytes = new WeakMap<readonly EntryRow[], number>()
-
-function bytesOf(rows: readonly EntryRow[]) {
-  const known = groupBytes.get(rows)
-  if (known !== undefined) return known
-  const bytes = sumBytes(outermost(rows.map(r => r.original)))
-  groupBytes.set(rows, bytes)
-  return bytes
+interface Size {
+  bytes: number
+  selectable: number
 }
 
-const selectableCounts = new WeakMap<readonly EntryRow[], number>()
+const sizes = new WeakMap<readonly EntryRow[], Size>()
 
-function selectableCount(rows: readonly EntryRow[]) {
-  const known = selectableCounts.get(rows)
-  if (known !== undefined) return known
-  let count = 0
-  for (const row of rows) if (row.getCanSelect()) count++
-  selectableCounts.set(rows, count)
-  return count
+function shadowedBytes(rows: readonly EntryRow[]) {
+  const nests = rows[0]?.table.options.meta?.nests ?? []
+  if (nests.length === 0) return 0
+  const ids = new Map(rows.map(r => [r.id, r.original.bytes]))
+  const shadowed = new Set(nests.filter(n => ids.has(n.outer) && ids.has(n.inner)).map(n => n.inner))
+  return [...shadowed].reduce((sum, path) => sum + (ids.get(path) ?? 0), 0)
 }
+
+function sizeOf(rows: readonly EntryRow[]) {
+  const known = sizes.get(rows)
+  if (known) return known
+  let bytes = 0
+  let selectable = 0
+  for (const {original} of rows) {
+    bytes += original.bytes
+    if (!original.report) selectable++
+  }
+  const size = {bytes: bytes - shadowedBytes(rows), selectable}
+  sizes.set(rows, size)
+  return size
+}
+
+const bytesOf = (rows: readonly EntryRow[]) => sizeOf(rows).bytes
+const selectableCount = (rows: readonly EntryRow[]) => sizeOf(rows).selectable
+
+const picked = new WeakMap<readonly EntryRow[], {on: RowSelectionState; count: number}>()
 
 function pickedCount(rows: readonly EntryRow[], on: RowSelectionState) {
+  const known = picked.get(rows)
+  if (known?.on === on) return known.count
   let count = 0
   for (const row of rows) if (on[row.id] === true) count++
+  picked.set(rows, {on, count})
   return count
-}
-
-interface Removal {
-  bytes: number
-  count: number
-  restored: number
-}
-
-const CLEARED = new Set(['removed', 'held', 'freed'])
-
-function removalsOf(progress: CleanupProgress | null) {
-  const removals = new Map<string, Removal>()
-  for (const outcome of progress?.byKey.values() ?? []) {
-    const restored = outcome.kind === 'restored'
-    if (!restored && !CLEARED.has(outcome.kind)) continue
-    const known = removals.get(outcome.section) ?? {bytes: 0, count: 0, restored: 0}
-    removals.set(outcome.section, {
-      bytes: known.bytes + outcome.bytes,
-      count: known.count + (restored ? 0 : 1),
-      restored: known.restored + (restored ? 1 : 0),
-    })
-  }
-  return removals
 }
 
 function sectionProgress(removal: Removal | undefined, total: number) {
@@ -137,14 +138,16 @@ function pickedLabel(group: Group, on: RowSelectionState, progressed: Progressed
   return `${pickedCount(rows, on)}/${selectableCount(rows)}`
 }
 
-function SectionCheckbox({group, locked}: {group: Group; locked: boolean}) {
-  if (group.category.risk === 'report' || selectableCount(group.row.subRows) === 0) return null
-  const all = group.row.getIsAllSubRowsSelected()
+function SectionCheckbox({group, on, locked}: {group: Group; on: RowSelectionState; locked: boolean}) {
+  const selectable = selectableCount(group.row.subRows)
+  if (group.category.risk === 'report' || selectable === 0) return null
+  const picked = pickedCount(group.row.subRows, on)
+  const all = picked >= selectable
   return (
     <Checkbox
       aria-label={`Select all in ${group.category.title}`}
       checked={all}
-      indeterminate={group.row.getIsSomeSelected()}
+      indeterminate={picked > 0 && !all}
       disabled={locked}
       onCheckedChange={() => group.row.toggleSelected(!all)}
       className="mt-0.5"
@@ -235,7 +238,7 @@ function SectionButton({group, on, first, locked, max, progressed}: {group: Grou
   const lit = !progressed && picked > 0
   return (
     <div data-default={first || undefined} className={`flex items-start gap-2.5 rounded-lg border p-2.5 ${STATE_MOTION} ${lit ? 'border-blue-400/35 bg-blue-400/5' : 'border-transparent'} ${OPEN_SECTION}`}>
-      <SectionCheckbox group={group} locked={locked} />
+      <SectionCheckbox group={group} on={on} locked={locked} />
       <SectionLink section={category.id} className="flex grow flex-col gap-1.5 text-left">
         <span className="flex w-full items-baseline gap-2">
           <span className="grow text-[13px] font-medium">{category.title}</span>
@@ -292,7 +295,7 @@ function SectionPanel({table, group, progressed}: {table: CleanupTable; group: G
           <Badge className={RISK_BADGE[group.category.risk]}>{RISK_LABEL[group.category.risk]}</Badge>
           <span className="grow" />
           <span className="text-[13px] text-muted-foreground tabular-nums">
-            {formatBytes(bytesOf(group.row.subRows))} · {group.row.subRows.length} of {group.category.items.length} shown
+            {formatBytes(bytesOf(group.row.subRows))} · {group.row.subRows.length} of {group.category.count} shown
           </span>
         </div>
         <p className="text-[13px] text-muted-foreground">{group.category.desc}</p>
@@ -320,7 +323,7 @@ function SectionCard({group, on, progressed}: {group: Group; on: RowSelectionSta
   return (
     <div className={`flex flex-col gap-3 rounded-xl border p-4 ${STATE_MOTION} ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'}`}>
       <div className="flex items-center gap-2.5">
-        <SectionCheckbox group={group} locked={progressed !== null} />
+        <SectionCheckbox group={group} on={on} locked={progressed !== null} />
         <span className="grow text-sm font-medium">{category.title}</span>
         <Badge className={RISK_BADGE[category.risk]}>{RISK_LABEL[category.risk]}</Badge>
       </div>
@@ -460,11 +463,7 @@ function Warning({children}: {children: ReactNode}) {
   )
 }
 
-function plural(n: number, one: string, many: string) {
-  return `${n} ${n === 1 ? one : many}`
-}
-
-function WarningLines({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
+function WarningLines({hidden, risky}: {hidden: Item[]; risky: number}) {
   return (
     <div className="flex flex-col gap-1 border-b bg-amber-500/5 px-7 py-2 text-xs text-amber-200">
       {hidden.length > 0 && (
@@ -472,7 +471,7 @@ function WarningLines({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
           {plural(hidden.length, 'selected item is', 'selected items are')} hidden by the filters ({formatBytes(sumBytes(outermost(hidden)))}). They will still be deleted.
         </Warning>
       )}
-      {risky.length > 0 && <Warning>{plural(risky.length, 'item', 'items')} marked review selected: slow or costly to rebuild.</Warning>}
+      {risky > 0 && <Warning>{plural(risky, 'item', 'items')} marked review selected: slow or costly to rebuild.</Warning>}
     </div>
   )
 }
@@ -483,8 +482,8 @@ function useHeld<T>(value: T, keep: boolean) {
   return held.current
 }
 
-function Warnings({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
-  const open = hidden.length > 0 || risky.length > 0
+function Warnings({hidden, risky}: {hidden: Item[]; risky: number}) {
+  const open = hidden.length > 0 || risky > 0
   const shown = useHeld({hidden, risky}, open)
   return (
     <div className="t-acc" data-open={String(open)} inert={!open}>
@@ -515,18 +514,27 @@ function shortcutsOn(actions: Record<string, () => void>) {
 
 const LOCKED_KEYS = new Set(['a', 'd', 'r'])
 
-function groupsOf(table: CleanupTable, categories: readonly Category[]): Group[] {
+function groupsOf(table: CleanupTable, sections: readonly Section[]): Group[] {
   const rows = new Map(table.getRowModel().rows.map(row => [String(row.groupingValue), row]))
   return GROUPS.flatMap(([, risk]) =>
-    categories.filter(c => c.risk === risk).flatMap(category => {
+    sections.filter(c => c.risk === risk).flatMap(category => {
       const row = rows.get(category.id)
       return row ? [{category, row}] : []
     }),
   )
 }
 
-function useCleanupTable(categories: readonly Category[], selection: Selection, list: CleanupSearch, onList: ChangeList, progress: CleanupProgress | null) {
-  const data = useMemo(() => entriesOf(categories), [categories])
+function sectionsOf(heads: readonly CategoryHead[], totals: readonly {id: string; count: number; bytes: number}[]): Section[] {
+  const byId = new Map(totals.map(total => [total.id, total]))
+  return heads
+    .flatMap(head => {
+      const total = byId.get(head.id)
+      return total ? [{...head, count: total.count, bytes: total.bytes}] : []
+    })
+    .toSorted((a, b) => b.bytes - a.bytes)
+}
+
+function useCleanupTable(data: Item[], selection: Selection, list: CleanupSearch, onList: ChangeList, progress: CleanupProgress | null) {
   const only = list.only ? selection.rowSelection : null
   const columnFilters = useMemo(() => filtersOf(list, only ?? {}), [list.risk, list.minSize, list.minAge, list.only, only])
   return useTable({
@@ -534,6 +542,7 @@ function useCleanupTable(categories: readonly Category[], selection: Selection, 
     columns,
     data,
     getRowId: row => row.path,
+    manualSorting: true,
     enableRowSelection,
     globalFilterFn: searchFilter,
     getColumnCanGlobalFilter: column => column.id === 'search',
@@ -543,7 +552,7 @@ function useCleanupTable(categories: readonly Category[], selection: Selection, 
     onGlobalFilterChange: update => onList({q: String(functionalUpdate(update, list.q) ?? '')}, {replace: true}),
     onColumnFiltersChange: update => onList(listOf(functionalUpdate(update, columnFilters))),
     onSortingChange: update => onList({sort: sortOf(functionalUpdate(update, SORTING[list.sort]))}),
-    meta: {progress},
+    meta: {progress, nests: selection.nests},
   })
 }
 
@@ -560,17 +569,61 @@ interface ListState {
 
 const ListContext = createContext<ListState | null>(null)
 
-export function Cleanup({categories, selection, list, progress, children}: {categories: Category[]; selection: Selection; list: CleanupSearch; progress: CleanupProgress | null; children: ReactNode}) {
+function useSectionList(db: Db) {
+  const heads = useSections(db)
+  const {data: totals} = useLiveQuery(db.queries.sectionTotals)
+  return useMemo(() => sectionsOf(heads, totals), [heads, totals])
+}
+
+const isFiltering = (list: CleanupSearch) => list.q !== '' || list.risk.length > 0 || list.minSize > 0 || list.minAge >= 0 || list.only
+
+function useHidden(table: CleanupTable, list: CleanupSearch, selected: readonly Item[]) {
+  const filtered = table.getFilteredRowModel().rowsById
+  const filtering = isFiltering(list)
+  return useMemo(() => (filtering ? selected.filter(i => !filtered[i.path]) : []), [filtering, selected, filtered])
+}
+
+function Body({groups, list, onList, progressed, on, children}: {groups: Group[]; list: CleanupSearch; onList: ChangeList; progressed: Progressed | null; on: RowSelectionState; children: ReactNode}) {
+  if (groups.length === 0) {
+    return (
+      <div className="flex grow flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+        Nothing matches these filters.
+        <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
+          Clear filters
+        </Button>
+        {children}
+      </div>
+    )
+  }
+  if (list.view === 'list') {
+    return (
+      <ListView groups={groups} on={on} progressed={progressed}>
+        {children}
+      </ListView>
+    )
+  }
+  return (
+    <>
+      <CardsView groups={groups} on={on} progressed={progressed} />
+      {children}
+    </>
+  )
+}
+
+export function Cleanup({list, children}: {list: CleanupSearch; children: ReactNode}) {
+  const db = useDb()
+  const selection = useSelection()
+  const entries = useSortedEntries(db, list.sort)
+  const {progress} = useProgress()
+  const sections = useSectionList(db)
   const onList = useListChange()
-  const table = useCleanupTable(categories, selection, list, onList, progress)
+  const table = useCleanupTable(entries, selection, list, onList, progress)
   const search = useRef<HTMLInputElement>(null)
   const reveal = useReveal(list.view)
-  const groups = groupsOf(table, categories)
-  const filtered = table.getFilteredRowModel().rowsById
-  const hidden = useMemo(() => selection.selected.filter(i => !filtered[i.path]), [selection.selected, filtered])
+  const groups = groupsOf(table, sections)
+  const hidden = useHidden(table, list, selection.selected)
   const on = selection.rowSelection
-  const removals = useMemo(() => removalsOf(progress), [progress])
-  const progressed = progress && {progress, removals}
+  const progressed = progress && {progress, removals: progress.removals}
 
   const shortcuts: Record<string, () => void> = {
     '/': () => search.current?.focus(),
@@ -581,33 +634,15 @@ export function Cleanup({categories, selection, list, progress, children}: {cate
   }
   const keys = shortcutsOn(progress ? Object.fromEntries(Object.entries(shortcuts).filter(([key]) => !LOCKED_KEYS.has(key))) : shortcuts)
 
-  const body =
-    groups.length === 0 ? (
-      <div className="flex grow flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-        Nothing matches these filters.
-        <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
-          Clear filters
-        </Button>
-        {children}
-      </div>
-    ) : list.view === 'list' ? (
-      <ListView groups={groups} on={on} progressed={progressed}>
-        {children}
-      </ListView>
-    ) : (
-      <>
-        <CardsView groups={groups} on={on} progressed={progressed} />
-        {children}
-      </>
-    )
-
   return (
     <ListContext value={{table, groups, progressed}}>
       <div ref={keys} className="flex min-h-0 grow flex-col">
         <Toolbar table={table} list={list} onList={onList} searchRef={search} />
         <Warnings hidden={hidden} risky={selection.risky} />
         <div ref={reveal} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
-          {body}
+          <Body groups={groups} list={list} onList={onList} progressed={progressed} on={on}>
+            {children}
+          </Body>
         </div>
       </div>
     </ListContext>

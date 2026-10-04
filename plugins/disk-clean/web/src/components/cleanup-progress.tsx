@@ -5,8 +5,9 @@ import {memo, useMemo, useRef, type ReactNode, type Ref, type RefObject} from 'r
 import {Button} from '@/components/ui/button'
 import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/components/ui/sheet'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatDuration, formatUntil, jobRunning, resultBytes, resultOf, type Outcome, type CleanupProgress} from '@/lib/cleanup'
-import {formatBytes} from '@/lib/data'
+import {formatBytes, plural} from '@/lib/data'
+import type {Db} from '@/lib/db'
+import {formatDuration, formatUntil, jobRunning, resultBytes, resultOf, useMovie, type CleanupProgress, type Outcome} from '@/lib/progress'
 import {useBack} from '@/lib/navigation'
 import {LOG_FILTERS, type LogFilter, type Overlay} from '@/lib/search'
 import {useReducedMotion} from '@/lib/motion'
@@ -94,7 +95,7 @@ function JobText({progress}: {progress: CleanupProgress}) {
   const verb = job.kind === 'free' ? 'Freeing' : 'Undoing'
   return (
     <>
-      {verb} · {formatBytes(progress.handled)} of {formatBytes(job.bytes)} · {job.count} held {job.count === 1 ? 'item' : 'items'}
+      {verb} · {formatBytes(progress.handled)} of {formatBytes(job.bytes)} · {plural(job.count, 'held item', 'held items')}
     </>
   )
 }
@@ -108,8 +109,12 @@ function AbandonedText({progress, reason}: {progress: CleanupProgress; reason: s
   )
 }
 
-export function BarText({progress, lost}: {progress: CleanupProgress; lost: boolean}) {
+const LOST = 'Lost contact with disk-clean: the cleanup keeps running; reload to reconnect'
+
+export function BarText({progress}: {progress: CleanupProgress}) {
   const {cleanup, plan} = progress
+  const lost = progress.link === 'reconnecting'
+  if (progress.link === 'lost') return <span className="text-red-300">{LOST}</span>
   if (jobRunning(progress)) return <JobText progress={progress} />
   if (cleanup.done) return <DoneText progress={progress} />
   if (cleanup.abandoned) return <AbandonedText progress={progress} reason={cleanup.abandoned.reason} />
@@ -155,8 +160,7 @@ function Stat({label, children}: {label: string; children: ReactNode}) {
 }
 
 function elapsedOf(progress: CleanupProgress) {
-  const timed = progress.cleanup.log.findLast(e => 'elapsed_ms' in e.data)
-  return timed && 'elapsed_ms' in timed.data ? Math.round(timed.data.elapsed_ms / 1000) : 0
+  return Math.round(progress.elapsed / 1000)
 }
 
 function FreeSpace({progress}: {progress: CleanupProgress}) {
@@ -376,7 +380,7 @@ export function ProgressFooter({progress, held}: {progress: CleanupProgress; hel
         <div className="text-xs text-muted-foreground tabular-nums">
           <FooterFigures progress={progress} />
           <HoldNote progress={progress} />
-          {progress.plan.items.size} items · {formatBytes(progress.plan.approved)} approved · a new cleanup starts with /disk-clean
+          {plural(progress.plan.items.size, 'item', 'items')} · {formatBytes(progress.plan.approved)} approved · a new cleanup starts with /disk-clean
         </div>
       </div>
       {held}
@@ -393,7 +397,7 @@ export function HeldActions({
 }: {
   progress: CleanupProgress
   busy: boolean
-  error: string
+  error: ReactNode
   onUndo: () => void
   onFree: () => void
 }) {
@@ -402,7 +406,7 @@ export function HeldActions({
   const waiting = busy || jobRunning(progress)
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
-      {error && <span className="text-xs text-red-300">{error}</span>}
+      {error}
       {offered && (
         <>
           <Button variant="outline" disabled={waiting} onClick={onUndo}>
@@ -417,7 +421,8 @@ export function HeldActions({
   )
 }
 
-export function CleanupTracker({progress, returnFocus, held}: {progress: CleanupProgress; returnFocus: RefObject<HTMLButtonElement | null>; held: ReactNode}) {
+export function CleanupTracker({db, progress, returnFocus, held}: {db: Db; progress: CleanupProgress; returnFocus: RefObject<HTMLButtonElement | null>; held: ReactNode}) {
+  const movie = useMovie(db)
   const overlay = useSearch({strict: false, select: search => search.overlay})
   const log = useSearch({strict: false, select: search => search.log}) ?? 'all'
   const take = useSearch({strict: false, select: search => search.take}) ?? 0
@@ -437,8 +442,7 @@ export function CleanupTracker({progress, returnFocus, held}: {progress: Cleanup
         held={held}
       />
       <CleanupFilm
-        plan={progress.plan}
-        cleanup={progress.cleanup}
+        {...movie}
         held={held}
         open={overlay === 'movie'}
         take={take}

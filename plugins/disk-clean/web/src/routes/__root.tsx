@@ -1,10 +1,11 @@
 import {createRootRouteWithContext, Link, retainSearchParams, stripSearchParams, useRouter, type ErrorComponentProps} from '@tanstack/react-router'
 import {Button} from '@/components/ui/button'
-import {messageOf, type Page} from '@/lib/page-data'
+import {messageOf} from '@/lib/api'
+import type {Db} from '@/lib/db'
 import type {TabMemory} from '@/lib/tab-memory'
 import {ROOT_DEFAULTS, rootSearch} from '@/lib/search'
 
-export const Route = createRootRouteWithContext<{page: Page; tabs: TabMemory}>()({
+export const Route = createRootRouteWithContext<{db: Db; tabs: TabMemory}>()({
   validateSearch: rootSearch,
   search: {middlewares: [retainSearchParams(['add', 'drop']), stripSearchParams(ROOT_DEFAULTS)]},
   notFoundComponent: NotFound,

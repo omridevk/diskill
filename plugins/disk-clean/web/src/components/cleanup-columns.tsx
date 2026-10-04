@@ -5,7 +5,6 @@ import {
   createColumnHelper,
   createFilteredRowModel,
   createGroupedRowModel,
-  createSortedRowModel,
   globalFilteringFeature,
   metaHelper,
   rowSelectionFeature,
@@ -17,18 +16,14 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import {Checkbox} from '@/components/ui/checkbox'
-import type {CleanupProgress, Outcome} from '@/lib/cleanup'
-import {formatBytes, isExact, type Category, type Item, type Risk} from '@/lib/data'
+import {formatBytes, isExact, type Risk} from '@/lib/data'
+import type {CleanupProgress, Outcome} from '@/lib/progress'
+import type {Entry, Nest} from '@/lib/scan-feed'
 import type {CleanupSearch, Sort} from '@/lib/search'
-
-export interface Entry extends Item {
-  section: string
-  risk: Risk
-  search: string
-}
 
 interface CleanupMeta {
   progress: CleanupProgress | null
+  nests: readonly Nest[]
 }
 
 export const features = tableFeatures({
@@ -38,37 +33,14 @@ export const features = tableFeatures({
   columnGroupingFeature,
   groupedRowModel: createGroupedRowModel(),
   rowSortingFeature,
-  sortedRowModel: createSortedRowModel(),
   rowSelectionFeature,
   columnVisibilityFeature,
   tableMeta: metaHelper<CleanupMeta>(),
 })
 
+export type {Entry}
+
 export type EntryRow = Row<typeof features, Entry>
-
-const entries = new WeakMap<Item, Entry>()
-
-function entryOf(item: Item, category: Category): Entry {
-  const known = entries.get(item)
-  if (known) return known
-  const entry = {...item, section: category.id, risk: category.risk, search: `${item.label} ${item.path} ${category.title} ${item.note}`.toLowerCase()}
-  entries.set(item, entry)
-  return entry
-}
-
-export const entriesOf = (categories: readonly Category[]) => categories.flatMap(c => c.items.map(i => entryOf(i, c)))
-
-const naturally = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'})
-const nameRanks = new WeakMap<readonly Entry[], Map<Entry, number>>()
-
-function nameRank(row: EntryRow) {
-  const data = row.table.options.data
-  const known = nameRanks.get(data)
-  if (known) return known.get(row.original) ?? 0
-  const ranks = new Map(data.toSorted((a, b) => naturally.compare(a.label, b.label)).map((entry, rank) => [entry, rank]))
-  nameRanks.set(data, ranks)
-  return ranks.get(row.original) ?? 0
-}
 
 const OUTCOME_TEXT: Record<Outcome['kind'], [string, string]> = {
   removed: ['removed', 'text-muted-foreground'],
@@ -139,13 +111,11 @@ export const columns = helper.columns([
   }),
   helper.accessor('label', {
     header: 'Path',
-    sortFn: (a, b) => nameRank(a) - nameRank(b),
     cell: ({row, table}) => <PathCell row={row} progress={table.options.meta?.progress ?? null} />,
   }),
   helper.accessor(row => row.age ?? undefined, {
     id: 'age',
     header: () => <span className="block text-right">Idle</span>,
-    sortUndefined: 'last',
     filterFn: (row, id, min: number) => (row.getValue<number | undefined>(id) ?? -1) >= min,
     cell: ({getValue}) => {
       const age = getValue()

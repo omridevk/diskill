@@ -1,0 +1,225 @@
+import {ancestorsOf, isExact, type Category, type Insights, type Item, type Loaded, type TreeNode} from './data'
+import {ownedCollection, type Writes} from './owned'
+
+export type CategoryHead = Omit<Category, 'items' | 'bytes'>
+
+type Timed<T> = T & {elapsed_ms: number}
+
+export interface Progress {
+  files: number
+  bytes: number
+  dir: string
+}
+
+export type ScanEvent =
+  | {type: 'disk'; data: Timed<{total: number; used: number; free: number; snapshots: number}>}
+  | {type: 'progress'; data: Timed<Progress>}
+  | {type: 'item'; data: Timed<{category: CategoryHead; item: Item}>}
+  | {type: 'walked'; data: Timed<{home: number; tree: TreeNode | null; insights: Insights | null; worktrees: number}>}
+  | {type: 'done'; data: Timed<{reclaimable: number}>}
+  | {type: 'error'; data: Timed<{message: string}>}
+  | {type: 'rescan'; data: Timed<object>}
+
+export interface Entry extends Item {
+  section: string
+  risk: Category['risk']
+  search: string
+  exact: boolean
+  scan: number
+}
+
+export interface Nest {
+  id: string
+  outer: string
+  inner: string
+}
+
+export interface Disk {
+  id: 'disk'
+  total: number
+  used: number
+  free: number
+  snapshots: number
+}
+
+export interface ScanProgress extends Progress {
+  id: 'progress'
+}
+
+export interface ScanState {
+  id: 'scan'
+  walked: boolean
+  done: boolean
+  error: string
+  worktrees: number
+  elapsed: number
+  walkedAt: number
+  rescans: number
+  home: number
+  reclaimable: number
+  tree: TreeNode | null
+  insights: Insights | null
+}
+
+const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
+
+function entryOf(item: Item, head: CategoryHead, scan: number): Entry {
+  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), scan}
+}
+
+function startState(loaded: Loaded): ScanState {
+  const finished = !loaded.live
+  const {data} = loaded
+  return {
+    id: 'scan',
+    walked: finished,
+    done: finished,
+    error: '',
+    worktrees: 0,
+    elapsed: 0,
+    walkedAt: 0,
+    rescans: 0,
+    home: data.home,
+    reclaimable: data.reclaimable,
+    tree: data.tree,
+    insights: data.insights ?? null,
+  }
+}
+
+const headOf = ({items: _items, bytes: _bytes, ...head}: Category): CategoryHead => head
+
+function nestsOf(paths: readonly string[]) {
+  const known = new Set(paths)
+  return paths.flatMap(inner => ancestorsOf(inner).flatMap(outer => (known.has(outer) ? [{id: `${outer}\n${inner}`, outer, inner}] : [])))
+}
+
+function underOf(paths: readonly string[]) {
+  const under = new Map<string, Set<string>>()
+  for (const path of paths) for (const outer of ancestorsOf(path)) addUnder(under, outer, path)
+  return under
+}
+
+export function createScanStore(loaded: Loaded) {
+  const {data} = loaded
+  const entries = data.categories.flatMap(c => c.items.map(i => entryOf(i, headOf(c), 0)))
+  const paths = entries.map(e => e.path)
+  return {
+    items: ownedCollection<Entry>(e => e.path, entries),
+    sections: ownedCollection<CategoryHead>(s => s.id, data.categories.map(headOf)),
+    nests: ownedCollection<Nest>(n => n.id, nestsOf(paths)),
+    disk: ownedCollection<Disk>(d => d.id, [{id: 'disk', total: data.total, used: data.used, free: data.free, snapshots: data.snapshots}]),
+    progress: ownedCollection<ScanProgress>(p => p.id, [NO_PROGRESS]),
+    scan: ownedCollection<ScanState>(s => s.id, [startState(loaded)]),
+    under: underOf(paths),
+    restarts: new Set<() => void>(),
+  }
+}
+
+export type ScanStore = ReturnType<typeof createScanStore>
+
+function addUnder(under: Map<string, Set<string>>, outer: string, inner: string) {
+  const known = under.get(outer)
+  if (known) known.add(inner)
+  else under.set(outer, new Set([inner]))
+}
+
+interface Batch {
+  state: ScanState
+  items: Entry[]
+  removed: string[]
+  heads: Map<string, CategoryHead>
+  disk: Disk | null
+  progress: ScanProgress | null
+  restarted: boolean
+}
+
+type Handlers = {[K in ScanEvent['type']]: (batch: Batch, data: Extract<ScanEvent, {type: K}>['data'], store: ScanStore) => void}
+
+const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, elapsed: 0, walkedAt: 0}
+
+function takeItem(batch: Batch, {category, item}: {category: CategoryHead; item: Item}) {
+  batch.heads.set(category.id, category)
+  batch.items.push(entryOf(item, category, batch.state.rescans))
+}
+
+function stale(store: ScanStore, scan: number) {
+  return [...store.items.synced.values()].filter(e => e.scan !== scan).map(e => e.path)
+}
+
+const HANDLERS: Handlers = {
+  disk: (batch, {total, used, free, snapshots}) => {
+    batch.disk = {id: 'disk', total, used, free, snapshots}
+  },
+  progress: (batch, {files, bytes, dir}) => {
+    batch.progress = {id: 'progress', files, bytes, dir}
+  },
+  item: takeItem,
+  walked: (batch, {home, tree, insights, worktrees, elapsed_ms}) => {
+    batch.state = {...batch.state, home, tree, insights, worktrees, walked: true, walkedAt: elapsed_ms}
+  },
+  done: (batch, {reclaimable}, store) => {
+    if (batch.state.rescans > 0) {
+      const fresh = new Set(batch.items.filter(e => e.scan === batch.state.rescans).map(e => e.path))
+      batch.removed = stale(store, batch.state.rescans).filter(path => !fresh.has(path))
+    }
+    batch.state = {...batch.state, reclaimable, done: true}
+  },
+  error: (batch, {message}) => {
+    batch.state = {...batch.state, error: message}
+  },
+  rescan: batch => {
+    batch.state = {...batch.state, ...RESTART, rescans: batch.state.rescans + 1}
+    batch.progress = NO_PROGRESS
+    batch.restarted = true
+  },
+}
+
+function take(batch: Batch, event: ScanEvent, store: ScanStore) {
+  const handle = HANDLERS[event.type] as (batch: Batch, data: ScanEvent['data'], store: ScanStore) => void
+  handle(batch, event.data, store)
+  batch.state = {...batch.state, elapsed: Math.max(batch.state.elapsed, event.data.elapsed_ms)}
+}
+
+function writeNests(store: ScanStore, items: readonly Entry[], writes: Writes<Nest>) {
+  for (const {path} of items) {
+    for (const outer of ancestorsOf(path)) {
+      if (store.items.synced.has(outer)) writes.put({id: `${outer}\n${path}`, outer, inner: path})
+      addUnder(store.under, outer, path)
+    }
+    for (const inner of store.under.get(path) ?? []) writes.put({id: `${path}\n${inner}`, outer: path, inner})
+  }
+}
+
+function dropNests(store: ScanStore, removed: ReadonlySet<string>, writes: Writes<Nest>) {
+  for (const nest of store.nests.synced.values()) if (removed.has(nest.outer) || removed.has(nest.inner)) writes.remove(nest.id)
+  for (const path of removed) for (const outer of ancestorsOf(path)) store.under.get(outer)?.delete(path)
+}
+
+function writeItems(store: ScanStore, batch: Batch, removed: ReadonlySet<string>) {
+  if (batch.items.length === 0 && removed.size === 0) return
+  store.items.write(writes => {
+    for (const entry of batch.items) writes.put(entry)
+    for (const path of removed) writes.remove(path)
+  })
+  if (batch.heads.size > 0) store.sections.write(writes => batch.heads.forEach(head => writes.put(head)))
+  store.nests.write(writes => {
+    writeNests(store, batch.items, writes)
+    dropNests(store, removed, writes)
+  })
+}
+
+export function receiveScan(store: ScanStore, events: readonly ScanEvent[]) {
+  const state = store.scan.synced.get('scan')
+  if (!state) return
+  const batch: Batch = {state, items: [], removed: [], heads: new Map(), disk: null, progress: null, restarted: false}
+  for (const event of events) take(batch, event, store)
+  const removed = new Set(batch.removed)
+  writeItems(store, batch, removed)
+  const {disk, progress} = batch
+  if (disk) store.disk.write(writes => writes.put(disk))
+  if (progress) store.progress.write(writes => writes.put(progress))
+  store.scan.write(writes => writes.put(batch.state))
+  if (!batch.restarted) return
+  for (const restarted of store.restarts) restarted()
+  store.restarts.clear()
+}

@@ -6,7 +6,9 @@ import {scaleLinear} from 'd3-scale'
 import {useMemo, type ReactNode} from 'react'
 import {ChartBoundary} from './chart-boundary'
 import {BigBytes, CARD_TOOLTIP, ChartCard, Fact, Meter, shareOf} from './chart-card'
-import {formatBytes, type Category, type Insights as InsightsData} from '@/lib/data'
+import {formatBytes, sumBytes, type Category, type Insights as InsightsData} from '@/lib/data'
+import {useDb} from '@/lib/db'
+import {useCategories, useScanState} from '@/lib/views'
 
 const HEAT = ['#18181b', '#60a5fa']
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -21,7 +23,6 @@ const IDLE_BUCKETS: [string, number][] = [
 
 const INTERACTION = {tooltip: CARD_TOOLTIP, focusRing: false} as const
 
-const sumBytes = (rows: readonly {bytes: number}[]) => rows.reduce((sum, r) => sum + r.bytes, 0)
 
 function dayTitle(day: string) {
   return new Date(`${day}T00:00`).toLocaleDateString('en', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'})
@@ -215,7 +216,10 @@ function SectionAge({categories}: {categories: Category[]}) {
   )
 }
 
-export function Insights({insights, categories}: {insights: InsightsData | null | undefined; categories: Category[]}) {
+export function Insights() {
+  const db = useDb()
+  const {insights} = useScanState(db)
+  const categories = useCategories(db)
   return (
     <div className="grid grid-cols-2 gap-4 overflow-auto px-7 py-5">
       {insights ? (

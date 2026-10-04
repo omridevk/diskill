@@ -1,12 +1,12 @@
 import {createFileRoute, redirect} from '@tanstack/react-router'
 import {FreeDialog} from '@/components/free-dialog'
-import {freeOffer} from '@/lib/cleanup'
+import {freeOffer} from '@/lib/progress'
 import {useBack, useDialogExit} from '@/lib/navigation'
-import {useDecisions, useProgress} from '@/lib/page-data'
+import {isApproved, useDecisions, useProgress} from '@/lib/page-data'
 
 export const Route = createFileRoute('/_tabs/cleanup/$section/free')({
   beforeLoad: ({context, params}) => {
-    if (context.page.seen.offer === 'refused') throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
+    if (!isApproved(context.db)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
   },
   component: Free,
 })

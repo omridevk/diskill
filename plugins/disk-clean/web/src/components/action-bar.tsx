@@ -1,23 +1,20 @@
 import {Trash2, X} from 'lucide-react'
-import {useEffect, useState, type ReactNode} from 'react'
+import {useState, type ReactNode} from 'react'
+import {useNow} from '@/lib/clock'
 import {Button} from '@/components/ui/button'
-import type {CleanupProgress} from '@/lib/cleanup'
-import {formatBytes} from '@/lib/data'
+import type {CleanupProgress} from '@/lib/progress'
+import {formatBytes, plural} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
-import type {Selection} from '@/lib/selection'
+import type {Selection} from '@/lib/page-data'
 import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
 import FuseButton from './react-bits/fuse-button'
 
-function useCountdown(running: boolean, ms: number) {
-  const [left, setLeft] = useState(ms)
-  useEffect(() => {
-    setLeft(ms)
-    if (!running) return
-    const started = performance.now()
-    const timer = setInterval(() => setLeft(Math.max(0, ms - (performance.now() - started))), 250)
-    return () => clearInterval(timer)
-  }, [running, ms])
+const TICK = 250
+
+function useCountdown(armedAt: number | null, ms: number) {
+  const now = useNow(armedAt !== null, TICK)
+  const left = armedAt === null ? ms : Math.max(0, ms - Math.max(0, now - armedAt))
   return Math.ceil(left / 1000)
 }
 
@@ -33,8 +30,8 @@ interface FuseAction {
 function FuseAction({label, doneLabel, icon, background, color, onCommit}: FuseAction) {
   const reduced = useReducedMotion()
   const undoWindow = cssMs('--fuse-window', 4000)
-  const [armed, setArmed] = useState(false)
-  const seconds = useCountdown(armed && reduced, undoWindow)
+  const [armedAt, setArmedAt] = useState<number | null>(null)
+  const seconds = useCountdown(reduced ? armedAt : null, undoWindow)
   return (
     <FuseButton
       label={label}
@@ -51,7 +48,7 @@ function FuseAction({label, doneLabel, icon, background, color, onCommit}: FuseA
       undoWindow={undoWindow}
       commitOn="fuseEnd"
       onCommit={onCommit}
-      onPhaseChange={phase => setArmed(phase === 'armed')}
+      onPhaseChange={phase => setArmedAt(phase === 'armed' ? performance.now() : null)}
     />
   )
 }
@@ -65,6 +62,7 @@ export function ActionBar({
   locked,
   progress = null,
   held,
+  failure,
   onCancel,
   onDelete,
 }: {
@@ -72,6 +70,7 @@ export function ActionBar({
   locked: boolean
   progress?: CleanupProgress | null
   held?: ReactNode
+  failure?: ReactNode
   onCancel: () => void
   onDelete: () => void
 }) {
@@ -83,7 +82,7 @@ export function ActionBar({
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex min-w-0 grow flex-col gap-0.5">
         <div className="text-sm font-semibold tabular-nums">
-          {count} {count === 1 ? 'item' : 'items'} selected · <PopBytes bytes={selection.exactBytes} />
+          {plural(count, 'item', 'items')} selected · <PopBytes bytes={selection.exactBytes} />
           {selection.apparentBytes > 0 && (
             <span className="font-normal text-muted-foreground"> (+≈{formatBytes(selection.apparentBytes)} apparent)</span>
           )}
@@ -92,10 +91,11 @@ export function ActionBar({
           Delete moves files to a holding folder first, so you can undo or free the space afterwards · worktrees and commands can't be undone
           {hint(locked)}
         </div>
+        {failure}
       </div>
       <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />
       <Button size="lg" className="shrink-0" disabled={disabled} aria-haspopup="dialog" onClick={onDelete}>
-        <Trash2 /> Delete {count} {count === 1 ? 'item' : 'items'} · {formatBytes(selection.exactBytes)}
+        <Trash2 /> Delete {plural(count, 'item', 'items')} · {formatBytes(selection.exactBytes)}
       </Button>
     </footer>
   )

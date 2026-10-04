@@ -12,6 +12,8 @@ export interface Plan {
   bytes: number
 }
 
+export const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
 const body = (token: string, items: readonly Item[], extra: object) =>
   JSON.stringify({token, items: items.map(i => ({path: i.path})), ...extra})
 

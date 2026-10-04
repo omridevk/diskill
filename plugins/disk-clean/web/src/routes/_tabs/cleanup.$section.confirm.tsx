@@ -1,14 +1,17 @@
+import {useLiveSuspenseQuery} from '@tanstack/react-db'
 import {createFileRoute, redirect, useRouter, type ErrorComponentProps} from '@tanstack/react-router'
 import {ConfirmDialog, ConfirmFailed} from '@/components/confirm-dialog'
+import {messageOf} from '@/lib/api'
+import {useDb} from '@/lib/db'
 import {useBack, useDialogExit} from '@/lib/navigation'
-import {canConfirm, messageOf, planFor, useDecisions, useHome} from '@/lib/page-data'
+import {canConfirm, loadPreview, previewOf, useDecisions, useHome} from '@/lib/page-data'
 
 export const Route = createFileRoute('/_tabs/cleanup/$section/confirm')({
   loaderDeps: ({search}) => ({add: search.add, drop: search.drop}),
   beforeLoad: ({context, params, search}) => {
-    if (!canConfirm(context.page, search)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
+    if (!canConfirm(context.db, search)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
   },
-  loader: ({context, deps}) => planFor(context.page, deps),
+  loader: ({context, deps}) => loadPreview(context.db, deps),
   pendingMs: 150,
   pendingComponent: Checking,
   errorComponent: Failed,
@@ -36,8 +39,8 @@ function Failed({error}: ErrorComponentProps) {
 }
 
 function Confirm() {
-  const plan = Route.useLoaderData()
   const picks = Route.useLoaderDeps()
+  const {data} = useLiveSuspenseQuery(previewOf(useDb(), picks))
   const {approve} = useDecisions()
   const navigate = Route.useNavigate()
   const home = useHome()
@@ -46,5 +49,5 @@ function Confirm() {
     approve(picks)
     leave(() => navigate({to: '/cleanup/$section', params: true, search: true, replace: true}))
   }
-  return <ConfirmDialog plan={plan} home={home} {...exit} onConfirm={confirm} />
+  return <ConfirmDialog plan={data[0] ?? null} home={home} {...exit} onConfirm={confirm} />
 }

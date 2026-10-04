@@ -1,129 +1,180 @@
+import {queryCollectionOptions} from '@tanstack/query-db-collection'
+import {createCollection, useLiveQuery} from '@tanstack/react-db'
 import {getRouteApi, useNavigate} from '@tanstack/react-router'
 import {functionalUpdate, type RowSelectionState, type Updater} from '@tanstack/react-table'
-import {createContext, use, useMemo, useState} from 'react'
-import {decide, heldAction, preview, type Plan} from './api'
-import {filmPlan, freeOffer, useCleanupProgress, type FilmPlan, type FreeOffer} from './cleanup'
-import type {Loaded, ScanData} from './data'
-import {useScanStream} from './live'
-import {startScan, type Scan} from './scan'
-import {NO_PICKS, picksOf, selectionOf, type Picked, type Picks, type Selection} from './selection'
+import {useCallback, useMemo} from 'react'
+import {approve as approveItems, askHeld, cancel as cancelRun, restartScan} from './actions'
+import {preview, type Plan} from './api'
+import {firstSection, type Category} from './data'
+import {useDb, type Db} from './db'
+import {useCleanupProgress} from './progress'
+import type {Entry, Nest, ScanState} from './scan-feed'
+import {NO_PICKS, picksOf, rowSelectionOf, type Picks} from './selection'
+import {categoriesOf, useScanState, useSession, useVersion} from './views'
 
 export interface Ending {
   title: string
   body: string
 }
 
-interface Seen {
-  scan: Scan
-  approved: boolean
-  offer: FreeOffer
+export interface Selection {
+  count: number
+  nests: Nest[]
+  rowSelection: RowSelectionState
+  setRowSelection: (update: Updater<RowSelectionState>) => void
+  isOn: (item: {path: string}) => boolean
+  reset: () => void
+  selected: Entry[]
+  exactBytes: number
+  apparentBytes: number
+  risky: number
+  sections: number
 }
 
-export const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
-const isScanned = (scan: Scan) => scan.done && scan.error === ''
+const CANCELLED: Ending = {title: 'Cancelled', body: 'Nothing was deleted. You can close this tab.'}
 
-function planOf(data: ScanData, picked: Picked) {
-  return filmPlan(data.categories, picked.selected, picked.exactBytes, data.total)
+interface Grouped {
+  items: number
+  sections: number
+  categories: Category[]
 }
 
-function startFilm(loaded: Loaded) {
-  return loaded.approved ? planOf(loaded.data, selectionOf(loaded.data.categories, NO_PICKS, loaded.approved)) : null
+const grouped = new WeakMap<Db, Grouped>()
+
+function categoriesNow(db: Db) {
+  const items = db.scan.items.version()
+  const sections = db.scan.sections.version()
+  const known = grouped.get(db)
+  if (known?.items === items && known.sections === sections) return known.categories
+  const categories = categoriesOf([...db.scan.sections.synced.values()], [...db.scan.items.synced.values()])
+  grouped.set(db, {items, sections, categories})
+  return categories
 }
 
-export function createPage(loaded: Loaded) {
-  const approved = startFilm(loaded) !== null
-  const seen: Seen = {scan: startScan(loaded), approved, offer: approved ? 'waiting' : 'refused'}
-  return {loaded, seen}
+interface Decoded extends Picks {
+  categories: readonly Category[]
+  on: RowSelectionState
 }
 
-export type Page = ReturnType<typeof createPage>
+const decoded = new WeakMap<Db, Decoded>()
 
-function selectedFor(page: Page, picks: Picks) {
-  return selectionOf(page.seen.scan.data.categories, picks, page.loaded.approved).selected
+function approvedSelection(approved: readonly string[]): RowSelectionState {
+  return Object.fromEntries(approved.map(path => [path, true] as const))
 }
 
-export function canConfirm(page: Page, picks: Picks) {
-  return isScanned(page.seen.scan) && !page.seen.approved && selectedFor(page, picks).length > 0
+function rowSelectionNow(db: Db, picks: Picks): RowSelectionState {
+  const categories = categoriesNow(db)
+  const known = decoded.get(db)
+  if (known?.categories === categories && known.add === picks.add && known.drop === picks.drop) return known.on
+  const on = db.loaded.approved ? approvedSelection(db.loaded.approved) : rowSelectionOf(categories, picks)
+  decoded.set(db, {categories, ...picks, on})
+  return on
 }
 
-export function planFor(page: Page, picks: Picks): Promise<Plan> {
-  return preview(page.loaded.token, selectedFor(page, picks))
+function shadowedOf(nests: readonly Nest[], on: RowSelectionState) {
+  return new Set(nests.filter(n => on[n.outer] === true && on[n.inner] === true).map(n => n.inner))
 }
 
-function useDecisionState(loaded: Loaded, data: ScanData) {
-  const [film, setFilm] = useState<FilmPlan | null>(() => startFilm(loaded))
-  const [done, setDone] = useState<Ending | null>(null)
-  const [error, setError] = useState('')
-  const fail = (e: unknown) => setError(messageOf(e))
-  const approve = (picks: Picks) => {
-    const picked = selectionOf(data.categories, picks, loaded.approved)
-    if (picked.selected.length === 0) return
-    setError('')
-    decide(loaded.token, 'approve', picked.selected).then(() => setFilm(planOf(data, picked)), fail)
+function totalsOf(selected: readonly Entry[], shadowed: ReadonlySet<string>) {
+  let exactBytes = 0
+  let apparentBytes = 0
+  let risky = 0
+  const sections = new Set<string>()
+  for (const entry of selected) {
+    sections.add(entry.section)
+    if (entry.risk === 'review') risky++
+    if (shadowed.has(entry.path)) continue
+    if (entry.exact) exactBytes += entry.bytes
+    else apparentBytes += entry.bytes
   }
-  const cancel = () => decide(loaded.token, 'cancel', []).then(() => setDone({title: 'Cancelled', body: 'Nothing was deleted. You can close this tab.'}), fail)
-  return {film, done, error, approve, cancel}
+  return {exactBytes, apparentBytes, risky, sections: sections.size}
 }
 
-function useHeldState(token: string) {
-  const [heldBusy, setBusy] = useState(false)
-  const [heldError, setError] = useState('')
-  const held = (action: 'undo' | 'free') => {
-    setBusy(true)
-    setError('')
-    heldAction(token, action)
-      .catch((e: unknown) => setError(`${action === 'undo' ? 'Undo' : 'Free'} did not start (${messageOf(e)}). From the terminal: disk-clean ${action} RUN_DIR`))
-      .finally(() => setBusy(false))
+function selectedOf(db: Db, on: RowSelectionState) {
+  const selected: Entry[] = []
+  for (const path of Object.keys(on)) {
+    const entry = on[path] === true ? db.scan.items.synced.get(path) : undefined
+    if (entry && !entry.report) selected.push(entry)
   }
-  return {heldBusy, heldError, held}
+  return selected
 }
 
-function settledOf(live: boolean, scan: Scan) {
-  return {tracking: live || scan.rescans > 0, settled: scan.walked || scan.rescans > 0 || scan.error !== ''}
+type Derived = ReturnType<typeof totalsOf> & {selected: Entry[]; nests: Nest[]}
+
+const derivations = new WeakMap<RowSelectionState, {nests: number; derived: Derived}>()
+
+function derivedOf(db: Db, on: RowSelectionState): Derived {
+  const nestsVersion = db.scan.nests.version()
+  const known = derivations.get(on)
+  if (known?.nests === nestsVersion) return known.derived
+  const nests = [...db.scan.nests.synced.values()]
+  const selected = selectedOf(db, on)
+  const derived = {selected, nests, ...totalsOf(selected, shadowedOf(nests, on))}
+  derivations.set(on, {nests: nestsVersion, derived})
+  return derived
 }
 
-export function usePageState(page: Page) {
-  const {loaded} = page
-  const live = loaded.live === true
-  const {scan, rescan} = useScanStream(loaded)
-  const decisions = useDecisionState(loaded, scan.data)
-  const {progress, lost} = useCleanupProgress(loaded.token, decisions.film, loaded.openEvents)
-  const held = useHeldState(loaded.token)
-  page.seen = {scan, approved: decisions.film !== null, offer: freeOffer(progress)}
-  return {loaded, live, scan, rescan, ...settledOf(live, scan), ...decisions, progress, lost, ...held}
+function selectedNow(db: Db, picks: Picks) {
+  return derivedOf(db, rowSelectionNow(db, picks)).selected
 }
 
-type PageState = ReturnType<typeof usePageState>
-
-export const PageContext = createContext<PageState | null>(null)
-
-function usePage() {
-  const state = use(PageContext)
-  if (!state) throw new Error('page data is provided by the root route')
-  return state
+function scanNow(db: Db) {
+  return db.scan.scan.synced.get('scan')
 }
 
-export function useScan() {
-  const {scan, live, rescan, tracking, settled} = usePage()
-  return {scan, live, rescan, tracking, settled}
+export function firstSectionNow(db: Db) {
+  return firstSection(categoriesNow(db))
 }
 
-export function useScanData() {
-  return usePage().scan.data
+export function canConfirm(db: Db, picks: Picks) {
+  const scan = scanNow(db)
+  const approved = db.session.synced.get('session')?.approved ?? false
+  return scan !== undefined && scan.done && scan.error === '' && !approved && selectedNow(db, picks).length > 0
 }
 
-export function useHome() {
-  return usePage().loaded.home
+export function hasSection(db: Db, section: string) {
+  return !scanNow(db)?.done || db.scan.sections.synced.has(section)
 }
 
-export function useStreaming() {
-  const {live, settled} = usePage()
-  return {live, settled}
+export function isApproved(db: Db) {
+  return db.session.synced.get('session')?.approved ?? false
 }
 
-export function useCleanable() {
-  const {categories} = useScanData()
-  return useMemo(() => new Set(categories.flatMap(c => c.items.filter(i => !i.report).map(i => i.path))), [categories])
+interface PreviewRow extends Plan {
+  id: 'plan'
+}
+
+function previewCollection(db: Db, key: string, picks: Picks) {
+  return createCollection(
+    queryCollectionOptions({
+      queryKey: ['preview', key],
+      queryFn: async (): Promise<PreviewRow[]> => [{...(await preview(db.loaded.token, selectedNow(db, picks))), id: 'plan'}],
+      queryClient: db.queryClient,
+      getKey: row => row.id,
+      startSync: false,
+    }),
+  )
+}
+
+type Preview = ReturnType<typeof previewCollection>
+
+const previews = new WeakMap<Db, Map<string, Preview>>()
+
+export function previewOf(db: Db, picks: Picks) {
+  const key = `${scanNow(db)?.rescans ?? 0}|${picks.add}|${picks.drop}`
+  const mine = previews.get(db) ?? new Map<string, Preview>()
+  previews.set(db, mine)
+  const known = mine.get(key)
+  if (known) return known
+  const collection = previewCollection(db, key, picks)
+  mine.set(key, collection)
+  return collection
+}
+
+export async function loadPreview(db: Db, picks: Picks) {
+  const collection = previewOf(db, picks)
+  if (collection.status === 'error') await collection.utils.refetch({throwOnError: true})
+  else await collection.preload()
 }
 
 const root = getRouteApi('__root__')
@@ -134,34 +185,80 @@ function usePicks(): Picks {
   return useMemo(() => ({add, drop}), [add, drop])
 }
 
+function useCategoriesNow(db: Db) {
+  useVersion(db.scan.items.collection)
+  useVersion(db.scan.sections.collection)
+  useVersion(db.scan.nests.collection)
+  return categoriesNow(db)
+}
+
 export function useSelection(): Selection {
-  const {loaded, scan} = usePage()
-  const {categories} = scan.data
+  const db = useDb()
   const picks = usePicks()
   const navigate = useNavigate()
-  const picked = selectionOf(categories, picks, loaded.approved)
-  return useMemo(() => {
-    const setRowSelection = (update: Updater<RowSelectionState>) =>
+  const categories = useCategoriesNow(db)
+  const on = rowSelectionNow(db, picks)
+  const derived = derivedOf(db, on)
+  const setRowSelection = useCallback(
+    (update: Updater<RowSelectionState>) =>
       navigate({
         to: '.',
         search: prev => {
-          const current = selectionOf(categories, {add: prev.add ?? '', drop: prev.drop ?? ''}, loaded.approved)
-          return {...prev, ...picksOf(categories, functionalUpdate(update, current.rowSelection))}
+          const current = rowSelectionNow(db, {add: prev.add ?? '', drop: prev.drop ?? ''})
+          return {...prev, ...picksOf(categoriesNow(db), functionalUpdate(update, current))}
         },
         replace: true,
-      })
-    const reset = () => navigate({to: '.', search: prev => ({...prev, ...NO_PICKS}), replace: true})
-    return {...picked, setRowSelection, reset}
-  }, [picked, categories, navigate, loaded.approved])
+      }),
+    [db, navigate],
+  )
+  const reset = useCallback(() => navigate({to: '.', search: prev => ({...prev, ...NO_PICKS}), replace: true}), [navigate])
+  const count = categories.reduce((sum, c) => sum + c.items.length, 0)
+  return useMemo(
+    () => ({count, rowSelection: on, setRowSelection, isOn: item => on[item.path] === true, reset, ...derived}),
+    [count, on, setRowSelection, reset, derived],
+  )
+}
+
+function settledOf(live: boolean, scan: ScanState) {
+  return {tracking: live || scan.rescans > 0, settled: scan.walked || scan.rescans > 0 || scan.error !== ''}
+}
+
+export function useScan() {
+  const db = useDb()
+  const scan = useScanState(db)
+  const live = db.loaded.live === true
+  const rescan = useCallback(() => void restartScan(db), [db])
+  return {scan, live, rescan, ...settledOf(live, scan)}
+}
+
+export function useHome() {
+  return useDb().loaded.home
+}
+
+export function useStreaming() {
+  const {live, settled} = useScan()
+  return {live, settled}
 }
 
 export function useProgress() {
-  const {progress, lost} = usePage()
-  return {progress, lost}
+  return {progress: useCleanupProgress(useDb())}
 }
 
 export function useDecisions() {
-  const {film, done, error, approve, cancel, heldBusy, heldError, held} = usePage()
-  return {approved: film !== null, done, error, approve, cancel, heldBusy, heldError, held}
+  const db = useDb()
+  const session = useSession(db)
+  const picks = usePicks()
+  const approve = (picks: Picks) => {
+    const on = rowSelectionNow(db, picks)
+    const {selected, exactBytes} = derivedOf(db, on)
+    if (selected.length === 0) return
+    void approveItems(db, selected, exactBytes)
+  }
+  const cancel = () => void cancelRun(db)
+  const held = (action: 'undo' | 'free') => void askHeld(db, action)
+  return {approved: session.approved, done: session.cancelled ? CANCELLED : null, approve, retry: () => approve(picks), cancel, held}
 }
 
+export function useConnection() {
+  useLiveQuery(useDb().connection)
+}

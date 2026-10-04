@@ -609,8 +609,25 @@
 @starting-style {
   .t-backdrop { opacity: 0; }
 }
+.t-timer {
+  position: absolute;
+  animation-name: t-timer;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes t-timer {
+  from { opacity: 0; }
+  to { opacity: 0; }
+}
 .t-backdrop[data-state="out"] {
   opacity: 0;
+  animation-name: t-backdrop-out;
+  animation-duration: var(--backdrop-dur);
+  animation-timing-function: var(--ease-in-out);
+}
+@keyframes t-backdrop-out {
+  from { opacity: var(--backdrop-opacity); }
+  to { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

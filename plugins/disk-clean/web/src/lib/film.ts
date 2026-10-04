@@ -3,7 +3,8 @@ import {CustomEase} from 'gsap/CustomEase'
 import {DrawSVGPlugin} from 'gsap/DrawSVGPlugin'
 import {SplitText} from 'gsap/SplitText'
 import {useGSAP} from '@gsap/react'
-import {outcomeOf, type Cleanup, type CleanupEvent, type FilmPlan, type Outcome} from './cleanup'
+import type {CleanupEvent} from './cleanup-feed'
+import {isOutcome, type Cleanup, type FilmPlan, type LogRow, type Outcome} from './progress'
 import {formatBytes} from './data'
 import {cssMs, cssValue} from './motion'
 
@@ -495,8 +496,8 @@ function finaleBeat(film: Film, quiet: boolean) {
   tl.call(settle, [film], Math.max(end, swapped + tokens.verySlow + tokens.fast))
 }
 
-function outcomesOf(film: Film, pending: CleanupEvent[]) {
-  return pending.flatMap(e => outcomeOf(film.plan, e) ?? [])
+function outcomesOf(pending: readonly LogRow[]) {
+  return pending.filter(isOutcome)
 }
 
 function startFree(cleanup: Cleanup, types: ReadonlySet<string>) {
@@ -534,14 +535,19 @@ function payoffBeat(film: Film, bytes: number) {
   tl.call(settle, [film], swapped + tokens.verySlow + tokens.fast)
 }
 
-function afterFinale(film: Film, pending: CleanupEvent[]) {
-  const freed = pending.findLast(e => e.type === 'free_done')
+function afterFinale(film: Film, pending: readonly LogRow[]) {
+  const freed = pending.findLast(e => e.type === 'free_done')?.event
   if (freed?.type === 'free_done' && freed.data.freed_bytes > 0) payoffBeat(film, freed.data.freed_bytes)
+}
+
+function sampleFree(film: Film, pending: readonly LogRow[]) {
+  const sample = pending.findLast(e => e.type === 'free')?.event
+  if (sample?.type === 'free') film.gauges.free = sample.data.free
 }
 
 const isHolding = (cleanup: Cleanup) => (cleanup.done?.held ?? 0) > 0
 
-function build(film: Film, cleanup: Cleanup, pending: CleanupEvent[]) {
+function build(film: Film, cleanup: Cleanup, pending: readonly LogRow[]) {
   const types = new Set(pending.map(e => e.type))
   const abandoned = types.has('abandoned')
   const ending = abandoned || types.has('done')
@@ -550,9 +556,8 @@ function build(film: Film, cleanup: Cleanup, pending: CleanupEvent[]) {
     if (ending) finaleBeat(film, true)
     return
   }
-  const sample = pending.findLast(e => e.type === 'free')
-  if (sample?.type === 'free') film.gauges.free = sample.data.free
-  workBeats(film, outcomesOf(film, pending), film.flood || ending)
+  sampleFree(film, pending)
+  workBeats(film, outcomesOf(pending), film.flood || ending)
   if (ending) finaleBeat(film, abandoned || isHolding(cleanup))
   film.flood = false
 }
@@ -560,13 +565,13 @@ function build(film: Film, cleanup: Cleanup, pending: CleanupEvent[]) {
 const OUTCOMES: ReadonlySet<CleanupEvent['type']> = new Set(['removed', 'held', 'failed', 'kept', 'worktree', 'command'])
 const ENDINGS: ReadonlySet<CleanupEvent['type']> = new Set(['done', 'abandoned'])
 
-function recapSize(film: Film, log: readonly CleanupEvent[]) {
+function recapSize(film: Film, log: readonly LogRow[]) {
   const count = log.slice(0, film.backlog).filter(e => OUTCOMES.has(e.type)).length
   const beats = gsap.utils.clamp(RECAP_BEATS, 2 * RECAP_BEATS, Math.ceil(count / FLOOD))
   return Math.max(1, Math.ceil(count / beats))
 }
 
-function nextBatch(film: Film, log: readonly CleanupEvent[]) {
+function nextBatch(film: Film, log: readonly LogRow[]) {
   if (film.flood || film.processed >= film.backlog) return log.slice(film.processed)
   const rest = log.slice(film.processed, film.backlog)
   const done = rest.findIndex((e, i) => i > 0 && ENDINGS.has(e.type))
@@ -575,12 +580,12 @@ function nextBatch(film: Film, log: readonly CleanupEvent[]) {
   return window.slice(0, marks[recapSize(film, log)] ?? window.length)
 }
 
-export function pump(film: Film | null, cleanup: Cleanup, fromTail = false) {
+export function pump(film: Film | null, cleanup: Cleanup, log: readonly LogRow[], fromTail = false) {
   if (!film?.ready || document.hidden) return
   if (film.tl.isActive() && !fromTail) return
   const before = film.tl.duration()
-  while (film.processed < cleanup.log.length && film.tl.duration() <= before) {
-    const pending = nextBatch(film, cleanup.log)
+  while (film.processed < log.length && film.tl.duration() <= before) {
+    const pending = nextBatch(film, log)
     film.processed += pending.length
     if (film.finished) afterFinale(film, pending)
     else build(film, cleanup, pending)

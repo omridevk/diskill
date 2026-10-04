@@ -1,19 +1,5 @@
-import type {RowSelectionState, Updater} from '@tanstack/react-table'
-import {isExact, type Category, type Item} from './data'
-
-export interface Picked {
-  rowSelection: RowSelectionState
-  isOn: (item: Item) => boolean
-  selected: Item[]
-  exactBytes: number
-  apparentBytes: number
-  risky: Item[]
-}
-
-export interface Selection extends Picked {
-  setRowSelection: (update: Updater<RowSelectionState>) => void
-  reset: () => void
-}
+import type {RowSelectionState} from '@tanstack/react-table'
+import type {Category, Item} from './data'
 
 export interface Picks {
   add: string
@@ -140,51 +126,4 @@ export function picksOf(categories: readonly Category[], on: RowSelectionState):
     drop.push(...delta.drop.map(tokenOf))
   }
   return {add: add.join(SEPARATOR), drop: drop.join(SEPARATOR)}
-}
-
-function hasAncestorIn(path: string, paths: ReadonlySet<string>) {
-  for (let slash = path.indexOf('/', 1); slash > 0; slash = path.indexOf('/', slash + 1)) {
-    if (paths.has(path.slice(0, slash))) return true
-  }
-  return false
-}
-
-export function outermost<T extends {path: string}>(items: readonly T[]): T[] {
-  const paths = new Set(items.map(i => i.path))
-  return items.filter(i => !hasAncestorIn(i.path, paths))
-}
-
-export const sumBytes = (items: readonly {bytes: number}[]) => items.reduce((sum, i) => sum + i.bytes, 0)
-
-function totalsOf(selected: readonly Item[]) {
-  const counted = outermost(selected)
-  return {exactBytes: sumBytes(counted.filter(isExact)), apparentBytes: sumBytes(counted.filter(i => !isExact(i)))}
-}
-
-function pickedOf(categories: readonly Category[], on: RowSelectionState): Picked {
-  const selected = categories.flatMap(c => c.items).filter(i => pickable(i) && on[i.path] === true)
-  const review = new Set(categories.filter(c => c.risk === 'review').flatMap(c => c.items.map(i => i.path)))
-  return {
-    rowSelection: on,
-    isOn: item => on[item.path] === true,
-    selected,
-    ...totalsOf(selected),
-    risky: selected.filter(i => review.has(i.path)),
-  }
-}
-
-interface Cached extends Picks {
-  approved: readonly string[] | undefined
-  picked: Picked
-}
-
-const picks = new WeakMap<readonly Category[], Cached>()
-
-export function selectionOf(categories: readonly Category[], wanted: Picks, approved?: readonly string[]): Picked {
-  const known = picks.get(categories)
-  if (known && known.add === wanted.add && known.drop === wanted.drop && known.approved === approved) return known.picked
-  const on = approved ? Object.fromEntries(approved.map(path => [path, true] as const)) : rowSelectionOf(categories, wanted)
-  const picked = pickedOf(categories, on)
-  picks.set(categories, {add: wanted.add, drop: wanted.drop, approved, picked})
-  return picked
 }

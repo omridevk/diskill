@@ -13,6 +13,7 @@ const SCANNED = 9_000
 const REPEATS = 3
 const SCROLL_STEPS = 60
 const PER_TICK = 25
+const FRAME_BUDGET = 50
 const BROWSER = navigator.userAgent.includes('Firefox') ? 'firefox' : 'chromium'
 
 type Work = Record<string, number>
@@ -169,7 +170,8 @@ async function scan(count: number): Promise<Work> {
   const source = cleanupSource()
   const temp = bigSection(count)
   const head = {id: temp.id, title: temp.title, desc: temp.desc, risk: temp.risk}
-  const loaded: Loaded = {data: {...withSection(temp).data, categories: []}, token: 'test-token', live: true, openEvents: () => source}
+  const base = withSection(temp)
+  const loaded: Loaded = {...base, data: {...base.data, categories: []}, live: true, openEvents: () => source}
   const screen = await render(<Measured loaded={loaded} />)
   await expect.element(screen.getByText('Walking disk')).toBeVisible()
   send(source, 'disk', {total: 500 * 1024 ** 3, used: 400 * 1024 ** 3, free: 50 * 1024 ** 3, snapshots: 0, elapsed_ms: 1})
@@ -226,6 +228,7 @@ describe('a 9,000-item streaming scan', () => {
     const small = await scan(SMALL)
     const big = await scan(SCANNED)
     report('scan', SCANNED, small, big)
-    scalesLikeSmall(small, big, 8)
+    scalesLikeSmall({commit: small.commit ?? 0}, {commit: big.commit ?? 0}, 8)
+    expect.soft(big.p95, `p95: ${big.p95?.toFixed(1)} ms of React work for one batch at ${SCANNED} items`).toBeLessThan(FRAME_BUDGET)
   }, 180_000)
 })

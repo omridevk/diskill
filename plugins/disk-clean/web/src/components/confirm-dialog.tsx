@@ -4,8 +4,8 @@ import {Fragment, useRef, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
 import type {Plan} from '@/lib/api'
-import {formatUntil} from '@/lib/cleanup'
-import {formatBytes, tilde, tildeWords} from '@/lib/data'
+import {formatUntil} from '@/lib/progress'
+import {formatBytes, plural, tilde, tildeWords} from '@/lib/data'
 
 const ROW = 28
 
@@ -89,14 +89,14 @@ function Lines({label, lines}: {label: string; lines: string[]}) {
 
 function confirmLabel(plan: Plan) {
   const held = plan.hold.length
-  if (held === 0) return `Delete ${plan.count} ${plan.count === 1 ? 'item' : 'items'}`
+  if (held === 0) return `Delete ${plural(plan.count, 'item', 'items')}`
   const rest = plan.final_count > 0 ? ` + ${plan.final_count} that can't be undone` : ''
-  return `Move ${held} ${held === 1 ? 'item' : 'items'} to hold${rest}`
+  return `Move ${plural(held, 'item', 'items')} to hold${rest}`
 }
 
 function Totals({plan}: {plan: Plan}) {
   const figures = [
-    {n: formatBytes(plan.bytes), label: `${plan.count} items in total`},
+    {n: formatBytes(plan.bytes), label: `${plural(plan.count, 'item', 'items')} in total`},
     {n: formatBytes(plan.hold_bytes), label: `${plan.hold.length} moved to hold`},
     {n: String(plan.final_count), label: "can't be undone"},
     {n: String(plan.rejected.length), label: 'rejected'},

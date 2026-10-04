@@ -6,7 +6,8 @@ import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {formatBytes} from './lib/data'
 import {at, fixture, freeEvents, heldEvents, undoEvents} from './test/fixture'
-import {fakeEventSource, mockServer, PLAN, sendAll} from './test/page'
+import type {Loaded} from './lib/data'
+import {fakeEventSource, mockServer, PLAN, sendAll, sendRaw} from './test/page'
 import './index.css'
 
 const GB = 1024 ** 3
@@ -22,8 +23,8 @@ const footer = (screen: Screen) => screen.getByRole('contentinfo')
 const LONG_NAME = 'ms-vscode.cpptools-a-very-long-item-name-that-must-stay-visible'
 const LONG = `/Users/you/Library/Application Support/Code/User/workspaceStorage/0f3a9c2b7d1e4a6f8b5c3d2e1f0a9b8c/${LONG_NAME}`
 
-async function openApp(url = '/cleanup', plan: object = PLAN) {
-  mockServer(plan)
+async function openApp(url = '/cleanup', plan: object = PLAN, failing: ReadonlySet<string> = new Set()) {
+  mockServer(plan, failing)
   const {source} = fakeEventSource()
   const history: RouterHistory = at(url)
   const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={history} />)
@@ -179,5 +180,81 @@ describe('held, then undone or freed', () => {
     const cold = await openApp('/cleanup/caches/free')
     await expect.poll(() => cold.history.location.pathname).toBe('/cleanup/caches')
     await expect.element(cold.screen.getByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('a request the server refuses rolls back and says so where it was made', () => {
+  beforeEach(() => gsap.globalTimeline.timeScale(20))
+  afterEach(() => {
+    gsap.globalTimeline.timeScale(1)
+    vi.restoreAllMocks()
+  })
+
+  test('a refused Delete rolls back to the list, shows why at the footer, and Retry approves once the server recovers', async () => {
+    const failing = new Set(['/decide'])
+    const {screen} = await openApp('/cleanup', PLAN, failing)
+    await screen.getByRole('button', {name: DELETE}).click()
+    await screen.getByRole('dialog').getByRole('button', {name: /^Move 4 items to hold/}).click()
+    await expect.element(footer(screen).getByText('Delete did not go through, nothing was deleted: disk-clean answered 500 to /decide: server said no')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeEnabled()
+    expect(statusOf(screen)?.textContent).toContain('nothing is deleted until you approve')
+    failing.delete('/decide')
+    await footer(screen).getByRole('button', {name: 'Retry'}).click()
+    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
+    await expect.element(screen.getByText(/did not go through/)).not.toBeInTheDocument()
+  })
+
+  test('a refused Undo or Free keeps everything held and offers Retry at the held actions', async () => {
+    const opened = await heldApp()
+    const failing = new Set(['/undo', '/free'])
+    vi.restoreAllMocks()
+    mockServer(PLAN, failing)
+    await footer(opened.screen).getByRole('button', {name: 'Undo'}).click()
+    await expect.element(footer(opened.screen).getByText('Undo did not start: disk-clean answered 500 to /undo: server said no')).toBeVisible()
+    await expect.element(footer(opened.screen).getByRole('button', {name: 'Undo'})).toBeEnabled()
+    await footer(opened.screen).getByRole('button', {name: 'Free the space now'}).click()
+    await opened.screen.getByRole('dialog', {name: 'Free the space now?'}).getByRole('button', {name: `Free ${formatBytes(3.75 * GB)} for good`}).click()
+    await expect.element(footer(opened.screen).getByText('Free did not start: disk-clean answered 500 to /free: server said no')).toBeVisible()
+    await barSays(opened.screen, `Held ${formatBytes(3.75 * GB)} · not freed yet`)
+    failing.clear()
+    await footer(opened.screen).getByRole('button', {name: 'Retry'}).first().click()
+    await expect.poll(() => posted('/undo').length).toBe(2)
+    await expect.element(footer(opened.screen).getByText(/Undo did not start/)).not.toBeInTheDocument()
+  })
+
+  test('a refused Rescan rolls back to the finished scan and offers Retry beside the button', async () => {
+    const failing = new Set(['/rescan'])
+    mockServer(PLAN, failing)
+    const {source} = fakeEventSource()
+    const loaded: Loaded = {...fixture, live: true, openEvents: () => source}
+    const screen = await render(<App loaded={loaded} history={at('/cleanup')} />)
+    sendRaw(source, 'done', {reclaimable: 0, elapsed_ms: 10})
+    await expect.element(screen.getByText('Scan complete')).toBeVisible()
+    await screen.getByRole('button', {name: 'Rescan'}).click()
+    await expect.element(screen.getByText('Rescan did not start: disk-clean answered 500 to /rescan: server said no')).toBeVisible()
+    await expect.element(screen.getByText('Scan complete')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Rescan'})).toBeEnabled()
+  })
+
+  test('a dropped scan stream says it is reconnecting until the stream comes back', async () => {
+    const {source} = fakeEventSource()
+    const screen = await render(<App loaded={{...fixture, live: true, openEvents: () => source}} history={at('/cleanup')} />)
+    sendRaw(source, 'disk', {total: 500 * GB, used: 400 * GB, free: 50 * GB, snapshots: 0, elapsed_ms: 1})
+    await expect.element(screen.getByText('Walking disk')).toBeVisible()
+    source.readyState = 0
+    source.dispatchEvent(new Event('error'))
+    await expect.element(screen.getByText('Reconnecting to disk-clean…')).toBeVisible()
+    source.readyState = 1
+    source.dispatchEvent(new Event('open'))
+    await expect.element(screen.getByText('Reconnecting to disk-clean…')).not.toBeInTheDocument()
+  })
+
+  test('a cleanup stream that closes for good says contact is lost, not that the cleanup stopped', async () => {
+    const {screen, source} = await heldApp()
+    sendAll(source, undoEvents.slice(0, 1))
+    await barSays(screen, 'Undoing ·')
+    source.readyState = 2
+    source.dispatchEvent(new Event('error'))
+    await barSays(screen, 'Lost contact with disk-clean: the cleanup keeps running; reload to reconnect')
   })
 })

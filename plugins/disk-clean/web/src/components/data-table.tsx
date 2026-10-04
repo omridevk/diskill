@@ -2,7 +2,7 @@ import {FlexRender, type ReactTable} from '@tanstack/react-table'
 import {useVirtualizer} from '@tanstack/react-virtual'
 import {memo, useRef, type MouseEvent} from 'react'
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table'
-import type {CleanupProgress, Outcome} from '@/lib/cleanup'
+import type {CleanupProgress, Outcome} from '@/lib/progress'
 import {STATE_MOTION} from '@/lib/motion'
 import {toggleRow, type Entry, type EntryRow, type features} from './cleanup-columns'
 

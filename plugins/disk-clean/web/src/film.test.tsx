@@ -6,8 +6,10 @@ import {page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {CleanupFilm} from './components/cleanup-film'
-import {cleanupReducer, filmPlan, NO_CLEANUP, type Cleanup, type CleanupEvent} from './lib/cleanup'
+import type {CleanupEvent} from './lib/cleanup-feed'
 import {formatBytes} from './lib/data'
+import {createDb, receiveCleanupEvents, type Db} from './lib/db'
+import {useMovie} from './lib/progress'
 import {at, cleanupEvents, fixture} from './test/fixture'
 import './index.css'
 
@@ -15,13 +17,20 @@ const GB = 1024 ** 3
 const MB = 1024 ** 2
 const STREAM_CHUNK = 10
 const selected = fixture.data.categories.flatMap(c => c.items.filter(i => i.preselect))
-const plan = filmPlan(fixture.data.categories, selected, 3.75 * GB, 500 * GB)
 
-function Movie({cleanup}: {cleanup: Cleanup}) {
-  const [take, setTake] = useState(0)
-  return <CleanupFilm plan={plan} cleanup={cleanup} open take={take} onReplay={() => setTake(take + 1)} onClose={() => {}} />
+function movieDb(events: readonly CleanupEvent[] = []) {
+  const db = createDb({...fixture, approved: selected.map(i => i.path)})
+  receiveCleanupEvents(db, events)
+  return db
 }
-const finished = cleanupReducer(NO_CLEANUP, cleanupEvents as readonly CleanupEvent[])
+
+function Movie({db}: {db: Db}) {
+  const [take, setTake] = useState(0)
+  const movie = useMovie(db)
+  return <CleanupFilm {...movie} open take={take} onReplay={() => setTake(take + 1)} onClose={() => {}} />
+}
+
+const finishedEvents = cleanupEvents as readonly CleanupEvent[]
 
 interface Box {
   left: number
@@ -127,7 +136,7 @@ function quickLog(count: number): CleanupEvent[] {
 
 async function renderFinished(scale = 4) {
   gsap.globalTimeline.timeScale(scale)
-  return render(<Movie cleanup={finished} />)
+  return render(<Movie db={movieDb(finishedEvents)} />)
 }
 
 function settledIn(screen: Awaited<ReturnType<typeof render>>) {
@@ -140,7 +149,7 @@ interface Sample {
 }
 
 function Streamed({log, steps}: {log: readonly CleanupEvent[]; steps: Sample[]}) {
-  const [cleanup, setCleanup] = useState(NO_CLEANUP)
+  const [cleanup] = useState(() => movieDb())
   useEffect(() => {
     let sent = 0
     let frame = 0
@@ -148,14 +157,14 @@ function Streamed({log, steps}: {log: readonly CleanupEvent[]; steps: Sample[]})
       const next = log.slice(sent, sent + STREAM_CHUNK)
       sent += next.length
       const start = performance.now()
-      flushSync(() => setCleanup(current => cleanupReducer(current, next)))
+      flushSync(() => receiveCleanupEvents(cleanup, next))
       steps.push({items: sent, ms: performance.now() - start})
       if (sent < log.length) frame = requestAnimationFrame(step)
     }
     frame = requestAnimationFrame(step)
     return () => cancelAnimationFrame(frame)
-  }, [log, steps])
-  return <Movie cleanup={cleanup} />
+  }, [log, steps, cleanup])
+  return <Movie db={cleanup} />
 }
 
 function timeTicks(into: Sample[], items: () => number) {
@@ -200,7 +209,7 @@ describe('the cleanup movie', () => {
   })
 
   test('at real speed the particles land on the DOM figure before it fades in over them', async () => {
-    const screen = await render(<Movie cleanup={finished} />)
+    const screen = await render(<Movie db={movieDb(finishedEvents)} />)
     await expect.poll(particleCanvas, {timeout: 15_000}).not.toBeNull()
     const figure = film('freed')
     if (!figure) throw new Error('no finale figure')
@@ -218,7 +227,7 @@ describe('the cleanup movie', () => {
 
   test('a cleanup that took a second still plays back as several beats over the minimum length', async () => {
     gsap.globalTimeline.timeScale(4)
-    const quick = cleanupReducer(NO_CLEANUP, quickLog(30))
+    const quick = movieDb(quickLog(30))
     const labels = new Set<string>()
     const watch = new MutationObserver(() => {
       for (const el of document.querySelectorAll('[data-film="card"] [data-part="label"]')) if (el.textContent) labels.add(el.textContent)
@@ -232,7 +241,7 @@ describe('the cleanup movie', () => {
     const finale = new MutationObserver(() => {
       if (!shown && visibility('finale') === 'visible') shown = performance.now()
     })
-    await render(<Movie cleanup={quick} />)
+    await render(<Movie db={quick} />)
     await expect.poll(() => visibility('stage'), {timeout: 10_000}).toBe('visible')
     const start = performance.now()
     counter.observe(film('counter') ?? document.body, {subtree: true, childList: true, characterData: true})
@@ -351,13 +360,13 @@ describe('the cleanup movie', () => {
 
   test('a cleanup that removed nothing ends on what happened, not on a celebration', async () => {
     gsap.globalTimeline.timeScale(4)
-    const failed = cleanupReducer(NO_CLEANUP, [
+    const failed = movieDb([
       {type: 'started', data: {run: 'run-1', free: 50 * GB, paths: 2, worktrees: 0, commands: 1, bytes: 2 * GB, elapsed_ms: 0}},
       {type: 'failed', data: {path: '/Users/you/Library/Caches/app-a', bytes: 2 * GB, reason: 'Operation not permitted', elapsed_ms: 10}},
       {type: 'command', data: {id: 'brew', label: 'brew cleanup', status: 'failed', elapsed_ms: 20}},
       {type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB, elapsed_ms: 30}},
     ])
-    const screen = await render(<Movie cleanup={failed} />)
+    const screen = await render(<Movie db={failed} />)
     await settledIn(screen)
     await expect.element(screen.getByRole('heading', {name: 'Nothing could be removed'})).toBeVisible()
     expect(film('freed')?.textContent).toBe('2 not removed')
@@ -366,19 +375,19 @@ describe('the cleanup movie', () => {
 
   test('a done that arrives without a start still ends the film', async () => {
     gsap.globalTimeline.timeScale(4)
-    const orphan = cleanupReducer(NO_CLEANUP, [{type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB, elapsed_ms: 5}}])
-    const screen = await render(<Movie cleanup={orphan} />)
+    const orphan = movieDb([{type: 'done', data: {free_before: 50 * GB, free_after: 50 * GB, elapsed_ms: 5}}])
+    const screen = await render(<Movie db={orphan} />)
     await settledIn(screen)
     await expect.element(screen.getByRole('heading', {name: 'Nothing was removed'})).toBeVisible()
   }, 30_000)
 
   test('a cleanup that never started ends on why, not on a celebration', async () => {
     gsap.globalTimeline.timeScale(4)
-    const never = cleanupReducer(NO_CLEANUP, [
+    const never = movieDb([
       {type: 'waiting', data: {}},
       {type: 'abandoned', data: {reason: 'clean was never run after the approval'}},
     ])
-    const screen = await render(<Movie cleanup={never} />)
+    const screen = await render(<Movie db={never} />)
     await settledIn(screen)
     await expect.element(screen.getByRole('heading', {name: 'The cleanup did not start'})).toBeVisible()
     expect(film('freed')?.textContent).toBe('clean was never run after the approval')
@@ -389,13 +398,13 @@ describe('the cleanup movie', () => {
 
   test('a cleanup that stopped halfway ends on what it freed and what it kept', async () => {
     gsap.globalTimeline.timeScale(4)
-    const stopped = cleanupReducer(NO_CLEANUP, [
+    const stopped = movieDb([
       cleanupEvents[1],
       cleanupEvents[2],
       {type: 'kept', data: {path: '/Users/you/Library/Caches/app-b', bytes: GB, reason: 'it changed after the approval', elapsed_ms: 1200}},
       {type: 'abandoned', data: {reason: 'the cleanup process exited before it finished'}},
     ])
-    const screen = await render(<Movie cleanup={stopped} />)
+    const screen = await render(<Movie db={stopped} />)
     await settledIn(screen)
     await expect.element(screen.getByRole('heading', {name: 'The cleanup stopped before it finished'})).toBeVisible()
     expect(film('freed')?.textContent).toBe(`the cleanup process exited before it finished · freed ${formatBytes(2 * GB)}`)
@@ -413,7 +422,7 @@ describe('the cleanup movie', () => {
       if (caption < 0 && document.querySelector('[data-film="slot"] canvas')) caption = Number(getComputedStyle(film('caption') ?? document.body).opacity)
     })
     watch.observe(document.body, {subtree: true, childList: true})
-    await render(<Movie cleanup={finished} />)
+    await render(<Movie db={movieDb(finishedEvents)} />)
     await expect.poll(() => caption, {timeout: 15_000}).toBeGreaterThanOrEqual(0)
     watch.disconnect()
     expect(caption).toBe(0)

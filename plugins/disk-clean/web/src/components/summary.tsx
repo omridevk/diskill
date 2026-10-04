@@ -1,8 +1,9 @@
-import {useEffect, useState, type ReactNode} from 'react'
-import {resultOf, type CleanupProgress} from '@/lib/cleanup'
-import {formatBytes, type ScanData} from '@/lib/data'
-import {cssMs, useReducedMotion} from '@/lib/motion'
-import type {Selection} from '@/lib/selection'
+import {useState, type ReactNode} from 'react'
+import {formatBytes, plural} from '@/lib/data'
+import {resultOf, type CleanupProgress} from '@/lib/progress'
+import type {Disk} from '@/lib/scan-feed'
+import {useReducedMotion} from '@/lib/motion'
+import type {Selection} from '@/lib/page-data'
 import {DISK_COLORS, DiskDonut} from './disk-donut'
 import {FlowField} from './radiant/flow-field'
 import {SpinningBytes} from './numbers'
@@ -18,22 +19,21 @@ function Legend({color, label, outlined}: {color: string; label: string; outline
 
 function LoadingBackdrop({scanning}: {scanning: boolean}) {
   const reduced = useReducedMotion()
-  const [present, setPresent] = useState(scanning)
-  if (scanning && !present) setPresent(true)
-  useEffect(() => {
-    if (scanning) return
-    const timer = setTimeout(() => setPresent(false), reduced ? 0 : cssMs('--backdrop-dur', 500))
-    return () => clearTimeout(timer)
-  }, [scanning, reduced])
-  if (!present) return null
+  const [fading, setFading] = useState(false)
+  const [was, setWas] = useState(scanning)
+  if (was !== scanning) {
+    setWas(scanning)
+    setFading(!scanning && !reduced)
+  }
+  if (!scanning && !fading) return null
   return (
-    <div className="t-backdrop pointer-events-none absolute inset-0 -z-10" data-state={scanning ? 'in' : 'out'}>
+    <div className="t-backdrop pointer-events-none absolute inset-0 -z-10" data-state={scanning ? 'in' : 'out'} onAnimationEnd={event => event.target === event.currentTarget && setFading(false)}>
       <FlowField className="size-full" />
     </div>
   )
 }
 
-function diskFigures(data: ScanData, selection: Selection, progress: CleanupProgress | null) {
+function diskFigures(data: Disk, selection: Selection, progress: CleanupProgress | null) {
   if (!progress) return {used: data.used, pending: selection.exactBytes, before: data.free, after: data.free + selection.exactBytes, free: data.free}
   const {started, done, abandoned} = progress.cleanup
   const free = progress.free ?? data.free
@@ -59,7 +59,7 @@ function progressLabel(progress: CleanupProgress | null) {
 }
 
 export function Summary({
-  data,
+  disk: data,
   selection,
   bytes,
   overlay,
@@ -68,7 +68,7 @@ export function Summary({
   scanning,
   progress = null,
 }: {
-  data: ScanData
+  disk: Disk
   selection: Selection
   bytes: number
   overlay: ReactNode
@@ -77,9 +77,6 @@ export function Summary({
   scanning: boolean
   progress?: CleanupProgress | null
 }) {
-  const sections = new Set(
-    data.categories.filter(c => c.items.some(i => selection.isOn(i))).map(c => c.id),
-  ).size
   const disk = diskFigures(data, selection, progress)
   return (
     <section className="relative isolate flex items-center gap-7 border-b px-7 py-5">
@@ -95,7 +92,7 @@ export function Summary({
         </div>
         {counter}
         <div className="text-[13px] text-muted-foreground">
-          {selection.selected.length} items in {sections} sections ·{' '}
+          {plural(selection.selected.length, 'item', 'items')} in {plural(selection.sections, 'section', 'sections')} ·{' '}
           <FreeSpace before={disk.before} after={disk.after} total={data.total} live={progress !== null} />
         </div>
         <div className="flex h-5 items-center gap-3">{status}</div>

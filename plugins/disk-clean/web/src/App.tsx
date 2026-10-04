@@ -1,13 +1,13 @@
 import {createRouter, RouterProvider, type RouterHistory} from '@tanstack/react-router'
 import {useState} from 'react'
 import type {Loaded} from './lib/data'
-import {createPage} from './lib/page-data'
+import {createDb} from './lib/db'
 import {createTabMemory} from './lib/tab-memory'
 import {routeTree} from './routeTree.gen'
 
 function createAppRouter(loaded: Loaded, history: RouterHistory) {
   const tabs = createTabMemory()
-  const router = createRouter({routeTree, history, context: {page: createPage(loaded), tabs}})
+  const router = createRouter({routeTree, history, context: {db: createDb(loaded), tabs}})
   router.subscribe('onResolved', () => {
     const {matches} = router.state
     const layout = matches.findIndex(match => match.routeId === '/_tabs')
