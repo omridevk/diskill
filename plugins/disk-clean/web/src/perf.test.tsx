@@ -9,6 +9,7 @@ import './index.css'
 const SMALL = 30
 const ROWS = 10_000
 const EVENTS = 5_000
+const SCANNED = 9_000
 const REPEATS = 3
 const SCROLL_STEPS = 60
 const PER_TICK = 25
@@ -164,6 +165,33 @@ async function cleanup(events: number): Promise<Work> {
   return {commit: median(perCommit), p95: percentile(perCommit, 0.95)}
 }
 
+async function scan(count: number): Promise<Work> {
+  const source = cleanupSource()
+  const temp = bigSection(count)
+  const head = {id: temp.id, title: temp.title, desc: temp.desc, risk: temp.risk}
+  const loaded: Loaded = {data: {...withSection(temp).data, categories: []}, token: 'test-token', live: true, openEvents: () => source}
+  const screen = await render(<Measured loaded={loaded} />)
+  await expect.element(screen.getByText('Walking disk')).toBeVisible()
+  send(source, 'disk', {total: 500 * 1024 ** 3, used: 400 * 1024 ** 3, free: 50 * 1024 ** 3, snapshots: 0, elapsed_ms: 1})
+  await nextPaint()
+  commits.length = 0
+  await new Promise<void>(resolve => {
+    let next = 0
+    const tick = () => {
+      for (const item of temp.items.slice(next, next + PER_TICK)) send(source, 'item', {category: head, item, elapsed_ms: 10 + next})
+      next += PER_TICK
+      if (next < count) setTimeout(tick, 16)
+      else resolve()
+    }
+    tick()
+  })
+  await expect.poll(footerText).toContain(`${count} items selected`)
+  await nextPaint()
+  const perCommit = [...commits]
+  await screen.unmount()
+  return {commit: median(perCommit), p95: percentile(perCommit, 0.95)}
+}
+
 function report(name: string, size: number, small: Work, big: Work) {
   for (const key of Object.keys(big)) console.log(`${BROWSER} ${name} ${key}: ${big[key]?.toFixed(1)} ms of React work at ${size}, ${small[key]?.toFixed(1)} ms at ${SMALL}`)
 }
@@ -189,6 +217,15 @@ describe('a 5,000-event cleanup with the progress panel open', () => {
     const small = await cleanup(SMALL)
     const big = await cleanup(EVENTS)
     report('stream', EVENTS, small, big)
+    scalesLikeSmall(small, big, 8)
+  }, 180_000)
+})
+
+describe('a 9,000-item streaming scan', () => {
+  test('renders each item batch for about what a 30-item scan costs', async () => {
+    const small = await scan(SMALL)
+    const big = await scan(SCANNED)
+    report('scan', SCANNED, small, big)
     scalesLikeSmall(small, big, 8)
   }, 180_000)
 })
