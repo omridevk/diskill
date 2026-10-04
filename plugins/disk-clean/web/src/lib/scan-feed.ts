@@ -111,6 +111,7 @@ export function createScanStore(loaded: Loaded) {
     progress: ownedCollection<ScanProgress>(p => p.id, [NO_PROGRESS]),
     scan: ownedCollection<ScanState>(s => s.id, [startState(loaded)]),
     under: underOf(paths),
+    bySection: bySectionOf(entries),
     restarts: new Set<() => void>(),
   }
 }
@@ -195,8 +196,45 @@ function dropNests(store: ScanStore, removed: ReadonlySet<string>, writes: Write
   for (const path of removed) for (const outer of ancestorsOf(path)) store.under.get(outer)?.delete(path)
 }
 
+function sectionOf(store: ScanStore, section: string) {
+  const known = store.bySection.get(section)
+  if (known) return known
+  const fresh = {version: 0, items: new Map<string, Entry>()}
+  store.bySection.set(section, fresh)
+  return fresh
+}
+
+function leave(store: ScanStore, path: string) {
+  const section = store.items.synced.get(path)?.section
+  if (section === undefined) return
+  const group = sectionOf(store, section)
+  group.items.delete(path)
+  group.version += 1
+}
+
+function indexSections(store: ScanStore, items: readonly Entry[], removed: ReadonlySet<string>) {
+  for (const path of removed) leave(store, path)
+  for (const entry of items) {
+    if (store.items.synced.get(entry.path)?.section !== entry.section) leave(store, entry.path)
+    const group = sectionOf(store, entry.section)
+    group.items.set(entry.path, entry)
+    group.version += 1
+  }
+}
+
+function bySectionOf(entries: readonly Entry[]) {
+  const groups = new Map<string, {version: number; items: Map<string, Entry>}>()
+  for (const entry of entries) {
+    const group = groups.get(entry.section) ?? {version: 0, items: new Map<string, Entry>()}
+    group.items.set(entry.path, entry)
+    groups.set(entry.section, group)
+  }
+  return groups
+}
+
 function writeItems(store: ScanStore, batch: Batch, removed: ReadonlySet<string>) {
   if (batch.items.length === 0 && removed.size === 0) return
+  indexSections(store, batch.items, removed)
   store.items.write(writes => {
     for (const entry of batch.items) writes.put(entry)
     for (const path of removed) writes.remove(path)

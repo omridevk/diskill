@@ -5,12 +5,12 @@ import {functionalUpdate, type RowSelectionState, type Updater} from '@tanstack/
 import {useCallback, useMemo} from 'react'
 import {approve as approveItems, askHeld, cancel as cancelRun, restartScan} from './actions'
 import {preview, type Plan} from './api'
-import {firstSection, type Category} from './data'
+import {firstSection, sumBytes} from './data'
 import {useDb, type Db} from './db'
 import {useCleanupProgress} from './progress'
-import type {Entry, Nest, ScanState} from './scan-feed'
-import {NO_PICKS, picksOf, rowSelectionOf, type Picks} from './selection'
-import {categoriesOf, useScanState, useSession, useVersion} from './views'
+import type {CategoryHead, Entry, Nest, ScanState} from './scan-feed'
+import {createSelector, NO_PICKS, picksOf, type Decoded, type Fragment, type Picks, type Selector} from './selection'
+import {useScanState, useSession, useVersion} from './views'
 
 export interface Ending {
   title: string
@@ -33,89 +33,139 @@ export interface Selection {
 
 const CANCELLED: Ending = {title: 'Cancelled', body: 'Nothing was deleted. You can close this tab.'}
 
+interface Cached {
+  version: number
+  head: CategoryHead
+  section: Section
+}
+
+interface Section extends CategoryHead {
+  items: Entry[]
+  bytes: number
+}
+
 interface Grouped {
   items: number
   sections: number
-  categories: Category[]
+  bySection: Map<string, Cached>
+  categories: Section[]
 }
 
 const grouped = new WeakMap<Db, Grouped>()
+const byRiskThenSize = (a: Section, b: Section) => Number(a.risk === 'report') - Number(b.risk === 'report') || b.bytes - a.bytes
+
+function sectionNow(db: Db, head: CategoryHead, known: Cached | undefined): Cached | null {
+  const group = db.scan.bySection.get(head.id)
+  if (!group || group.items.size === 0) return null
+  if (known?.version === group.version && known.head === head) return known
+  const items = [...group.items.values()].toSorted((a, b) => b.bytes - a.bytes)
+  return {version: group.version, head, section: {...head, items, bytes: sumBytes(items)}}
+}
 
 function categoriesNow(db: Db) {
   const items = db.scan.items.version()
   const sections = db.scan.sections.version()
   const known = grouped.get(db)
   if (known?.items === items && known.sections === sections) return known.categories
-  const categories = categoriesOf([...db.scan.sections.synced.values()], [...db.scan.items.synced.values()])
-  grouped.set(db, {items, sections, categories})
+  const bySection = new Map<string, Cached>()
+  for (const head of db.scan.sections.synced.values()) {
+    const cached = sectionNow(db, head, known?.bySection.get(head.id))
+    if (cached) bySection.set(head.id, cached)
+  }
+  const categories = [...bySection.values()].map(c => c.section).toSorted(byRiskThenSize)
+  grouped.set(db, {items, sections, bySection, categories})
   return categories
 }
 
-interface Decoded extends Picks {
-  categories: readonly Category[]
-  on: RowSelectionState
+const selectors = new WeakMap<Db, Selector<Entry>>()
+
+function selectorOf(db: Db) {
+  const known = selectors.get(db)
+  if (known) return known
+  const selector = createSelector<Entry>()
+  selectors.set(db, selector)
+  return selector
 }
 
-const decoded = new WeakMap<Db, Decoded>()
+function partOf(selected: Entry[]): Fragment<Entry> {
+  const exactBytes = sumBytes(selected.filter(e => e.exact))
+  return {items: selected, key: '', risk: selected[0]?.risk ?? 'safe', selected, exactBytes, apparentBytes: sumBytes(selected) - exactBytes}
+}
 
-function approvedSelection(approved: readonly string[]): RowSelectionState {
-  return Object.fromEntries(approved.map(path => [path, true] as const))
+function approvedOf(db: Db, approved: readonly string[]): Decoded<Entry> {
+  const bySection = new Map<string, Entry[]>()
+  for (const path of approved) {
+    const entry = db.scan.items.synced.get(path)
+    if (entry) bySection.set(entry.section, [...(bySection.get(entry.section) ?? []), entry])
+  }
+  const on = Object.fromEntries(approved.map(path => [path, true] as const))
+  return {on, parts: [...bySection.values()].map(partOf)}
+}
+
+const approvals = new WeakMap<Db, Decoded<Entry>>()
+
+function decodedNow(db: Db, picks: Picks): Decoded<Entry> {
+  const {approved} = db.loaded
+  if (!approved) return selectorOf(db).decode(categoriesNow(db), picks)
+  const known = approvals.get(db) ?? approvedOf(db, approved)
+  approvals.set(db, known)
+  return known
 }
 
 function rowSelectionNow(db: Db, picks: Picks): RowSelectionState {
-  const categories = categoriesNow(db)
-  const known = decoded.get(db)
-  if (known?.categories === categories && known.add === picks.add && known.drop === picks.drop) return known.on
-  const on = db.loaded.approved ? approvedSelection(db.loaded.approved) : rowSelectionOf(categories, picks)
-  decoded.set(db, {categories, ...picks, on})
-  return on
+  return decodedNow(db, picks).on
 }
 
-function shadowedOf(nests: readonly Nest[], on: RowSelectionState) {
-  return new Set(nests.filter(n => on[n.outer] === true && on[n.inner] === true).map(n => n.inner))
-}
-
-function totalsOf(selected: readonly Entry[], shadowed: ReadonlySet<string>) {
-  let exactBytes = 0
-  let apparentBytes = 0
-  let risky = 0
-  const sections = new Set<string>()
-  for (const entry of selected) {
-    sections.add(entry.section)
-    if (entry.risk === 'review') risky++
-    if (shadowed.has(entry.path)) continue
-    if (entry.exact) exactBytes += entry.bytes
-    else apparentBytes += entry.bytes
+function shadowOf(db: Db, nests: readonly Nest[], on: RowSelectionState) {
+  let exact = 0
+  let apparent = 0
+  const counted = new Set<string>()
+  for (const nest of nests) {
+    if (counted.has(nest.inner) || on[nest.outer] !== true || on[nest.inner] !== true) continue
+    counted.add(nest.inner)
+    const inner = db.scan.items.synced.get(nest.inner)
+    if (inner?.exact) exact += inner.bytes
+    else apparent += inner?.bytes ?? 0
   }
-  return {exactBytes, apparentBytes, risky, sections: sections.size}
+  return {exact, apparent}
 }
 
-function selectedOf(db: Db, on: RowSelectionState) {
-  const selected: Entry[] = []
-  for (const path of Object.keys(on)) {
-    const entry = on[path] === true ? db.scan.items.synced.get(path) : undefined
-    if (entry && !entry.report) selected.push(entry)
-  }
-  return selected
+interface Derived {
+  selected: Entry[]
+  nests: Nest[]
+  exactBytes: number
+  apparentBytes: number
+  risky: number
+  sections: number
 }
 
-type Derived = ReturnType<typeof totalsOf> & {selected: Entry[]; nests: Nest[]}
+const derivations = new WeakMap<Decoded<Entry>, {nests: number; derived: Derived}>()
 
-const derivations = new WeakMap<RowSelectionState, {nests: number; derived: Derived}>()
-
-function derivedOf(db: Db, on: RowSelectionState): Derived {
-  const nestsVersion = db.scan.nests.version()
-  const known = derivations.get(on)
-  if (known?.nests === nestsVersion) return known.derived
+function derive(db: Db, decoded: Decoded<Entry>): Derived {
   const nests = [...db.scan.nests.synced.values()]
-  const selected = selectedOf(db, on)
-  const derived = {selected, nests, ...totalsOf(selected, shadowedOf(nests, on))}
-  derivations.set(on, {nests: nestsVersion, derived})
+  const shadow = shadowOf(db, nests, decoded.on)
+  const parts = decoded.parts.filter(part => part.selected.length > 0)
+  return {
+    selected: parts.flatMap(part => part.selected),
+    nests,
+    exactBytes: parts.reduce((sum, part) => sum + part.exactBytes, 0) - shadow.exact,
+    apparentBytes: parts.reduce((sum, part) => sum + part.apparentBytes, 0) - shadow.apparent,
+    risky: parts.reduce((sum, part) => sum + (part.risk === 'review' ? part.selected.length : 0), 0),
+    sections: parts.length,
+  }
+}
+
+function derivedOf(db: Db, decoded: Decoded<Entry>): Derived {
+  const nestsVersion = db.scan.nests.version()
+  const known = derivations.get(decoded)
+  if (known?.nests === nestsVersion) return known.derived
+  const derived = derive(db, decoded)
+  derivations.set(decoded, {nests: nestsVersion, derived})
   return derived
 }
 
 function selectedNow(db: Db, picks: Picks) {
-  return derivedOf(db, rowSelectionNow(db, picks)).selected
+  return derivedOf(db, decodedNow(db, picks)).selected
 }
 
 function scanNow(db: Db) {
@@ -197,15 +247,16 @@ export function useSelection(): Selection {
   const picks = usePicks()
   const navigate = useNavigate()
   const categories = useCategoriesNow(db)
-  const on = rowSelectionNow(db, picks)
-  const derived = derivedOf(db, on)
+  const decoded = decodedNow(db, picks)
+  const on = decoded.on
+  const derived = derivedOf(db, decoded)
   const setRowSelection = useCallback(
     (update: Updater<RowSelectionState>) =>
       navigate({
         to: '.',
         search: prev => {
           const current = rowSelectionNow(db, {add: prev.add ?? '', drop: prev.drop ?? ''})
-          return {...prev, ...picksOf(categoriesNow(db), functionalUpdate(update, current))}
+          return {...prev, ...picksOf(categoriesNow(db), functionalUpdate(update, current), selectorOf(db))}
         },
         replace: true,
       }),
@@ -249,8 +300,7 @@ export function useDecisions() {
   const session = useSession(db)
   const picks = usePicks()
   const approve = (picks: Picks) => {
-    const on = rowSelectionNow(db, picks)
-    const {selected, exactBytes} = derivedOf(db, on)
+    const {selected, exactBytes} = derivedOf(db, decodedNow(db, picks))
     if (selected.length === 0) return
     void approveItems(db, selected, exactBytes)
   }
