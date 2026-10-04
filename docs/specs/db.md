@@ -56,6 +56,11 @@ in full on every tick. Fix, per the TanStack DB live-queries guide:
 - Selection decodes incrementally (only changed tokens). Totals derived from it use
   `useDeferredValue`, so a tick never waits on them. Change-driven work uses the live query's
   `createEffect` / `onBatch`, not a full re-read.
+- Reference implementations: TanStack Table's `examples/react/realtime-trading` (worker-produced
+  fixed-interval batches, immutable snapshots, table-owned row models, `table.Subscribe`, row
+  boundaries, Virtual, Profiler) and `examples/react/kitchen-sink` (`@tanstack/react-hotkeys`,
+  `@tanstack/react-pacer`). Whether rows are shaped by the live query or by the table's row models
+  is decided by the flat-cost measurements below, both measured; the winner is recorded here.
 - TanStack Table v9's `workerRowModelsFeature` (experimental) is the fallback if a row model still
   has to be computed in the table; not used unless measurement says so.
 - Perf tests assert flatness: the cost of one streamed batch, one tick and one filter keystroke at
