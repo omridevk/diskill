@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'vitest'
-import {userEvent} from 'vitest/browser'
+import {commands, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import type {Loaded} from './lib/data'
@@ -56,7 +56,6 @@ async function measure(recorder: Recorder, results: Record<string, Frames>, labe
   await action()
   await settle(after)
   results[label] = recorder.read()
-  console.log(`${BROWSER} ${MOTION} frames ${label}: ${JSON.stringify(results[label])}`)
 }
 
 function send(source: EventTarget, type: string, data: object) {
@@ -69,41 +68,64 @@ function expectWithin(results: Record<string, Frames>, budget: number, labels: r
   for (const label of labels) expect.soft(results[label]?.max ?? Infinity, `${BROWSER} ${MOTION} ${label}: ${JSON.stringify(results[label])}`).toBeLessThanOrEqual(budget)
 }
 
+declare module 'vitest/browser' {
+  interface BrowserCommands {
+    startWalk: () => Promise<{files: number}>
+    stopWalk: () => Promise<{walks: number}>
+  }
+}
+
+async function sectionInteractions(during: string) {
+  const screen = await render(<App loaded={withSection(bigSection(ROWS))} history={at()} />)
+  await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+  const recorder = frameRecorder()
+  const results: Record<string, Frames> = {}
+  await measure(recorder, results, 'open section', async () => {
+    await screen.getByRole('link', {name: /^Your macOS temp/}).click()
+    await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
+  })
+  const filter = screen.getByRole('textbox', {name: 'Filter paths'})
+  await measure(recorder, results, 'filter first keystrokes', async () => {
+    await filter.click()
+    for (const key of ['i', 't', 'e', 'm']) {
+      await userEvent.keyboard(key)
+      await settle(120)
+    }
+  }, 900)
+  await measure(recorder, results, 'filter cleared', () => userEvent.keyboard('{Escape}'), 900)
+  await measure(recorder, results, 'only selected', () => screen.getByRole('button', {name: 'Only selected'}).click())
+  await measure(recorder, results, 'only selected off', () => screen.getByRole('button', {name: 'Only selected'}).click())
+  await measure(recorder, results, 'risk toggle', () => screen.getByRole('button', {name: 'safe', exact: true}).click())
+  await measure(recorder, results, 'risk toggle off', () => screen.getByRole('button', {name: 'safe', exact: true}).click())
+  await measure(recorder, results, 'sort by name', async () => {
+    await screen.getByRole('combobox', {name: 'Sort'}).click()
+    await screen.getByRole('option', {name: 'Name'}).click()
+  })
+  await measure(recorder, results, 'sort by size', async () => {
+    await screen.getByRole('combobox', {name: 'Sort'}).click()
+    await screen.getByRole('option', {name: 'Largest first'}).click()
+  })
+  recorder.stop()
+  await screen.unmount()
+  for (const [label, frames] of Object.entries(results)) console.log(`${BROWSER} ${MOTION} ${during} frames ${label}: ${JSON.stringify(frames)}`)
+  expectWithin(results, INTERACTION_BUDGET, Object.keys(results))
+}
+
 describe(`frames on a ${ROWS.toLocaleString()}-row section`, () => {
   test('opening it, filtering, only-selected, the risk toggle and sorting keep every frame within budget', async () => {
-    const screen = await render(<App loaded={withSection(bigSection(ROWS))} history={at()} />)
-    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
-    const recorder = frameRecorder()
-    const results: Record<string, Frames> = {}
-    await measure(recorder, results, 'open section', async () => {
-      await screen.getByRole('link', {name: /^Your macOS temp/}).click()
-      await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
-    })
-    const filter = screen.getByRole('textbox', {name: 'Filter paths'})
-    await measure(recorder, results, 'filter first keystrokes', async () => {
-      await filter.click()
-      for (const key of ['i', 't', 'e', 'm']) {
-        await userEvent.keyboard(key)
-        await settle(120)
-      }
-    }, 900)
-    await measure(recorder, results, 'filter cleared', () => userEvent.keyboard('{Escape}'), 900)
-    await measure(recorder, results, 'only selected', () => screen.getByRole('button', {name: 'Only selected'}).click())
-    await measure(recorder, results, 'only selected off', () => screen.getByRole('button', {name: 'Only selected'}).click())
-    await measure(recorder, results, 'risk toggle', () => screen.getByRole('button', {name: 'safe', exact: true}).click())
-    await measure(recorder, results, 'risk toggle off', () => screen.getByRole('button', {name: 'safe', exact: true}).click())
-    await measure(recorder, results, 'sort by name', async () => {
-      await screen.getByRole('combobox', {name: 'Sort'}).click()
-      await screen.getByRole('option', {name: 'Name'}).click()
-    })
-    await measure(recorder, results, 'sort by size', async () => {
-      await screen.getByRole('combobox', {name: 'Sort'}).click()
-      await screen.getByRole('option', {name: 'Largest first'}).click()
-    })
-    recorder.stop()
-    await screen.unmount()
-    expectWithin(results, INTERACTION_BUDGET, Object.keys(results))
+    await sectionInteractions('idle')
   }, 120_000)
+
+  test('the same holds while a real scan walks a large sandbox tree', async () => {
+    const {files} = await commands.startWalk()
+    expect(files).toBeGreaterThan(100_000)
+    try {
+      await sectionInteractions('walking')
+    } finally {
+      const {walks} = await commands.stopWalk()
+      console.log(`${BROWSER} ${MOTION} ${walks} back-to-back walks ran during the interactions`)
+    }
+  }, 240_000)
 })
 
 describe(`frames while a scan streams ${STREAMED.toLocaleString()} items`, () => {
@@ -142,6 +164,7 @@ describe(`frames while a scan streams ${STREAMED.toLocaleString()} items`, () =>
     await expect.poll(footer, {timeout: 20_000}).toContain(`${STREAMED.toLocaleString()} items selected`)
     recorder.stop()
     await screen.unmount()
+    for (const [label, frames] of Object.entries(results)) console.log(`${BROWSER} ${MOTION} frames ${label}: ${JSON.stringify(frames)}`)
     expectWithin(results, STREAM_BUDGET, ['streaming', 'streaming to the end'])
     expectWithin(results, INTERACTION_BUDGET, ['interacting while streaming'])
   }, 120_000)

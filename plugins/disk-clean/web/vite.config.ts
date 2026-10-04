@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react'
 import {playwright} from '@vitest/browser-playwright'
 import {defineConfig} from 'vitest/config'
 import {viteSingleFile} from 'vite-plugin-singlefile'
+import {startWalk, stopWalk} from './walk-commands'
 
 const review = process.env.DISK_CLEAN_REVIEW_URL
 const retina = playwright({contextOptions: {deviceScaleFactor: 2}})
@@ -29,6 +30,7 @@ interface Instance {
 function inBrowsers(project: string, instances: Instance[]) {
   return {
     enabled: true,
+    commands: {startWalk, stopWalk},
     headless: true,
     provider: playwright(),
     instances: instances.map(instance => ({...instance, name: `${project} ${instance.name ?? instance.browser}`})),
