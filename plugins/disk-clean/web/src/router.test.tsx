@@ -544,11 +544,11 @@ describe('route guards wait for the scan to catch up', () => {
     }
   })
 
-  test('a storage zoom token that matches no folder moves to its nearest existing folder, or the top', async () => {
-    const gone = fullToken('/Users/you/Library/nope/deeper')
+  test('a storage zoom token that matches no folder in the scan moves to the top', async () => {
     const cases: [string, string][] = [
-      [`/storage/${gone}`, zoomed('/Users/you/Library')],
-      [`/storage/${fullToken('/Users/you/Library')}`, zoomed('/Users/you/Library')],
+      [zoomed('/Users/you/Library/Caches'), zoomed('/Users/you/Library/Caches')],
+      [`/storage/${fullToken('/Users/you/Library/nope/deeper')}`, '/storage'],
+      [`/storage/${fullToken('/Users/you/Library')}`, '/storage'],
       [`/storage/${fullToken('/Users/you/nowhere')}`, '/storage'],
       ['/storage/zzzzzzzz', '/storage'],
       ['/storage/not-a-token', '/storage'],

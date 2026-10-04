@@ -14,11 +14,11 @@ import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatBytes, plural, tilde, type TreeNode} from '@/lib/data'
 import {useDb} from '@/lib/db'
-import {zoomLink} from '@/lib/folders'
+import {zoomLink, type Folder} from '@/lib/folders'
 import type {Shape} from '@/lib/search'
 import {useHome, useSelection} from '@/lib/page-data'
 import type {Disk} from '@/lib/scan-feed'
-import {useCleanable, useDisk, useInside, useScanState} from '@/lib/views'
+import {useCleanable, useDisk, useFolders, useInside, useScanState} from '@/lib/views'
 import {squarifyInBounds} from '@/lib/treemap-tile'
 
 interface Row {
@@ -80,7 +80,7 @@ interface Figures extends Disk {
 interface FolderCardProps {
   node: TreeNode | null
   zoomTo: TreeNode | null
-  tree: TreeNode
+  folders: ReadonlyMap<string, Folder>
   parents: Map<string, TreeNode>
   total: number
   home: string
@@ -88,14 +88,14 @@ interface FolderCardProps {
   dismiss: () => void
 }
 
-function FolderCard({node, zoomTo, tree, parents, total, home, pinned, dismiss}: FolderCardProps) {
+function FolderCard({node, zoomTo, folders, parents, total, home, pinned, dismiss}: FolderCardProps) {
   if (!node) return null
   const parent = parents.get(node.path)
   const top = node.children.filter(c => !c.rest).slice(0, 3)
   const actions = (
     <>
       {zoomTo && (
-        <CardLink to={zoomLink(tree, zoomTo.path)} onClick={dismiss}>
+        <CardLink to={zoomLink(folders.get(zoomTo.path))} onClick={dismiss}>
           {zoomTo === node ? 'Zoom in' : `Zoom into ${zoomTo.name}`}
         </CardLink>
       )}
@@ -292,14 +292,14 @@ function drillTarget(point: ChartPoint | null, flat: ReturnType<typeof flatten>,
   return node?.children.length ? node : null
 }
 
-function Crumbs({chain, tree}: {chain: readonly TreeNode[]; tree: TreeNode}) {
+function Crumbs({chain, folders}: {chain: readonly TreeNode[]; folders: ReadonlyMap<string, Folder>}) {
   return (
     <nav aria-label="Folder path" className="flex grow flex-wrap items-center gap-1 text-sm">
       {chain.map((n, i) => (
         <Fragment key={n.path}>
           {i > 0 && <span className="text-muted-foreground">/</span>}
           <Link
-            {...zoomLink(tree, n.path)}
+            {...zoomLink(folders.get(n.path))}
             activeOptions={{exact: true}}
             className={i === chain.length - 1 ? 'font-semibold' : `text-muted-foreground transition-[color] duration-(--duration-quick) ease-(--ease-smooth-out) motion-reduce:transition-none hover:text-foreground`}
           >
@@ -345,6 +345,7 @@ function chainOf(parents: Map<string, TreeNode>, focus: TreeNode) {
 export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const {data, tree, cleanable} = useStorageData()
   const home = useHome()
+  const folders = useFolders(useDb())
   const flat = useMemo(() => (tree ? flatten(tree) : null), [tree])
   const root = tree?.path ?? ''
   const focus = focusOf(flat, root, zoom)
@@ -363,7 +364,7 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   return (
     <div className="flex flex-col gap-5 overflow-auto px-7 py-5">
       <div className="flex items-center gap-3">
-        <Crumbs chain={chain} tree={tree} />
+        <Crumbs chain={chain} folders={folders} />
         <ToggleGroup value={[shape]} onValueChange={v => v[0] && navigate({to: '.', search: prev => ({...prev, shape: v[0] as Shape})})} variant="outline" size="sm" aria-label="Chart">
           <ToggleGroupItem value="sunburst">Sunburst</ToggleGroupItem>
           <ToggleGroupItem value="treemap">Treemap</ToggleGroupItem>
@@ -383,7 +384,7 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
                 <FolderCard
                   node={nodeOf(primaryPoint ?? null)}
                   zoomTo={drillTarget(primaryPoint ?? null, flat, shape, focus)}
-                  tree={tree}
+                  folders={folders}
                   parents={flat.parents}
                   total={data.total}
                   home={home}

@@ -1,5 +1,6 @@
 import {ancestorsOf, isExact, isPickable, type Category, type Insights, type Item, type Loaded, type TreeNode} from './data'
 import {ownedCollection, type Writes} from './owned'
+import {foldersOf, type Folder} from './folders'
 
 export type CategoryHead = Omit<Category, 'items' | 'bytes'>
 
@@ -119,6 +120,7 @@ export function createScanStore(loaded: Loaded) {
   const entries = data.categories.flatMap(c => c.items.map(i => entryOf(i, headOf(c), 0)))
   const paths = entries.map(e => e.path)
   return {
+    folders: ownedCollection<Folder>(f => f.token, foldersOf(data.tree)),
     items: ownedCollection<Entry>(e => e.path, entries),
     sections: ownedCollection<CategoryHead>(s => s.id, data.categories.map(headOf)),
     nests: ownedCollection<Nest>(n => n.id, nestsOf(paths)),
@@ -284,6 +286,13 @@ function turned(before: ScanState, after: ScanState, sectionsBefore: number, sec
   return (sectionsBefore === 0) !== (sectionsAfter === 0) || settledOf(before) !== settledOf(after) || before.walked !== after.walked
 }
 
+function writeFolders(store: ScanStore, tree: TreeNode | null) {
+  store.folders.write(writes => {
+    writes.clear()
+    for (const folder of foldersOf(tree)) writes.put(folder)
+  })
+}
+
 export function receiveScan(store: ScanStore, events: readonly ScanEvent[]) {
   const state = store.scan.synced.get('scan')
   if (!state) return
@@ -295,6 +304,7 @@ export function receiveScan(store: ScanStore, events: readonly ScanEvent[]) {
   const {disk, progress} = batch
   if (disk) store.disk.write(writes => writes.put(disk))
   if (progress) store.progress.write(writes => writes.put(progress))
+  if (batch.state.tree !== state.tree) writeFolders(store, batch.state.tree)
   store.scan.write(writes => writes.put(batch.state))
   if (batch.state.caughtUp) store.scan.markReady()
   if (store.scan.collection.isReady() && turned(state, batch.state, sections, store.sections.synced.size)) for (const turn of store.turns) turn()

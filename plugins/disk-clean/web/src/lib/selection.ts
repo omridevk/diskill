@@ -64,10 +64,9 @@ function tokenSet(value: string) {
 
 export const shortOf = (path: string) => fullToken(path).slice(0, SHORT)
 
-export function knownPathOf(token: string) {
-  if (token.length !== SHORT && token.length !== FULL) return undefined
-  for (const [path, hash] of hashes) if (hash.startsWith(token)) return path
-  return undefined
+export function tokenFor(path: string, sharing: (short: string) => number | undefined) {
+  const short = shortOf(path)
+  return sharing(short) === 1 ? short : fullToken(path)
 }
 
 interface Notes {
@@ -99,10 +98,7 @@ export function createSelector<T extends Item = Item>() {
   const fragments = new Map<string, Fragment<T>>()
   const last: {categories: readonly Group<T>[] | null; add: string; drop: string; decoded: Decoded<T>} = {categories: null, add: '', drop: '', decoded: {on: {}, parts: []}}
 
-  const tokenOf = (path: string) => {
-    const short = shortOf(path)
-    return counts.get(short) === 1 ? short : fullToken(path)
-  }
+  const tokenOf = (path: string) => tokenFor(path, short => counts.get(short))
 
   const enter = (path: string, section: string) => {
     const short = shortOf(path)

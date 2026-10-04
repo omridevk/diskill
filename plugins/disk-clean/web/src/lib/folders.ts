@@ -1,53 +1,31 @@
 import {linkOptions} from '@tanstack/react-router'
-import {nearestFolder, type TreeNode} from './data'
-import {fullToken, knownPathOf, shortOf} from './selection'
+import type {TreeNode} from './data'
+import {shortOf, tokenFor} from './selection'
+
+export interface Folder {
+  token: string
+  path: string
+  parent: string | null
+}
 
 const FOLDER_TOKEN = /^([0-9a-z]{8}|[0-9a-z]{11})$/
 
 export const folderTokenOf = (raw: string) => (FOLDER_TOKEN.test(raw) ? raw : '')
 
-interface FolderIndex {
-  tokenOf: (path: string) => string
-  pathOf: (token: string) => string | undefined
-}
-
-const indexes = new WeakMap<TreeNode, FolderIndex>()
-
-function buildIndex(tree: TreeNode): FolderIndex {
-  const counts = new Map<string, number>()
-  const paths = new Map<string, string>()
-  const visit = (node: TreeNode) => {
-    const short = shortOf(node.path)
-    counts.set(short, (counts.get(short) ?? 0) + 1)
-    paths.set(short, node.path)
-    paths.set(fullToken(node.path), node.path)
-    node.children.forEach(visit)
+export function foldersOf(tree: TreeNode | null): Folder[] {
+  if (!tree) return []
+  const places: Omit<Folder, 'token'>[] = []
+  const visit = (node: TreeNode, parent: string | null) => {
+    places.push({path: node.path, parent})
+    for (const child of node.children ?? []) visit(child, node.path)
   }
-  visit(tree)
-  const tokenOf = (path: string) => {
-    const short = shortOf(path)
-    return counts.get(short) === 1 ? short : fullToken(path)
-  }
-  const pathOf = (token: string) => {
-    const path = paths.get(token)
-    return path !== undefined && tokenOf(path) === token ? path : undefined
-  }
-  return {tokenOf, pathOf}
+  visit(tree, null)
+  const sharing = new Map<string, number>()
+  for (const {path} of places) sharing.set(shortOf(path), (sharing.get(shortOf(path)) ?? 0) + 1)
+  return places.map(place => ({...place, token: tokenFor(place.path, short => sharing.get(short))}))
 }
 
-export function folderIndex(tree: TreeNode) {
-  const known = indexes.get(tree)
-  if (known) return known
-  const built = buildIndex(tree)
-  indexes.set(tree, built)
-  return built
-}
-
-export function zoomedPath(tree: TreeNode, token: string) {
-  return folderIndex(tree).pathOf(token) ?? nearestFolder(tree, knownPathOf(token) ?? tree.path)
-}
-
-export function zoomLink(tree: TreeNode, path: string) {
-  if (path === tree.path) return linkOptions({to: '/storage', search: true})
-  return linkOptions({to: '/storage/$folder', params: {folder: folderIndex(tree).tokenOf(path)}, search: true})
+export function zoomLink(folder: Folder | undefined) {
+  if (!folder || folder.parent === null) return linkOptions({to: '/storage', search: true})
+  return linkOptions({to: '/storage/$folder', params: {folder: folder.token}, search: true})
 }

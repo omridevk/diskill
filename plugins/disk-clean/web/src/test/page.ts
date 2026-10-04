@@ -1,6 +1,6 @@
 import type {RouterHistory} from '@tanstack/react-router'
 import {vi} from 'vitest'
-import {folderIndex} from '@/lib/folders'
+import {foldersOf} from '@/lib/folders'
 import {parseSearch, stringifySearch} from '@/lib/search'
 import type {ScanEvent} from '@/lib/scan-feed'
 import {fixture} from './fixture'
@@ -88,7 +88,7 @@ export const query = (history: RouterHistory): Record<string, unknown> => parseS
 export const address = (path: string, search: Record<string, unknown> = {}) => `${path}${stringifySearch(search)}`
 
 export function zoomed(path: string) {
-  const {tree} = fixture.data
-  if (!tree) throw new Error('the fixture has no storage map')
-  return `/storage/${folderIndex(tree).tokenOf(path)}`
+  const folder = foldersOf(fixture.data.tree).find(known => known.path === path)
+  if (!folder) throw new Error(`the fixture has no folder ${path}`)
+  return `/storage/${folder.token}`
 }

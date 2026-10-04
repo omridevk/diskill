@@ -5,9 +5,8 @@ import {page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import type {Loaded} from './lib/data'
-import {folderIndex, zoomedPath} from './lib/folders'
+import {foldersOf} from './lib/folders'
 import {revealSearchValue, obscureSearchValue} from './lib/search'
-import {fullToken, knownPathOf} from './lib/selection'
 import {at, cleanupEvents, fixture} from './test/fixture'
 import {address, fakeEventSource, mockServer, query, ringPoints, sendAll, zoomed} from './test/page'
 import './index.css'
@@ -55,24 +54,17 @@ describe('search values are base64url of their JSON', () => {
 })
 
 describe('folder tokens', () => {
-  const tree = fixture.data.tree
-  if (!tree) throw new Error('the fixture has no storage map')
-
-  test('every folder gets an 8-character token that resolves back to it', () => {
-    const index = folderIndex(tree)
-    for (const path of ['/Users/you', '/Users/you/Library', '/Users/you/Library/Caches', '/Users/you/code']) {
-      expect(index.tokenOf(path)).toMatch(/^[0-9a-z]{8}$/)
-      expect(index.pathOf(index.tokenOf(path))).toBe(path)
-      expect(zoomedPath(tree, index.tokenOf(path))).toBe(path)
-    }
-  })
-
-  test('a malformed or empty token never resolves to a folder seen earlier', () => {
-    fullToken('/Users/you/Library/Caches/deep/inside')
-    for (const junk of ['', 'abc', 'not-a-token']) {
-      expect(knownPathOf(junk)).toBeUndefined()
-      expect(zoomedPath(tree, junk)).toBe(tree.path)
-    }
+  test('every folder in the scan is one row keyed by its 8-character token, with its parent', () => {
+    const folders = foldersOf(fixture.data.tree)
+    expect(folders.map(({path, parent}) => [path, parent])).toEqual([
+      ['/Users/you', null],
+      ['/Users/you/Library', '/Users/you'],
+      ['/Users/you/Library/Caches', '/Users/you/Library'],
+      ['/Users/you/Library/*', '/Users/you/Library'],
+      ['/Users/you/code', '/Users/you'],
+    ])
+    for (const {token} of folders) expect(token).toMatch(/^[0-9a-z]{8}$/)
+    expect(new Set(folders.map(f => f.token)).size).toBe(folders.length)
   })
 })
 

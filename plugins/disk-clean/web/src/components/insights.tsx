@@ -6,11 +6,11 @@ import {scaleLinear} from 'd3-scale'
 import {useMemo, type ReactNode} from 'react'
 import {ChartBoundary} from './chart-boundary'
 import {BigBytes, CARD_TOOLTIP, CardLink, ChartCard, CopyPath, Fact, Meter, shareOf} from './chart-card'
-import {formatBytes, sumBytes, type Category, type Insights as InsightsData, type TreeNode, untilde} from '@/lib/data'
+import {formatBytes, sumBytes, type Category, type Insights as InsightsData, untilde} from '@/lib/data'
 import {useDb} from '@/lib/db'
-import {zoomLink} from '@/lib/folders'
+import {zoomLink, type Folder} from '@/lib/folders'
 import {useHome} from '@/lib/page-data'
-import {useCategories, useScanState} from '@/lib/views'
+import {useCategories, useFolders, useScanState} from '@/lib/views'
 
 const HEAT = ['#18181b', '#60a5fa']
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -102,7 +102,7 @@ function Calendar({days}: {days: InsightsData['modified_by_day']}) {
   )
 }
 
-function FolderAge({data, tree}: {data: InsightsData['age_by_folder']; tree: TreeNode | null}) {
+function FolderAge({data, folders}: {data: InsightsData['age_by_folder']; folders: ReadonlyMap<string, Folder>}) {
   const home = useHome()
   const definition = useMemo(() => {
     const cells = data.folders.flatMap(f => data.buckets.map((bucket, i) => ({folder: f.path, bucket, bytes: f.bytes[i] ?? 0, total: f.bytes.reduce((s, b) => s + b, 0)})))
@@ -132,8 +132,8 @@ function FolderAge({data, tree}: {data: InsightsData['age_by_folder']; tree: Tre
               pinned={pinned}
               actions={
                 <>
-                  {tree && (
-                    <CardLink to={zoomLink(tree, untilde(d.folder, home))} onClick={dismiss}>
+                  {folders.has(untilde(d.folder, home)) && (
+                    <CardLink to={zoomLink(folders.get(untilde(d.folder, home)))} onClick={dismiss}>
                       Open in Storage
                     </CardLink>
                   )}
@@ -242,7 +242,8 @@ function SectionAge({categories}: {categories: Category[]}) {
 
 export function Insights() {
   const db = useDb()
-  const {insights, tree} = useScanState(db)
+  const {insights} = useScanState(db)
+  const folders = useFolders(db)
   const categories = useCategories(db)
   return (
     <div className="grid grid-cols-2 gap-4 overflow-auto px-7 py-5">
@@ -252,7 +253,7 @@ export function Insights() {
             <Calendar days={insights.modified_by_day} />
           </Panel>
           <Panel title="How old each big folder is" hint="Bytes in the largest folders under ~, by last-modified age.">
-            <FolderAge data={insights.age_by_folder} tree={tree} />
+            <FolderAge data={insights.age_by_folder} folders={folders} />
           </Panel>
           <Panel title="What kind of data" hint="Bytes by file kind across your home folder.">
             <Kinds kinds={insights.by_kind} />

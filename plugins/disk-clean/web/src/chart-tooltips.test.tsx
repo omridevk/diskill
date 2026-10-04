@@ -27,12 +27,12 @@ function boxOf(element: Element) {
 async function settledBox(element: Element) {
   await expect
     .poll(async () => {
-      await Promise.allSettled(element.getAnimations({subtree: true}).map(animation => animation.finished))
       const before = boxOf(element)
       await nextFrame()
       await nextFrame()
-      return before === boxOf(element)
-    })
+      const moving = element.getAnimations().some(animation => animation.playState === 'running')
+      return !moving && before === boxOf(element)
+    }, {timeout: 5000})
     .toBe(true)
   return boxOf(element)
 }
@@ -58,6 +58,7 @@ describe('chart cards you can use', () => {
     const {chart, ring} = await openStorage()
     await userEvent.hover(chart, {position: ring(0.2, 0).local})
     await expect.element(page.getByRole('status').getByText('~/Library', {exact: true})).toBeVisible()
+    await expect.element(page.getByRole('status').getByText(/cleanable in 4 items/)).toBeVisible()
     const card = shownCard()
     const before = await settledBox(card)
     await userEvent.hover(chart, {position: ring(0.42, 0).local})
@@ -70,7 +71,7 @@ describe('chart cards you can use', () => {
     const {chart, ring, history} = await openStorage()
     await userEvent.click(chart, {position: ring(0.3125, 0).local})
     const pinned = page.getByRole('dialog')
-    await expect.element(pinned.getByText('~/Library', {exact: true})).toBeVisible()
+    await expect.element(pinned.getByText(/cleanable in 4 items/)).toBeVisible()
     const card = shownCard()
     const before = await settledBox(card)
     await userEvent.hover(pinned.getByText('of the disk'))
