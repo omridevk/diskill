@@ -280,3 +280,83 @@ Remaining cost: a new search string evaluates `like` over every row of the risk 
 the perf project's keystroke flatness check still fails: 27 ms at 10,000 rows vs 4 ms at 30 in
 Firefox, 19 vs 3 in Chromium (66c7450: 133 vs 11 and 72 vs 6). The first use of a sort builds its
 partition (name: 50 to 68 ms frames in Firefox).
+
+### Round 3: flat search, and the first open while walking (2026-10-04)
+
+**Keystroke cost, call path.** `useSectionRows` / `useRiskRows` > `useLiveQuery` (the query's
+identity changes with every new `q`) > `resolveLiveQueryValue` > `createPooledLiveQuery` (a view with
+a `like` residual) > `useSyncExternalStore` `getSnapshot` > `LiveQueryObserver.getSnapshot` >
+`refreshDetachedState` > `captureEntries` > `PooledLiveQuery.entries()` (`[...rows].filter(passes)`)
+> `rowPredicate` > `evaluateLike` (`compiler/evaluators.ts`). `evaluateLike` is a ReDoS-safe
+two-pointer walk that visits every character of the row's `search` text (about 70 characters: label,
+path, section title, note) even after the pattern has matched, because the trailing `%` consumes the
+rest one character at a time. Instrumented per keystroke in Chromium at 10,000 rows: the open section's
+view 7.0 ms and the risk views 5.6 ms of 17.9 ms React work; the rest was flat. DB-only bench (Node,
+10,000 rows, pooled `eq` + `orderBy` view built and read): 1.35 ms without `like`, 9.2 ms with it, so
+`like` costs about 0.4 to 0.75 µs a row, twice per keystroke (section view and its risk group).
+
+**Directions measured:**
+1. *Narrowing over the previous result.* A pooled view over a live query collection builds a new
+   partition of that collection in render: 11.4 ms for `%item-00%` over the 10,000-row `%item-0%`
+   result, against 9.2 ms straight from `items`. It also cannot help the perf test's alternation
+   (`item-0` and `item-00`): every other keystroke widens the result, so it rebases on the source.
+   Dropped.
+2. *An index for search.* `like` is in `IndexOperation`, but `optimizeQueryRecursive`
+   (`utils/index-optimization.ts`) only routes `eq`, `gt`, `gte`, `lt`, `lte`, `and`, `or` and `in` to
+   an index, and a pooled view never consults indexes for its residual. A custom `IndexInterface`
+   that answers `like` would never be asked. 0.11.3 is the newest `@tanstack/db` on npm. Dropped.
+3. *Unrelated sums.* The three unfiltered totals views keep their identity while typing and their
+   `useMemo` does not rerun; only the filtered totals recompute. Already stable.
+4. *A shorter search field.* `like` over the 16-character label alone still costs 2.6 ms per 10,000
+   rows (the predicate machinery per row), and the path and note must stay searchable. Dropped.
+
+**What changed.** The live queries carry only what DB evaluates cheaply: `eq` section or risk, `gte`
+size and age, and the sort's `orderBy`. Search text and only-selected are checked by `predicateOf`
+in a `useMemo` over those rows (`String.includes`, about 0.05 µs a row), the same shape round 2
+already used for only-selected. Typing no longer changes any query's identity, so a keystroke builds
+no view and reads no group; DB keeps serving the rows incrementally while a scan streams.
+
+**First open while walking.** Profiled in headless Firefox with reduced motion during a real walk
+(Gecko profiler, 0.5 ms samples). The section's sorted partition is already warm: the page opens on
+the first section with the same `{section}` + `size-desc` shape, and a pooled partition is shared
+by shape, so opening another section is a group lookup. The open frame is React rendering the panel
+(TanStack Virtual's `getMeasurements` calls `estimateSize` and `getItemKey` for all 12,000 rows),
+the commit and layout, and 5 to 8 ms in DB's snapshot. Nine runs gave 42 to 75 ms; the 359 ms frame
+did not reproduce. During this lane the machine's load average ran 18 to 42 from other work, and an
+A/B of the streaming test under that load failed on the old code as often as on the new (streaming
+50 to 217 ms on both), so the 359 ms frame reads as host contention, not a DB build.
+
+**Perf (`one change at 10,000 rows`, keystroke median, React work, 10,000 rows vs 30).**
+
+| | before (orchestrator, 8366bbc) | after, quiet host | after, full matrix (load average 23 to 31) |
+|---|---|---|---|
+| Chromium | 20.1 vs 2.3 (bound 11.0, fail) | 7.3 vs 3.3 | 7.1 vs 1.7 (bound 9.1, pass) |
+| Firefox | 31.5 vs 5.4 (bound 20.3, fail) | 18.3 vs 8.4 | 35.3 vs 11.0 (bound 37.0, pass) |
+
+What remains per keystroke is O(rows) in plain JS: the `useMemo` filters (section rows and totals),
+the selection counts in `cleanup.tsx` (`pickedOf`, `hidden`) and TanStack Virtual measuring the new
+row count. No DB view is built or read.
+
+**Frames (largest frame, ms; 12,000 rows, headless).** The full matrix ran once: app 216/216, perf
+both browsers, frames Chromium and Chromium reduced passed; frames Firefox and Firefox reduced failed
+while other sessions' `tsc` and jest runs held the load average at 31 to 61 (failures included paths
+this change does not touch: the streaming phase at 208 ms with 13 frames in 1.2 s, the risk toggle
+off at 233 ms, filter cleared at 116 ms). Both reran once at load 10 to 15 and passed:
+
+| interaction | Firefox | Firefox reduced | Chromium | Chromium reduced |
+|---|---|---|---|---|
+| idle open section | 41 | 34 | 50 | 67 |
+| idle filter first keystrokes | 17 | 17 | 17 | 17 |
+| idle only selected | 17 | 10 | 17 | 17 |
+| idle risk toggle | 9 | 16 | 17 | 17 |
+| idle sort by name | 59 | 83 | 33 | 33 |
+| walking open section | 51 | 59 | 17 | 17 |
+| walking filter first keystrokes | 25 | 26 | 17 | 17 |
+| walking only selected | 17 | 17 | 17 | 17 |
+| walking risk toggle | 24 | 33 | 17 | 17 |
+| walking sort by name | 50 | 85 | 17 | 33 |
+| streaming | 42 | 35 | 17 | 17 |
+| interacting while streaming | 50 | 42 | 33 | 17 |
+
+Cleared/off rows and sort by size stay at 9 to 50 ms. The first use of the name sort still builds its
+partition (50 to 85 ms in Firefox), within budget.
