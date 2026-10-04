@@ -1,4 +1,5 @@
 use crate::insights::{self, Ins, Insights};
+use crate::util;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ffi::{CString, OsStr, OsString};
 use std::fs;
@@ -715,9 +716,7 @@ pub fn walk(
     progress: &dyn Fn(&Walk, &Path),
 ) -> Option<u64> {
     let root_meta = meta_of(&fs::symlink_metadata(root).ok()?);
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get() * 2)
-        .unwrap_or(8);
+    let threads = util::efficiency_cores();
     let reader = Reader {
         dev: root_meta.dev,
         ahead: parallel.then(Ahead::default),
@@ -742,7 +741,10 @@ pub fn walk(
         let _stop = Stop(reader.ahead.as_ref());
         if reader.ahead.is_some() {
             for _ in 0..threads {
-                s.spawn(|| read_ahead(&reader));
+                s.spawn(|| {
+                    util::utility_qos();
+                    read_ahead(&reader)
+                });
             }
         }
         let mut queued = Vec::new();
