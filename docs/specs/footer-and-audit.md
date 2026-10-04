@@ -33,7 +33,12 @@ audit; that bar at the bottom is awful". Confirmed from the screenshot:
 
 Run the impeccable skills on each surface, in order: `critique` (UX and hierarchy), `audit` (a11y,
 contrast, theming, responsive), `polish` (alignment, spacing, consistency); plus
-`fixing-accessibility` and `review-animations` where they apply. Surfaces:
+`fixing-accessibility` and `review-animations` where they apply. Then run `hallmark audit` (the
+user's installed Hallmark skill) on each surface as the anti-AI-look pass: its punch list
+(critical, major, minor) goes into the report, and every critical or major finding is fixed. Use
+it as an audit plus its component-scope references (`interaction-and-states.md`,
+`microinteractions.md`, `anti-patterns.md`), never its theme catalog, `redesign` or page flow:
+this is a dense tool UI on shadcn and our tokens, not a landing page. Surfaces:
 - header with tabs and status;
 - summary strip;
 - toolbar (search, filters, sort, view);
