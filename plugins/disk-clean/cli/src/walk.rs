@@ -1,5 +1,5 @@
 use crate::insights::{self, Ins, Insights};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ffi::{CString, OsStr, OsString};
 use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Condvar, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -56,6 +56,7 @@ pub fn meta_of(m: &fs::Metadata) -> Meta {
 pub struct Plan {
     pub home: PathBuf,
     pub map_depth: Option<usize>,
+    pub map_min_kb: u64,
     pub nm_depth: usize,
     pub dev_depth: usize,
     pub big_depth: usize,
@@ -211,24 +212,34 @@ fn scout_repo(scout: &Scout, dir: &Path, found: &[(OsString, Meta)]) {
         name == ".git"
             && (meta.kind == Kind::Dir || (meta.kind == Kind::Symlink && dir.join(".git").is_dir()))
     });
-    let Some(logical) = dir
-        .strip_prefix(&scout.root)
-        .ok()
-        .map(|rest| scout.logical.join(rest))
-        .filter(|_| has_git)
-    else {
+    let Some(logical) = logical_of(scout, dir).filter(|_| has_git) else {
         return;
     };
-    let Ok(rel) = logical.strip_prefix(&scout.home) else {
-        return;
-    };
-    let reaches = rel
-        .components()
-        .enumerate()
-        .all(|(depth, c)| repo_step(scout.repo_depth, depth, c.as_os_str().to_str()));
-    if reaches {
+    if reaches(scout, &logical) {
         let _ = scout.repos.send(logical);
     }
+}
+
+fn logical_of(scout: &Scout, dir: &Path) -> Option<PathBuf> {
+    dir.strip_prefix(&scout.root)
+        .ok()
+        .map(|rest| scout.logical.join(rest))
+}
+
+fn reaches(scout: &Scout, logical: &Path) -> bool {
+    logical.strip_prefix(&scout.home).is_ok_and(|rel| {
+        rel.components()
+            .enumerate()
+            .all(|(depth, c)| repo_step(scout.repo_depth, depth, c.as_os_str().to_str()))
+    })
+}
+
+fn scouted(reader: &Reader, dir: &Path) -> bool {
+    let Some(scout) = &reader.scout else {
+        return false;
+    };
+    logical_of(scout, dir)
+        .is_some_and(|logical| scout.home.starts_with(&logical) || reaches(scout, &logical))
 }
 
 fn classify(plan: &Plan, parent: Option<&Frame>, name: Option<&str>, meta: &Meta) -> Found {
@@ -288,7 +299,8 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     if f.track {
         out.sizes.insert(f.path.clone(), f.blocks);
     }
-    if plan.map_depth.is_some_and(|m| f.depth <= m) {
+    let mapped = f.depth == 0 || f.blocks.div_ceil(2) >= plan.map_min_kb;
+    if mapped && plan.map_depth.is_some_and(|m| f.depth <= m) {
         out.map.push((f.path, f.blocks, f.files, f.mtime));
     }
     f.blocks
@@ -325,12 +337,69 @@ enum Slot {
 }
 
 struct Job {
+    early: bool,
+    key: Vec<u32>,
     slot: Mutex<Slot>,
     read: Condvar,
 }
 
+struct Soonest(Arc<Job>);
+
+impl PartialEq for Soonest {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Soonest {}
+
+impl PartialOrd for Soonest {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Soonest {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0
+            .early
+            .cmp(&other.0.early)
+            .then_with(|| other.0.key.cmp(&self.0.key))
+    }
+}
+
+const READ_AHEAD: usize = 1 << 18;
+
+#[derive(Default)]
+struct Queue {
+    jobs: BinaryHeap<Soonest>,
+    buffered: usize,
+    done: bool,
+}
+
+#[derive(Default)]
+struct Ahead {
+    queue: Mutex<Queue>,
+    ready: Condvar,
+}
+
+struct Stop<'a>(Option<&'a Ahead>);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        if let Some(ahead) = self.0 {
+            lock(&ahead.queue).done = true;
+            ahead.ready.notify_all();
+        }
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 fn claim(job: &Job) -> Option<PathBuf> {
-    let mut slot = job.slot.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut slot = lock(&job.slot);
     match std::mem::replace(&mut *slot, Slot::Reading) {
         Slot::Queued(path) => Some(path),
         other => {
@@ -473,10 +542,9 @@ fn read_dir_bulk(dir: &Path) -> std::io::Result<Vec<(OsString, Option<Meta>)>> {
     Ok(out)
 }
 
-#[derive(Clone)]
 struct Reader {
     dev: u64,
-    pool: Option<Arc<rayon::ThreadPool>>,
+    ahead: Option<Ahead>,
     cancel: Arc<AtomicBool>,
     home_first: Option<Arc<Path>>,
     scout: Option<Arc<Scout>>,
@@ -495,7 +563,7 @@ fn read_listing(dir: &Path, reader: &Reader) -> Vec<(OsString, Option<Meta>)> {
     }
 }
 
-fn list(dir: &Path, reader: &Reader) -> Vec<Entry> {
+fn list(dir: &Path, from: Option<&Job>, reader: &Reader) -> Vec<Entry> {
     if reader.cancel.load(Ordering::Relaxed) {
         return Vec::new();
     }
@@ -522,52 +590,117 @@ fn list(dir: &Path, reader: &Reader) -> Vec<Entry> {
     if let Some(scout) = &reader.scout {
         scout_repo(scout, dir, &found);
     }
-    let mut entries: Vec<Entry> = found
+    let mut queued = Vec::new();
+    let entries = found
         .into_iter()
-        .rev()
-        .map(|(name, meta)| {
+        .enumerate()
+        .map(|(i, (name, meta))| {
             let next = (meta.kind == Kind::Dir && meta.dev == reader.dev)
-                .then(|| descend(dir.join(&name), reader));
+                .then(|| descend(dir.join(&name), from, i, reader, &mut queued));
             Entry { name, meta, next }
         })
         .collect();
-    entries.reverse();
+    enqueue(reader, queued);
     entries
 }
 
-fn descend(path: PathBuf, reader: &Reader) -> Next {
-    let Some(pool) = &reader.pool else {
+fn descend(
+    path: PathBuf,
+    parent: Option<&Job>,
+    index: usize,
+    reader: &Reader,
+    queued: &mut Vec<Arc<Job>>,
+) -> Next {
+    if reader.ahead.is_none() {
         return Next::Read(path);
-    };
+    }
+    let parent_key = parent.map_or(&[][..], |p| &p.key);
+    let mut key = Vec::with_capacity(parent_key.len() + 1);
+    key.extend_from_slice(parent_key);
+    key.push(u32::try_from(index).unwrap_or(u32::MAX));
+    let early = parent.is_none_or(|p| p.early) && scouted(reader, &path);
     let job = Arc::new(Job {
+        early,
+        key,
         slot: Mutex::new(Slot::Queued(path)),
         read: Condvar::new(),
     });
-    let (queued, reader) = (Arc::clone(&job), reader.clone());
-    pool.spawn(move || {
-        let Some(path) = claim(&queued) else { return };
-        let entries = list(&path, &reader);
-        *queued.slot.lock().unwrap_or_else(PoisonError::into_inner) = Slot::Read(entries);
-        queued.read.notify_one();
-    });
+    queued.push(Arc::clone(&job));
     Next::Wait(job)
+}
+
+fn enqueue(reader: &Reader, queued: Vec<Arc<Job>>) {
+    let Some(ahead) = reader.ahead.as_ref().filter(|_| !queued.is_empty()) else {
+        return;
+    };
+    lock(&ahead.queue)
+        .jobs
+        .extend(queued.into_iter().map(Soonest));
+    ahead.ready.notify_all();
+}
+
+fn next_job(ahead: &Ahead) -> Option<Arc<Job>> {
+    let mut queue = lock(&ahead.queue);
+    loop {
+        if queue.done {
+            return None;
+        }
+        let open = queue.buffered < READ_AHEAD;
+        if queue.jobs.peek().is_some_and(|j| open || j.0.early)
+            && let Some(Soonest(job)) = queue.jobs.pop()
+        {
+            return Some(job);
+        }
+        queue = ahead
+            .ready
+            .wait(queue)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+}
+
+fn read_ahead(reader: &Reader) {
+    let Some(ahead) = &reader.ahead else { return };
+    while let Some(job) = next_job(ahead) {
+        let Some(path) = claim(&job) else { continue };
+        let entries = list(&path, Some(&job), reader);
+        if !job.early {
+            lock(&ahead.queue).buffered += entries.len();
+        }
+        *lock(&job.slot) = Slot::Read(entries);
+        job.read.notify_one();
+    }
+}
+
+fn consumed(reader: &Reader, job: &Job, entries: &[Entry]) {
+    let Some(ahead) = reader.ahead.as_ref().filter(|_| !job.early) else {
+        return;
+    };
+    let mut queue = lock(&ahead.queue);
+    let full = queue.buffered >= READ_AHEAD;
+    queue.buffered = queue.buffered.saturating_sub(entries.len());
+    if full && queue.buffered < READ_AHEAD {
+        ahead.ready.notify_all();
+    }
 }
 
 fn open(next: Next, reader: &Reader) -> Vec<Entry> {
     let job = match next {
-        Next::Read(path) => return list(&path, reader),
+        Next::Read(path) => return list(&path, None, reader),
         Next::Wait(job) => job,
     };
     if let Some(path) = claim(&job) {
-        return list(&path, reader);
+        return list(&path, Some(&job), reader);
     }
-    let slot = job.slot.lock().unwrap_or_else(PoisonError::into_inner);
+    let slot = lock(&job.slot);
     let mut slot = job
         .read
         .wait_while(slot, |s| matches!(s, Slot::Reading))
         .unwrap_or_else(PoisonError::into_inner);
     match std::mem::replace(&mut *slot, Slot::Reading) {
-        Slot::Read(entries) => entries,
+        Slot::Read(entries) => {
+            consumed(reader, &job, &entries);
+            entries
+        }
         _ => Vec::new(),
     }
 }
@@ -585,19 +718,9 @@ pub fn walk(
     let threads = std::thread::available_parallelism()
         .map(|n| n.get() * 2)
         .unwrap_or(8);
-    let pool = if parallel {
-        Some(Arc::new(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .ok()?,
-        ))
-    } else {
-        None
-    };
     let reader = Reader {
         dev: root_meta.dev,
-        pool,
+        ahead: parallel.then(Ahead::default),
         cancel: Arc::clone(&plan.cancel),
         home_first: plan
             .home
@@ -615,12 +738,37 @@ pub fn walk(
         }),
         too_deep: Arc::default(),
     };
-    let next = (root_meta.kind == Kind::Dir).then(|| descend(root.to_path_buf(), &reader));
-    let root_entry = Entry {
-        name: root.file_name().unwrap_or(OsStr::new("/")).to_os_string(),
-        meta: root_meta,
-        next,
-    };
+    std::thread::scope(|s| {
+        let _stop = Stop(reader.ahead.as_ref());
+        if reader.ahead.is_some() {
+            for _ in 0..threads {
+                s.spawn(|| read_ahead(&reader));
+            }
+        }
+        let mut queued = Vec::new();
+        let next = (root_meta.kind == Kind::Dir)
+            .then(|| descend(root.to_path_buf(), None, 0, &reader, &mut queued));
+        enqueue(&reader, queued);
+        let root_entry = Entry {
+            name: root.file_name().unwrap_or(OsStr::new("/")).to_os_string(),
+            meta: root_meta,
+            next,
+        };
+        let total = consume(root_entry, logical, plan, &reader, seen, out, progress);
+        out.too_deep += reader.too_deep.load(Ordering::Relaxed);
+        total
+    })
+}
+
+fn consume(
+    root_entry: Entry,
+    logical: &Path,
+    plan: &Plan,
+    reader: &Reader,
+    seen: &mut HashSet<(u64, u64)>,
+    out: &mut Walk,
+    progress: &dyn Fn(&Walk, &Path),
+) -> Option<u64> {
     let mut pending: Vec<(usize, std::vec::IntoIter<Entry>)> =
         vec![(0, vec![root_entry].into_iter())];
 
@@ -634,7 +782,7 @@ pub fn walk(
             continue;
         };
         if let Some(next) = entry.next {
-            pending.push((depth + 1, open(next, &reader).into_iter()));
+            pending.push((depth + 1, open(next, reader).into_iter()));
         }
         visited += 1;
         if visited.is_multiple_of(4096) {
@@ -783,7 +931,6 @@ pub fn walk(
             total = Some(blocks);
         }
     }
-    out.too_deep += reader.too_deep.load(Ordering::Relaxed);
     total
 }
 
