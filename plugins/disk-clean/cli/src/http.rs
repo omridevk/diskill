@@ -269,7 +269,7 @@ pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-pub const POST_ROUTES: [&str; 5] = ["/decide", "/preview", "/rescan", "/undo", "/free"];
+pub const POST_ROUTES: [&str; 5] = ["/decide", "/preview", "/rescan", "/undo", "/empty"];
 
 pub fn is_page_route(route: &str) -> bool {
     route.starts_with('/') && route != "/events" && !POST_ROUTES.contains(&route)

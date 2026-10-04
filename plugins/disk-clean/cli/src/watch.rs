@@ -1,7 +1,6 @@
 use crate::clean;
-use crate::hold;
 use crate::http::{self, constant_eq, query_token, refuse, respond};
-use crate::review::approved_page;
+use crate::review::{approved_page, start_trash_job};
 use crate::util;
 use serde_json::Value;
 use std::fs;
@@ -10,7 +9,7 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(100);
@@ -130,26 +129,6 @@ fn stream_events(out: &mut TcpStream, path: &Path) {
     }
 }
 
-fn start_job(name: &'static str, dir: &Path, busy: &Arc<AtomicBool>) -> &'static str {
-    let home = util::home();
-    let Some(held) = hold::held_dir(&home, dir) else {
-        return "404 Not Found";
-    };
-    let Ok(Some(lock)) = hold::lock(&held, 1) else {
-        return "409 Conflict";
-    };
-    busy.store(true, Ordering::SeqCst);
-    let (dir, busy) = (dir.to_path_buf(), Arc::clone(busy));
-    std::thread::spawn(move || {
-        if let Err(e) = hold::run_job(name, &dir, &held, &home) {
-            eprintln!("disk-clean {name}: {e}");
-        }
-        drop(lock);
-        busy.store(false, Ordering::SeqCst);
-    });
-    "202 Accepted"
-}
-
 fn post_job(
     write: &mut TcpStream,
     req: &http::Request,
@@ -159,27 +138,39 @@ fn post_job(
     busy: &Arc<AtomicBool>,
 ) {
     let name = match req.target.as_str() {
-        "/undo" => "undo",
-        "/free" => "free",
+        route @ ("/undo" | "/empty") => route,
         _ => return respond(write, "405 Method Not Allowed", "text/plain", b"read only"),
     };
     if !http::is_own_origin_post(req, port) {
         return refuse(write, "403 Forbidden");
     }
-    let sent = match serde_json::from_slice::<Value>(&req.body) {
-        Ok(Value::Object(body)) => body
-            .get("token")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+    let payload = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(body @ Value::Object(_)) => body,
         _ => return refuse(write, "400 Bad Request"),
     };
+    let sent = payload.get("token").and_then(Value::as_str).unwrap_or("");
     if !constant_eq(sent.as_bytes(), token.as_bytes()) {
         return refuse(write, "403 Forbidden");
     }
-    match start_job(name, dir, busy) {
-        "202 Accepted" => respond(write, "202 Accepted", "application/json", b"{}"),
-        status => refuse(write, status),
+    busy.store(true, Ordering::SeqCst);
+    let (events, run_dir) = (OnceLock::new(), dir.to_path_buf());
+    let done = Arc::clone(busy);
+    let status = start_trash_job(
+        name,
+        &payload,
+        dir,
+        move |event, data| {
+            events
+                .get_or_init(|| clean::Events::append(&run_dir))
+                .emit(event, data)
+        },
+        move || done.store(false, Ordering::SeqCst),
+    );
+    if status == "202 Accepted" {
+        respond(write, status, "application/json", b"{}");
+    } else {
+        busy.store(false, Ordering::SeqCst);
+        refuse(write, status);
     }
 }
 
@@ -211,7 +202,13 @@ fn handle(
             b"read only",
         );
     } else if route != "/events" {
-        match approved_page(dir, token).filter(|_| http::is_page_route(route)) {
+        let events = OnceLock::new();
+        let emit = |event: &str, data: Value| {
+            events
+                .get_or_init(|| clean::Events::append(dir))
+                .emit(event, data)
+        };
+        match approved_page(dir, token, &emit).filter(|_| http::is_page_route(route)) {
             Some(html) => respond(
                 &mut write,
                 "200 OK",

@@ -50,9 +50,8 @@ fn scan_writes_insights() {
     file(&home, "Library/Caches/app/blob.png", 256 * KIB, 30);
     file(&home, "notes.txt", 4 * KIB, 10);
 
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+    let out = common::bin(&home)
         .args(["scan", &run.to_string_lossy()])
-        .env("HOME", &home)
         .env("DISK_CLEAN_SKIP_MAP", "1")
         .output()
         .unwrap();

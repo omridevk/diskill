@@ -2,6 +2,96 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+struct RamDisk {
+    device: String,
+    mount: PathBuf,
+}
+
+static RAM: OnceLock<RamDisk> = OnceLock::new();
+
+extern "C" fn detach_ram_disk() {
+    if let Some(disk) = RAM.get() {
+        let _ = Command::new("hdiutil")
+            .args(["detach", "-force", &disk.device])
+            .output();
+    }
+}
+
+fn attach_ram_disk() -> RamDisk {
+    let attach = Command::new("hdiutil")
+        .args(["attach", "-nomount", "ram://2097152"])
+        .output()
+        .unwrap();
+    assert!(attach.status.success(), "hdiutil attach failed");
+    let device = String::from_utf8_lossy(&attach.stdout).trim().to_string();
+    assert!(
+        device.starts_with("/dev/disk"),
+        "unexpected device {device:?}"
+    );
+    let name = format!("dc-test-{}", std::process::id());
+    let erased = Command::new("diskutil")
+        .args(["erasevolume", "APFS", &name, &device])
+        .output()
+        .unwrap();
+    if !erased.status.success() {
+        let _ = Command::new("hdiutil")
+            .args(["detach", "-force", &device])
+            .output();
+        panic!(
+            "diskutil erasevolume failed: {}",
+            String::from_utf8_lossy(&erased.stderr)
+        );
+    }
+    let mount = std::fs::canonicalize(format!("/Volumes/{name}")).unwrap();
+    std::fs::write(mount.join(".metadata_never_index"), b"").unwrap();
+    RamDisk { device, mount }
+}
+
+pub fn ram_root() -> &'static Path {
+    &RAM.get_or_init(|| {
+        let disk = attach_ram_disk();
+        // SAFETY: registers a plain extern "C" function to run at process exit.
+        unsafe { libc::atexit(detach_ram_disk) };
+        disk
+    })
+    .mount
+}
+
+pub fn assert_inside_ram_disk(path: &Path) {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    assert!(
+        real.starts_with(ram_root()),
+        "{} is outside the test RAM disk {}",
+        real.display(),
+        ram_root().display()
+    );
+}
+
+pub fn assert_record_inside_ram_disk(home: &Path) {
+    let record =
+        std::fs::read_to_string(home.join(".cache/disk-clean/trashed.jsonl")).unwrap_or_default();
+    for line in record.lines() {
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        for key in ["original", "trashed"] {
+            let path = entry[key].as_str().unwrap_or("");
+            if !path.is_empty() {
+                assert_inside_ram_disk(Path::new(path));
+            }
+        }
+    }
+}
+
+pub fn bin(home: &Path) -> Command {
+    assert_inside_ram_disk(home);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_disk-clean"));
+    cmd.env("HOME", home)
+        .env("TMPDIR", home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd
+}
 
 pub struct TempDir(pub PathBuf);
 
@@ -42,12 +132,7 @@ pub fn temp_dir(tag: &str) -> TempDir {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let out = Command::new("getconf")
-        .arg("DARWIN_USER_TEMP_DIR")
-        .output()
-        .unwrap();
-    let base = String::from_utf8(out.stdout).unwrap().trim().to_string();
-    let dir = PathBuf::from(base).join(format!("disk-clean-{tag}-{}-{nanos}", std::process::id()));
+    let dir = ram_root().join(format!("disk-clean-{tag}-{nanos}"));
     std::fs::create_dir_all(&dir).unwrap();
     TempDir(std::fs::canonicalize(&dir).unwrap())
 }
@@ -69,11 +154,8 @@ pub fn sh(cwd: &Path, script: &str) {
 }
 
 pub fn cli(args: &[&str], home: &Path, env: &[(&str, &str)]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+    bin(home)
         .args(args)
-        .env("HOME", home)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
         .envs(env.iter().copied())
         .output()
         .unwrap()
@@ -96,4 +178,10 @@ pub fn events_of(run: &Path) -> Vec<serde_json::Value> {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect()
+}
+
+pub fn trash_dir() -> PathBuf {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    ram_root().join(".Trashes").join(uid.to_string())
 }

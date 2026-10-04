@@ -74,11 +74,10 @@ fn review_serves_page_and_writes_selection() {
     fs::write(run.join("status"), "done\n").unwrap();
 
     let mut child = common::reaped(
-        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        common::bin(&home)
             .args(["review", &run.to_string_lossy()])
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .env("DISK_CLEAN_WATCH_START", "3")
-            .env("HOME", &home)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
     );
@@ -172,7 +171,7 @@ fn review_serves_page_and_writes_selection() {
     let plan: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(plan["final"], serde_json::json!(["docker system prune -f"]));
     assert_eq!(plan["final_count"], 1);
-    assert_eq!(plan["hold"], serde_json::json!([]));
+    assert_eq!(plan["paths"], serde_json::json!([]));
     assert_eq!(plan["rejected"][0]["path"], format!("{h}/Library/Caches/a"));
     assert_eq!(plan["rejected"][0]["reason"], "already gone");
     assert_eq!(plan["count"], 1);
@@ -245,9 +244,8 @@ fn review_exits_3_when_nothing_found() {
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
     fs::write(run.join("scan.tsv"), "").unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+    let out = common::bin(&t.0)
         .args(["review", &run.to_string_lossy()])
-        .env("HOME", &t.0)
         .env("DISK_CLEAN_NO_BROWSER", "1")
         .output()
         .unwrap();
@@ -362,10 +360,10 @@ fn review_without_run_dir_streams_the_scan() {
         .and_then(|(_, rest)| rest.split_once("</script>"))
         .map(|(json, _)| json)
         .expect("data script");
-    assert_eq!(
-        serde_json::from_str::<Value>(json).unwrap(),
-        serde_json::json!({"live": true})
-    );
+    let data = serde_json::from_str::<Value>(json).unwrap();
+    assert_eq!(data["live"], true);
+    assert_eq!(data["trash"], serde_json::json!([]));
+    assert!(data["run"].as_str().unwrap().starts_with("run-"), "{data}");
     assert!(page.contains(&token));
     assert_eq!(get(port, "/events?token=wrong").0, 403);
 
@@ -501,9 +499,8 @@ fn review_without_run_dir_streams_the_scan() {
 fn spawn_live(home: &Path, bin: &Path) -> (common::Reaped, u16, String) {
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let mut child = common::reaped(
-        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        common::bin(home)
             .arg("review")
-            .env("HOME", home)
             .env("PATH", path)
             .env("DISK_CLEAN_SKIP_MAP", "1")
             .env("DISK_CLEAN_WATCH_START", "1")
@@ -668,9 +665,8 @@ fn finished_review(tag: &str) -> (common::TempDir, common::Reaped, u16, String) 
     )
     .unwrap();
     let mut child = common::reaped(
-        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        common::bin(&home)
             .args(["review", &run.to_string_lossy()])
-            .env("HOME", &home)
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
@@ -986,7 +982,7 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
     assert_eq!(status, 200, "{body}");
     let plan: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(plan["count"], 1, "{plan}");
-    assert_eq!(plan["hold"][0]["path"], take.to_str().unwrap());
+    assert_eq!(plan["paths"][0]["path"], take.to_str().unwrap());
     assert_eq!(
         post_reply(
             port,
@@ -1047,11 +1043,16 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         .map(|i| i["path"].as_str().unwrap())
         .collect();
     assert_eq!(chosen, [take.to_str().unwrap()]);
+    assert_eq!(sel["mode"], "trash");
+    common::assert_inside_ram_disk(&take);
 
     let dry = common::cli(&["clean", "--dry-run", run.to_str().unwrap()], &home, &[]);
     assert_eq!(dry.status.code(), Some(0));
     let dry = String::from_utf8_lossy(&dry.stdout).into_owned();
-    assert!(dry.contains(&format!("mv -- {} ", take.display())), "{dry}");
+    assert!(
+        dry.contains(&format!("trash -- {}\n", take.display())),
+        "{dry}"
+    );
     assert!(!dry.contains(keep.to_str().unwrap()), "{dry}");
 
     let real = common::cli(&["clean", run.to_str().unwrap()], &home, &[]);
@@ -1066,19 +1067,20 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
     });
     assert!(
         !take.exists(),
-        "the approved, listed path was moved to hold"
+        "the approved, listed path was moved to the Trash"
     );
     assert!(
         keep.join("blob").is_file(),
         "a listed but unapproved path stays"
     );
     assert!(never.join("blob").is_file(), "a path never listed stays");
-    let held: Vec<Value> = common::events_of(run)
+    let trashed: Vec<Value> = common::events_of(run)
         .into_iter()
-        .filter(|e| e["event"] == "held")
+        .filter(|e| e["event"] == "trashed")
         .collect();
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0]["path"], take.to_str().unwrap());
+    assert_eq!(trashed.len(), 1);
+    assert_eq!(trashed[0]["path"], take.to_str().unwrap());
+    common::assert_record_inside_ram_disk(&home);
 }
 
 #[test]
@@ -1099,9 +1101,8 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
         .collect();
     fs::write(run.join("scan.tsv"), rows).unwrap();
     let mut child = common::reaped(
-        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        common::bin(&home)
             .args(["review", &run.to_string_lossy()])
-            .env("HOME", &home)
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .env("DISK_CLEAN_WATCH_START", "1")
             .stdout(Stdio::piped())

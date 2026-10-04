@@ -1,10 +1,10 @@
 pub mod clean;
-pub mod hold;
 pub mod http;
 pub mod insights;
 pub mod review;
 pub mod scan;
 pub mod selection;
+pub mod trash;
 pub mod util;
 pub mod walk;
 pub mod watch;

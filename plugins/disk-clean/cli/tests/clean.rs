@@ -185,16 +185,13 @@ fn clean_end_to_end_on_fixture() {
     let dry = common::cli(&["clean", "--dry-run", &p(&run)], root, &[]);
     let plan = String::from_utf8_lossy(&dry.stdout);
     assert!(dry.status.success(), "{plan}");
-    let held = disk_clean::hold::dir_of(&p(root), &run);
     let (hold_at, cant_undo) = (
-        plan.find("# moved to hold (undo available until ").unwrap(),
+        plan.find("# moved to the Trash (undo in the page").unwrap(),
         plan.find("# can't be undone:\n").unwrap(),
     );
-    let first = plan
-        .find(&format!("\nmv -- {} {}/", p(&doomed), p(&held)))
-        .unwrap();
+    let first = plan.find(&format!("\ntrash -- {}\n", p(&doomed))).unwrap();
     let second = plan
-        .find(&format!("\nmv -- {} {}/", p(&doomed_file), p(&held)))
+        .find(&format!("\ntrash -- {}\n", p(&doomed_file)))
         .unwrap();
     assert!(hold_at < first && hold_at < second, "{plan}");
     assert!(first < cant_undo && second < cant_undo, "{plan}");
@@ -265,12 +262,16 @@ fn clean_end_to_end_on_fixture() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let log = fs::read_to_string(run.join("clean.log")).unwrap();
+    let bin = p(&common::trash_dir());
     assert!(
-        log.contains(&format!("held    {} -> {}/", p(&doomed), p(&held))),
+        log.contains(&format!("trashed {} -> {bin}/doomed\n", p(&doomed))),
         "{log}"
     );
     assert!(
-        log.contains(&format!("held    {} -> {}/", p(&doomed_file), p(&held))),
+        log.contains(&format!(
+            "trashed {} -> {bin}/doomed-file.bin\n",
+            p(&doomed_file)
+        )),
         "{log}"
     );
     assert!(
@@ -279,7 +280,7 @@ fn clean_end_to_end_on_fixture() {
     );
     assert!(log.contains("removed: 0 items, 0 bytes"), "{log}");
     assert!(
-        log.contains("held: 2 items, 8192 bytes, not freed yet (undo until "),
+        log.contains("trashed: 2 items, 8192 bytes, in the Trash until it is emptied"),
         "{log}"
     );
     assert!(log.contains("free space changed by "), "{log}");
@@ -288,15 +289,17 @@ fn clean_end_to_end_on_fixture() {
         "the scan-time free-before is never used: {log}"
     );
     assert!(!doomed.exists() && !doomed_file.exists());
-    let manifest = disk_clean::hold::read(&held);
-    assert_eq!(manifest.len(), 2);
-    for entry in &manifest {
-        assert!(Path::new(&entry.held).exists(), "{entry:?}");
-        assert_eq!(entry.bytes, 4096);
-        assert!(entry.held_at > 0);
+    common::assert_record_inside_ram_disk(root);
+    let record = disk_clean::trash::read(&p(root));
+    assert_eq!(record.len(), 2);
+    for entry in &record {
+        assert!(Path::new(&entry.trashed).exists(), "{entry:?}");
+        assert_eq!((entry.bytes, entry.state.as_str()), (4096, "trashed"));
+        assert_eq!(entry.run, disk_clean::trash::run_id(&run));
+        assert!(entry.at > 0);
     }
     assert!(
-        Path::new(&manifest[0].held)
+        Path::new(&record[0].trashed)
             .join("nested/deeper/file")
             .exists()
     );
@@ -357,7 +360,7 @@ fn dry_run_quotes_paths_and_lists_fixed_commands() {
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     let quoted = format!("'{}'", odd_s.replace('\'', r"'\''"));
-    assert!(plan.contains(&format!("\nmv -- {quoted} ")), "{plan}");
+    assert!(plan.contains(&format!("\ntrash -- {quoted}\n")), "{plan}");
     assert!(plan.contains("\ndocker system prune -f\n"), "{plan}");
     assert!(odd.exists());
 }
@@ -474,18 +477,35 @@ fn worker_writes_one_event_per_outcome() {
     assert!(started["free"].as_i64().unwrap() > 0);
     assert!(
         named("removed").is_empty(),
-        "held paths are never reported removed"
+        "trashed paths are never reported removed"
     );
-    let held = named("held");
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0]["path"], p(&doomed));
-    assert_eq!(held[0]["bytes"], 4096);
-    let held_path = held[0]["held_path"].as_str().unwrap();
-    assert!(Path::new(held_path).join("a/file").exists());
+    let trashed = named("trashed");
+    assert_eq!(trashed.len(), 1);
+    assert_eq!(trashed[0]["path"], p(&doomed));
+    assert_eq!(trashed[0]["bytes"], 4096);
+    assert_eq!(trashed[0]["id"].as_str().unwrap().len(), 16);
+    let trashed_path = trashed[0]["trashed_path"].as_str().unwrap();
+    assert!(Path::new(trashed_path).join("a/file").exists());
     let failed = named("failed");
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0]["path"], p(&stuck));
-    assert_eq!(failed[0]["reason"], "not held: permission denied");
+    assert!(
+        failed[0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("not moved to the Trash: "),
+        "{}",
+        failed[0]
+    );
+    let rows = named("trash");
+    assert_eq!(rows.len(), 1, "one record batch");
+    let states: Vec<&str> = rows[0]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["trashed", "failed"]);
     let worktrees = named("worktree");
     assert_eq!(worktrees.len(), 2);
     assert_eq!(worktrees[0]["path"], p(&gone));
@@ -505,19 +525,21 @@ fn worker_writes_one_event_per_outcome() {
     assert_eq!(done["event"], "done");
     assert_eq!(done["removed"], 1);
     assert_eq!(done["removed_bytes"], 4096, "{done}");
-    assert_eq!(done["held"], 1);
-    assert_eq!(done["held_bytes"], 4096);
-    assert!(done["hold_until"].as_i64().unwrap() > 1_700_000_000);
+    assert_eq!(done["trashed"], 1);
+    assert_eq!(done["trashed_bytes"], 4096);
     assert_eq!(done["free_before"], started["free"]);
     assert!(done["free_after"].is_i64());
     assert!(events.iter().all(|e| e["elapsed_ms"].is_u64()));
     let log = fs::read_to_string(run.join("clean.log")).unwrap();
     assert!(
-        log.contains(&format!("NOT HELD {} (permission denied)", p(&stuck))),
+        log.contains(&format!(
+            "NOT TRASHED {} (not moved to the Trash: ",
+            p(&stuck)
+        )),
         "{log}"
     );
     assert!(log.contains("removed: 1 items, 4096 bytes"), "{log}");
-    assert!(log.contains("held: 1 items, 4096 bytes"), "{log}");
+    assert!(log.contains("trashed: 1 items, 4096 bytes"), "{log}");
     assert!(!doomed.exists() && !gone.exists() && dirty.exists() && stuck.exists());
 }
 
@@ -640,14 +662,15 @@ fn a_leaf_symlink_is_moved_itself_never_followed() {
     assert!(out.status.success());
     assert!(fs::symlink_metadata(&link).is_err(), "the link itself goes");
     assert!(decoy_t.0.join("precious").exists(), "its target stays");
-    let held = disk_clean::hold::read(&disk_clean::hold::dir_of(&text(home), &run));
-    assert_eq!(held.len(), 1);
+    let record = disk_clean::trash::read(&text(home));
+    assert_eq!(record.len(), 1);
     assert!(
-        fs::symlink_metadata(&held[0].held)
+        fs::symlink_metadata(&record[0].trashed)
             .unwrap()
             .file_type()
             .is_symlink()
     );
+    common::assert_record_inside_ram_disk(home);
 }
 
 #[test]
@@ -754,7 +777,7 @@ fn duplicate_selection_paths_are_planned_once() {
     let out = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
     let plan = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
-        plan.matches(&format!("mv -- {} ", text(&dir))).count(),
+        plan.matches(&format!("trash -- {}\n", text(&dir))).count(),
         1,
         "{plan}"
     );
@@ -808,7 +831,11 @@ fn planning_ten_thousand_items_takes_well_under_a_second() {
         .map(|i| serde_json::from_str(&selection_item("rm", &path(i))).unwrap())
         .collect();
     let started = Instant::now();
-    let plan = disk_clean::clean::plan(&disk_clean::clean::index_scan(&scan), &items);
+    let plan = disk_clean::clean::plan_in(
+        &disk_clean::clean::index_scan(&scan),
+        &items,
+        &t.0.to_string_lossy(),
+    );
     let took = started.elapsed();
     assert_eq!(plan.rejected.len(), 10_000);
     assert!(
@@ -883,9 +910,8 @@ fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
         .local_addr()
         .unwrap()
         .port();
-    let mut watcher = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+    let mut watcher = common::bin(root)
         .args(["watch", &text(&run)])
-        .env("HOME", root)
         .env("DISK_CLEAN_WATCH_TOKEN", "tok")
         .env("DISK_CLEAN_WATCH_PORT", port.to_string())
         .spawn()
