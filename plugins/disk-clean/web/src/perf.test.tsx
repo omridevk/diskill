@@ -14,6 +14,10 @@ const REPEATS = 3
 const SCROLL_STEPS = 60
 const PER_TICK = 25
 const FRAME_BUDGET = 50
+const SAMPLES = 15
+const FLAT_FACTOR = 3
+const FLAT_SLACK = 4
+const DEBOUNCED = 400
 const BROWSER = navigator.userAgent.includes('Firefox') ? 'firefox' : 'chromium'
 
 type Work = Record<string, number>
@@ -194,6 +198,58 @@ async function scan(count: number): Promise<Work> {
   return {commit: median(perCommit), p95: percentile(perCommit, 0.95)}
 }
 
+interface Spread {
+  median: number
+  p95: number
+}
+
+function spreadOf(costs: readonly number[]): Spread {
+  return {median: median(costs), p95: percentile(costs, 0.95)}
+}
+
+const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+async function sampled(action: (round: number) => void, settle: () => Promise<unknown> = nextPaint) {
+  const costs: number[] = []
+  for (let round = 0; round < SAMPLES; round++) {
+    await nextPaint()
+    commits.length = 0
+    action(round)
+    await settle()
+    await nextPaint()
+    costs.push(sum(commits))
+  }
+  return spreadOf(costs)
+}
+
+function streamItems(source: EventTarget, items: readonly {path: string}[], head: object) {
+  for (const item of items) send(source, 'item', {category: head, item, elapsed_ms: 10})
+}
+
+async function perChange(rows: number): Promise<Record<string, Spread>> {
+  const source = cleanupSource()
+  const temp = bigSection(rows + SAMPLES * PER_TICK)
+  const head = {id: temp.id, title: temp.title, desc: temp.desc, risk: temp.risk}
+  const base = withSection(temp)
+  const loaded: Loaded = {...base, data: {...base.data, categories: []}, live: true, openEvents: () => source}
+  const screen = await render(<Measured loaded={loaded} />)
+  await expect.element(screen.getByText('Walking disk')).toBeVisible()
+  streamItems(source, temp.items.slice(0, rows), head)
+  send(source, 'walked', {home: 0, tree: base.data.tree, insights: null, worktrees: 0, elapsed_ms: 20})
+  send(source, 'done', {reclaimable: 0, elapsed_ms: 30})
+  await expect.element(screen.getByRole('link', {name: /^Your macOS temp/})).toBeVisible()
+  link(/^Your macOS temp/).click()
+  await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
+  await expect.element(screen.getByRole('table', {name: 'Your macOS temp'}).getByRole('checkbox').first()).toBeVisible()
+  const batch = await sampled(round => streamItems(source, temp.items.slice(rows + round * PER_TICK, rows + (round + 1) * PER_TICK), head))
+  const tick = await sampled(() => element('[role="table"] [role="checkbox"]').click())
+  const input = element('input[aria-label="Filter paths"]')
+  if (!(input instanceof HTMLInputElement)) throw new Error('no filter input')
+  const keystroke = await sampled(round => typeInto(input, round % 2 === 0 ? 'item-0' : 'item-00'), () => pause(DEBOUNCED))
+  await screen.unmount()
+  return {batch, tick, keystroke}
+}
+
 function report(name: string, size: number, small: Work, big: Work) {
   for (const key of Object.keys(big)) console.log(`${BROWSER} ${name} ${key}: ${big[key]?.toFixed(1)} ms of React work at ${size}, ${small[key]?.toFixed(1)} ms at ${SMALL}`)
 }
@@ -230,5 +286,20 @@ describe('a 9,000-item streaming scan', () => {
     report('scan', SCANNED, small, big)
     scalesLikeSmall({commit: small.commit ?? 0}, {commit: big.commit ?? 0}, 8)
     expect.soft(big.p95, `p95: ${big.p95?.toFixed(1)} ms of React work for one batch at ${SCANNED} items`).toBeLessThan(FRAME_BUDGET)
+  }, 180_000)
+})
+
+describe('one change at 10,000 rows', () => {
+  test('a streamed batch, a tick and a filter keystroke cost about what they cost at 30 rows', async () => {
+    const small = await perChange(SMALL)
+    const big = await perChange(ROWS)
+    for (const key of Object.keys(big)) {
+      for (const stat of ['median', 'p95'] as const) {
+        const at30 = small[key]?.[stat] ?? 0
+        const at10k = big[key]?.[stat] ?? Infinity
+        console.log(`${BROWSER} change ${key} ${stat}: ${at10k.toFixed(1)} ms of React work at ${ROWS}, ${at30.toFixed(1)} ms at ${SMALL}`)
+        expect.soft(at10k, `${key} ${stat}: ${at10k.toFixed(1)} ms against ${at30.toFixed(1)} ms for ${SMALL}`).toBeLessThan(at30 * FLAT_FACTOR + FLAT_SLACK)
+      }
+    }
   }, 180_000)
 })
