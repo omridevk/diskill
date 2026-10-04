@@ -38,7 +38,10 @@ user's installed Hallmark skill) on each surface as the anti-AI-look pass: its p
 (critical, major, minor) goes into the report, and every critical or major finding is fixed. Use
 it as an audit plus its component-scope references (`interaction-and-states.md`,
 `microinteractions.md`, `anti-patterns.md`), never its theme catalog, `redesign` or page flow:
-this is a dense tool UI on shadcn and our tokens, not a landing page. Surfaces:
+this is a dense tool UI on shadcn and our tokens, not a landing page. Also run
+`web-design-guidelines` (Vercel's Web Interface Guidelines) over every component and route file:
+its `file:line` findings go into the report, and each one is fixed or answered with a reason.
+Surfaces:
 - header with tabs and status;
 - summary strip;
 - toolbar (search, filters, sort, view);
