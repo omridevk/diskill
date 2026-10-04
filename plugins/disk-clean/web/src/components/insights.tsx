@@ -5,10 +5,12 @@ import {scaleLinear as linear} from '@tanstack/charts/scales/linear'
 import {scaleLinear} from 'd3-scale'
 import {useMemo, type ReactNode} from 'react'
 import {ChartBoundary} from './chart-boundary'
-import {BigBytes, CARD_TOOLTIP, ChartCard, Fact, Meter, shareOf} from './chart-card'
-import {formatBytes, sumBytes, type Category, type Insights as InsightsData} from '@/lib/data'
+import {BigBytes, CARD_TOOLTIP, CardLink, ChartCard, CopyPath, Fact, Meter, shareOf} from './chart-card'
+import {formatBytes, sumBytes, type Category, type Insights as InsightsData, untilde} from '@/lib/data'
 import {useDb} from '@/lib/db'
-import {useCategories, useScanState} from '@/lib/views'
+import {zoomLink, type Folder} from '@/lib/folders'
+import {useHome} from '@/lib/page-data'
+import {useCategories, useFolders, useScanState} from '@/lib/views'
 
 const HEAT = ['#18181b', '#60a5fa']
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -22,7 +24,6 @@ const IDLE_BUCKETS: [string, number][] = [
 ]
 
 const INTERACTION = {tooltip: CARD_TOOLTIP, focusRing: false} as const
-
 
 function dayTitle(day: string) {
   return new Date(`${day}T00:00`).toLocaleDateString('en', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'})
@@ -85,11 +86,11 @@ function Calendar({days}: {days: InsightsData['modified_by_day']}) {
       definition={definition}
       height={170}
       ariaLabel="Bytes by last-modified day over the past year"
-      renderTooltipBody={({primaryPoint}) => {
+      renderTooltipBody={({primaryPoint, pinned}) => {
         const d = primaryPoint?.datum
         return (
           d && (
-            <ChartCard title={dayTitle(d.day)}>
+            <ChartCard title={dayTitle(d.day)} pinned={pinned}>
               <BigBytes bytes={d.bytes} />
               <Fact label="Files changed" value={d.files.toLocaleString()} />
               <Meter label="of the past year's changes" share={shareOf(d.bytes, d.year)} />
@@ -101,7 +102,8 @@ function Calendar({days}: {days: InsightsData['modified_by_day']}) {
   )
 }
 
-function FolderAge({data}: {data: InsightsData['age_by_folder']}) {
+function FolderAge({data, folders}: {data: InsightsData['age_by_folder']; folders: ReadonlyMap<string, Folder>}) {
+  const home = useHome()
   const definition = useMemo(() => {
     const cells = data.folders.flatMap(f => data.buckets.map((bucket, i) => ({folder: f.path, bucket, bytes: f.bytes[i] ?? 0, total: f.bytes.reduce((s, b) => s + b, 0)})))
     const max = Math.max(...cells.map(c => c.bytes))
@@ -120,11 +122,25 @@ function FolderAge({data}: {data: InsightsData['age_by_folder']}) {
       definition={definition}
       height={36 + data.folders.length * 26}
       ariaLabel="Folder size by last-modified age"
-      renderTooltipBody={({primaryPoint}) => {
+      renderTooltipBody={({primaryPoint, pinned, dismiss}) => {
         const d = primaryPoint?.datum
         return (
           d && (
-            <ChartCard title={d.folder.split('/').at(-1) || d.folder} subtitle={d.folder}>
+            <ChartCard
+              title={d.folder.split('/').at(-1) || d.folder}
+              subtitle={d.folder}
+              pinned={pinned}
+              actions={
+                <>
+                  {folders.has(untilde(d.folder, home)) && (
+                    <CardLink to={zoomLink(folders.get(untilde(d.folder, home)))} onClick={dismiss}>
+                      Open in Storage
+                    </CardLink>
+                  )}
+                  <CopyPath path={untilde(d.folder, home)} />
+                </>
+              }
+            >
               <BigBytes bytes={d.bytes} />
               <Fact label="Last modified" value={d.bucket} />
               <Meter label="of this folder" share={shareOf(d.bytes, d.total)} />
@@ -153,11 +169,11 @@ function Kinds({kinds}: {kinds: InsightsData['by_kind']}) {
       definition={definition}
       height={40 + kinds.length * 26}
       ariaLabel="Bytes by file kind"
-      renderTooltipBody={({primaryPoint}) => {
+      renderTooltipBody={({primaryPoint, pinned}) => {
         const d = primaryPoint?.datum
         return (
           d && (
-            <ChartCard title={d.kind}>
+            <ChartCard title={d.kind} pinned={pinned}>
               <BigBytes bytes={d.bytes} />
               <Fact label="Files" value={d.files.toLocaleString()} />
               <Meter label="of all files by size" share={shareOf(d.bytes, d.total)} />
@@ -177,7 +193,7 @@ function SectionAge({categories}: {categories: Category[]}) {
         const low = index === 0 ? -1 : (IDLE_BUCKETS[index - 1]?.[1] ?? 0)
         const high = IDLE_BUCKETS[index]?.[1] ?? Infinity
         const items = c.items.filter(i => i.age !== null && i.age > low && i.age <= (index === 0 ? 0 : high))
-        return {section: c.title, bucket, bytes: sumBytes(items), items: items.length, total: c.bytes}
+        return {section: c.title, id: c.id, bucket, bytes: sumBytes(items), items: items.length, total: c.bytes}
       }),
     )
     const max = Math.max(...cells.map(c => c.bytes))
@@ -199,11 +215,19 @@ function SectionAge({categories}: {categories: Category[]}) {
       definition={definition.chart}
       height={definition.height}
       ariaLabel="Cleanup sections by idle time"
-      renderTooltipBody={({primaryPoint}) => {
+      renderTooltipBody={({primaryPoint, pinned, dismiss}) => {
         const d = primaryPoint?.datum
         return (
           d && (
-            <ChartCard title={d.section}>
+            <ChartCard
+              title={d.section}
+              pinned={pinned}
+              actions={
+                <CardLink to={{to: '/cleanup/$section', params: {section: d.id}, search: true}} onClick={dismiss}>
+                  Open in Cleanup
+                </CardLink>
+              }
+            >
               <BigBytes bytes={d.bytes} />
               <Fact label="Idle for" value={d.bucket} />
               <Fact label="Items" value={d.items.toLocaleString()} />
@@ -219,6 +243,7 @@ function SectionAge({categories}: {categories: Category[]}) {
 export function Insights() {
   const db = useDb()
   const {insights} = useScanState(db)
+  const folders = useFolders(db)
   const categories = useCategories(db)
   return (
     <div className="grid grid-cols-2 gap-4 overflow-auto px-7 py-5">
@@ -228,7 +253,7 @@ export function Insights() {
             <Calendar days={insights.modified_by_day} />
           </Panel>
           <Panel title="How old each big folder is" hint="Bytes in the largest folders under ~, by last-modified age.">
-            <FolderAge data={insights.age_by_folder} />
+            <FolderAge data={insights.age_by_folder} folders={folders} />
           </Panel>
           <Panel title="What kind of data" hint="Bytes by file kind across your home folder.">
             <Kinds kinds={insights.by_kind} />

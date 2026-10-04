@@ -3,6 +3,7 @@ import type {RowSelectionState} from '@tanstack/react-table'
 import {useCallback, useMemo, useSyncExternalStore} from 'react'
 import {outermost, sumBytes, type Category} from './data'
 import type {Action, Db, Request, Session} from './db'
+import type {Folder} from './folders'
 import type {CategoryHead, Disk, Entry, ScanProgress, ScanState} from './scan-feed'
 
 function first<T>(rows: readonly T[], fallback: T) {
@@ -18,6 +19,11 @@ const NO_SCAN: ScanState = {id: 'scan', walked: true, done: true, error: '', wor
 const NO_DISK: Disk = {id: 'disk', total: 0, used: 0, free: 0, snapshots: 0}
 const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
 const NO_SESSION: Session = {id: 'session', approved: false, approvedBytes: 0, cancelled: false, scanLink: 'live', cleanupLink: 'live'}
+
+export function useFolders(db: Db): ReadonlyMap<string, Folder> {
+  const {data} = useLiveQuery(db.scan.folders.collection)
+  return useMemo(() => new Map(data.map(folder => [folder.path, folder])), [data])
+}
 
 export function useDisk(db: Db): Disk {
   const {data} = useLiveQuery(db.scan.disk.collection)

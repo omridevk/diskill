@@ -1,4 +1,4 @@
-import type {SearchSchemaInput} from '@tanstack/react-router'
+import {parseSearchWith, stringifySearchWith, type SearchSchemaInput} from '@tanstack/react-router'
 import type {Risk} from './data'
 import {cleanTokens} from './selection'
 
@@ -86,3 +86,21 @@ export function cleanupSearch(raw: Raw<CleanupSearch>): CleanupSearch {
 export function storageSearch(raw: Raw<StorageSearch>): StorageSearch {
   return {shape: oneOf(SHAPES, raw.shape, STORAGE_DEFAULTS.shape)}
 }
+
+const utf8 = new TextEncoder()
+const strictUtf8 = new TextDecoder('utf-8', {fatal: true})
+
+export function obscureSearchValue(value: unknown) {
+  const binary = Array.from(utf8.encode(JSON.stringify(value)), byte => String.fromCharCode(byte)).join('')
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+}
+
+export function revealSearchValue(text: string): unknown {
+  const binary = atob(text.replaceAll('-', '+').replaceAll('_', '/'))
+  return JSON.parse(strictUtf8.decode(Uint8Array.from(binary, char => char.charCodeAt(0))))
+}
+
+const everyStringIsEncoded = (text: string) => text
+
+export const parseSearch = parseSearchWith(revealSearchValue)
+export const stringifySearch = stringifySearchWith(obscureSearchValue, everyStringIsEncoded)

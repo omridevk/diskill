@@ -1,15 +1,16 @@
 import {portal} from '@tanstack/charts/tooltip/portal'
 import {tooltip} from '@tanstack/charts/tooltip'
-import type {ReactNode} from 'react'
+import {Link, type LinkOptions} from '@tanstack/react-router'
+import {useState, type ReactNode} from 'react'
+import {Button, buttonVariants} from '@/components/ui/button'
 import {formatBytes} from '@/lib/data'
 
 export const CARD_TOOLTIP = {
   use: tooltip,
   portal,
-  anchor: 'pointer',
+  anchor: 'point',
   placement: ['right', 'left', 'bottom', 'top'],
   offset: 14,
-  sticky: false,
   className: 'chart-card',
 } as const
 
@@ -41,7 +42,16 @@ function middle(text: string, max = 46) {
   return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`
 }
 
-export function ChartCard({title, subtitle, hint, children}: {title: string; subtitle?: string; hint?: string; children: ReactNode}) {
+interface CardProps {
+  title: string
+  subtitle?: string
+  hint?: string
+  pinned?: boolean
+  actions?: ReactNode
+  children: ReactNode
+}
+
+export function ChartCard({title, subtitle, hint = 'Click to pin', pinned = false, actions, children}: CardProps) {
   return (
     <div className="flex w-72 flex-col gap-3 text-xs text-popover-foreground">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -53,7 +63,8 @@ export function ChartCard({title, subtitle, hint, children}: {title: string; sub
         )}
       </div>
       {children}
-      {hint && <div className="border-t pt-2 text-[11px] text-muted-foreground">{hint}</div>}
+      {pinned && actions && <div className="flex flex-wrap gap-2 border-t pt-2.5">{actions}</div>}
+      {!pinned && hint && <div className="border-t pt-2 text-[11px] text-muted-foreground">{hint}</div>}
     </div>
   )
 }
@@ -83,4 +94,26 @@ export function Fact({label, value}: {label: ReactNode; value: ReactNode}) {
 
 export function BigBytes({bytes}: {bytes: number}) {
   return <div className="text-2xl leading-none font-bold tracking-tight tabular-nums">{formatBytes(bytes)}</div>
+}
+
+export function CopyPath({path}: {path: string}) {
+  const [said, setSaid] = useState('Copy path')
+  const copy = () =>
+    navigator.clipboard.writeText(path).then(
+      () => setSaid('Copied'),
+      () => setSaid("Couldn't copy"),
+    )
+  return (
+    <Button size="xs" variant="outline" onClick={copy}>
+      {said}
+    </Button>
+  )
+}
+
+export function CardLink({to, onClick, children}: {to: LinkOptions; onClick: () => void; children: ReactNode}) {
+  return (
+    <Link {...to} onClick={onClick} className={buttonVariants({size: 'xs', variant: 'outline'})}>
+      {children}
+    </Link>
+  )
 }

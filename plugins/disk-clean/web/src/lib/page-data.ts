@@ -215,10 +215,6 @@ export function scanReady(db: Db) {
   return collection.isReady() ? Promise.resolve() : new Promise<void>(resolve => collection.onFirstReady(resolve))
 }
 
-export function treeNow(db: Db) {
-  return scanNow(db)?.tree ?? null
-}
-
 export function isApproved(db: Db) {
   return db.session.synced.get('session')?.approved ?? false
 }

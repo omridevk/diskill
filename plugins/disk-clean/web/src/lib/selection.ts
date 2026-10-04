@@ -62,7 +62,12 @@ function tokenSet(value: string) {
   return new Set(value ? value.split(SEPARATOR) : [])
 }
 
-const shortOf = (path: string) => fullToken(path).slice(0, SHORT)
+export const shortOf = (path: string) => fullToken(path).slice(0, SHORT)
+
+export function tokenFor(path: string, sharing: (short: string) => number | undefined) {
+  const short = shortOf(path)
+  return sharing(short) === 1 ? short : fullToken(path)
+}
 
 interface Notes {
   marks: string[]
@@ -93,10 +98,7 @@ export function createSelector<T extends Item = Item>() {
   const fragments = new Map<string, Fragment<T>>()
   const last: {categories: readonly Group<T>[] | null; add: string; drop: string; decoded: Decoded<T>} = {categories: null, add: '', drop: '', decoded: {on: {}, parts: []}}
 
-  const tokenOf = (path: string) => {
-    const short = shortOf(path)
-    return counts.get(short) === 1 ? short : fullToken(path)
-  }
+  const tokenOf = (path: string) => tokenFor(path, short => counts.get(short))
 
   const enter = (path: string, section: string) => {
     const short = shortOf(path)
