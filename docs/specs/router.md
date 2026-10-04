@@ -58,8 +58,13 @@ down through a React context. That is routing done by hand next to the router. T
   route (header, summary, tabs as `<Link>`s, footer).
 - A dialog never changes what is behind it: the dialog routes are children of the view they cover
   (`$section/confirm`), and every search param of that view survives opening and closing them.
-- Switching tabs returns to where you were in that tab (its last URL in this session, kept in the
-  tab links); the current view is always fully described by the URL.
+- Tabs are nested routes: a pathless layout route `_tabs` renders the chrome and `<Outlet/>`;
+  `cleanup`, `storage` and `insights` are its children, and each tab with sub-views renders its
+  own `<Outlet/>` (`cleanup` → `$section` → `confirm`/`free`; `storage` → index / `$` zoom). The
+  root route holds only the error and not-found pages.
+- Switching tabs returns to where you were in that tab: one router-level record of each tab's last
+  URL, updated by a `router.subscribe('onResolved')` registered at router creation, read by the tab
+  links through `useSyncExternalStore`. The current view is always fully described by the URL.
 - Paths are shown from the home folder the server reports (`~`), never inferred from the storage map,
   which may be skipped.
 - Overlays that layer over any route (`overlay=progress|movie`) stay search params read by one
