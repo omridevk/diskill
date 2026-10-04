@@ -5,5 +5,5 @@ const cleanup = getRouteApi('/_tabs/cleanup')
 
 export function OpenSection({section}: {section: string}) {
   const view = cleanup.useSearch({select: search => search.view})
-  return view === 'list' ? <SectionDetail section={section} /> : null
+  return <SectionDetail section={section} framed={view === 'cards'} />
 }

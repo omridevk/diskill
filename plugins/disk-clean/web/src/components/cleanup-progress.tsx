@@ -111,15 +111,15 @@ function AbandonedText({progress, reason}: {progress: CleanupProgress; reason: s
 
 const LOST = 'Lost contact with disk-clean: the cleanup keeps running; reload to reconnect'
 
+const LINK_TEXT = {reconnecting: 'Reconnecting to disk-clean…', lost: LOST}
+
 export function BarText({progress}: {progress: CleanupProgress}) {
   const {cleanup, plan} = progress
-  const lost = progress.link === 'reconnecting'
-  if (progress.link === 'lost') return <span className="text-red-300">{LOST}</span>
+  if (progress.link !== 'live') return <span className="text-red-300">{LINK_TEXT[progress.link]}</span>
   if (jobRunning(progress)) return <JobText progress={progress} />
   if (cleanup.done) return <DoneText progress={progress} />
   if (cleanup.abandoned) return <AbandonedText progress={progress} reason={cleanup.abandoned.reason} />
   if (!cleanup.started) return <span className="t-pulse">{WAITING}</span>
-  if (lost) return 'Reconnecting…'
   const last = progress.outcomes.at(-1)
   return (
     <>
@@ -403,10 +403,12 @@ export function HeldActions({
 }) {
   const offered = progress.held > 0 && progress.cleanup.done !== null
   if (!offered && !error) return null
-  const waiting = busy || jobRunning(progress)
+  const away = progress.link !== 'live'
+  const waiting = busy || jobRunning(progress) || away
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
       {error}
+      {offered && away && <span className="text-xs text-red-300">Undo and Free wait until disk-clean is reachable again</span>}
       {offered && (
         <>
           <Button variant="outline" disabled={waiting} onClick={onUndo}>

@@ -329,7 +329,7 @@ describe('the cleanup movie', () => {
     if (!grid) throw new Error('no tiles')
     const size = () => `${grid.getBoundingClientRect().width}x${grid.getBoundingClientRect().height}`
     const before = size()
-    await screen.getByText('items removed').click()
+    await screen.getByText('removed for good').click()
     expect(document.querySelector('[data-slot="popover-content"]')).toBeNull()
     expect(size()).toBe(before)
     await screen.getByRole('button', {name: /not removed/}).click()

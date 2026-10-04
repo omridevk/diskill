@@ -1,5 +1,5 @@
 import {createOptimisticAction} from '@tanstack/db'
-import {decide, heldAction, messageOf, rescan as requestRescan} from './api'
+import {decide, heldAction, messageOf, rescan as requestRescan, type Selected} from './api'
 import {openCleanup, openScan, writeSession, type Action, type Db, type Planned} from './db'
 import {RESTART, type Entry} from './scan-feed'
 
@@ -47,7 +47,13 @@ function stopScan(db: Db) {
   return true
 }
 
-export function approve(db: Db, items: readonly Entry[], approvedBytes: number) {
+interface Approval {
+  items: readonly Entry[]
+  bytes: number
+  selected: Selected
+}
+
+export function approve(db: Db, {items, bytes: approvedBytes, selected}: Approval) {
   const rows = items.map(plannedOf)
   const stopped = {scan: false}
   const apply = () => {
@@ -60,7 +66,7 @@ export function approve(db: Db, items: readonly Entry[], approvedBytes: number) 
   }
   return tracked(db, 'approve', apply, async () => {
     try {
-      await decide(db.loaded.token, 'approve', items)
+      await decide(db.loaded.token, 'approve', selected)
     } catch (e) {
       if (stopped.scan) openScan(db)
       throw e
@@ -79,7 +85,7 @@ export function cancel(db: Db) {
     'cancel',
     () => {},
     async () => {
-      await decide(db.loaded.token, 'cancel', [])
+      await decide(db.loaded.token, 'cancel')
       writeSession(db, {cancelled: true})
     },
   )

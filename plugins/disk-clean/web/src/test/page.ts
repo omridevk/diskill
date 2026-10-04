@@ -1,13 +1,17 @@
 import {vi} from 'vitest'
 import type {ScanEvent} from '@/lib/scan-feed'
 
-export function fakeEventSource() {
+const REPLAYED = () => new MessageEvent('replayed', {data: JSON.stringify({elapsed_ms: 0})})
+
+export function fakeEventSource({caughtUp = true} = {}) {
   const target = new EventTarget()
   let unheard: Event[] | null = []
   const connect = () => {
-    const replay = unheard ?? []
+    if (unheard === null) return
+    const replay = unheard
     unheard = null
     for (const event of replay) EventTarget.prototype.dispatchEvent.call(target, event)
+    if (caughtUp) EventTarget.prototype.dispatchEvent.call(target, REPLAYED())
   }
   const source = Object.assign(target, {
     readyState: 1,
@@ -21,7 +25,8 @@ export function fakeEventSource() {
     dispatchEvent: (event: Event) => (unheard ? unheard.push(event) > 0 : EventTarget.prototype.dispatchEvent.call(target, event)),
   })
   const send = (event: ScanEvent) => source.dispatchEvent(new MessageEvent(event.type, {data: JSON.stringify(event.data)}))
-  return {source, send}
+  const catchUp = () => source.dispatchEvent(REPLAYED())
+  return {source, send, catchUp}
 }
 
 export function ringPoints(chart: Element) {

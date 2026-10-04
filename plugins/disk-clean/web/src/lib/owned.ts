@@ -26,9 +26,9 @@ function writesOf<T extends object>(params: SyncParams<T>, keyOf: (row: T) => st
   }
 }
 
-export function ownedCollection<T extends object>(keyOf: (row: T) => string, seed: readonly T[]) {
+export function ownedCollection<T extends object>(keyOf: (row: T) => string, seed: readonly T[], ready = true) {
   const synced = new Map<string, T>()
-  const state = {version: 0}
+  const state = {version: 0, ready}
   let params: SyncParams<T> | null = null
   const collection = createCollection<T, string>({
     getKey: keyOf,
@@ -44,7 +44,7 @@ export function ownedCollection<T extends object>(keyOf: (row: T) => string, see
         const writes = writesOf(started, keyOf, synced)
         for (const row of seed) writes.put(row)
         started.commit()
-        started.markReady()
+        if (state.ready) started.markReady()
       },
     },
   })
@@ -55,5 +55,10 @@ export function ownedCollection<T extends object>(keyOf: (row: T) => string, see
     params.commit()
     state.version += 1
   }
-  return {collection, write, synced: synced as ReadonlyMap<string, T>, version: () => state.version}
+  const markReady = () => {
+    if (state.ready) return
+    state.ready = true
+    params?.markReady()
+  }
+  return {collection, write, markReady, synced: synced as ReadonlyMap<string, T>, version: () => state.version}
 }

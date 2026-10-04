@@ -20,7 +20,7 @@ import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type 
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
 import {isFiltering, predicateOf, prepare, useSectionWindow, useShapedTotals, type SectionTotal} from '@/lib/shaping'
-import {useSections} from '@/lib/views'
+import {useScanState, useSections} from '@/lib/views'
 import {DataTable} from './data-table'
 
 const GROUPS: [string, Risk][] = [
@@ -172,7 +172,7 @@ function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
 type ChangeList = (patch: Partial<CleanupSearch>, how?: {replace: boolean}) => void
 
 function SectionLink({section, ...props}: {section: string; className?: string; children?: ReactNode}) {
-  return <Link to="/cleanup/$section" params={{section}} search={prev => ({...prev, view: 'list'})} activeOptions={{includeSearch: false}} {...props} />
+  return <Link to="/cleanup/$section" params={{section}} search activeOptions={{includeSearch: false}} {...props} />
 }
 
 const OPEN_SECTION = 'has-[a[data-status=active]]:border-zinc-700 has-[a[data-status=active]]:bg-zinc-900'
@@ -269,7 +269,7 @@ function SectionCard({group, progressed, choose}: {group: Group; progressed: Pro
   const {category, shown} = group
   const lit = !progressed && shown.picked > 0
   return (
-    <div className={`flex flex-col gap-3 rounded-xl border p-4 ${STATE_MOTION} ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'}`}>
+    <div className={`flex flex-col gap-3 rounded-xl border p-4 ${STATE_MOTION} ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'} has-[a[data-status=active]]:ring-2 has-[a[data-status=active]]:ring-blue-400/60`}>
       <div className="flex items-center gap-2.5">
         <SectionCheckbox group={group} locked={progressed !== null} choose={choose} />
         <span className="grow text-sm font-medium">{category.title}</span>
@@ -280,14 +280,15 @@ function SectionCard({group, progressed, choose}: {group: Group; progressed: Pro
         <span className="text-xs text-muted-foreground">{pickedLabel(group, progressed)}</span>
       </div>
       <p className="grow text-xs leading-relaxed text-muted-foreground">{category.desc}</p>
-      <SectionLink section={category.id} className={buttonVariants({variant: 'link', size: 'xs', className: 't-learn self-start px-0'})}>
-        Show items <LearnChevron />
+      <SectionLink section={category.id} className={buttonVariants({variant: 'link', size: 'xs', className: 't-learn self-start px-0 data-[status=active]:no-underline'})}>
+        <span className="in-data-[status=active]:hidden">Show items</span>
+        <span className="hidden in-data-[status=active]:inline">Items shown below</span> <LearnChevron />
       </SectionLink>
     </div>
   )
 }
 
-function CardsView({groups, progressed, choose}: {groups: Group[]; progressed: Progressed | null; choose: Choose}) {
+function CardsView({groups, progressed, choose, children}: {groups: Group[]; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
   return (
     <div className="flex min-h-0 grow flex-col gap-5 overflow-auto px-7 py-5">
       {GROUPS.map(([label, risk]) => {
@@ -304,6 +305,7 @@ function CardsView({groups, progressed, choose}: {groups: Group[]; progressed: P
           </section>
         )
       })}
+      {children}
     </div>
   )
 }
@@ -578,10 +580,9 @@ function Body({groups, list, onList, progressed, choose, children}: {groups: Gro
     )
   }
   return (
-    <>
-      <CardsView groups={groups} progressed={progressed} choose={choose} />
+    <CardsView groups={groups} progressed={progressed} choose={choose}>
       {children}
-    </>
+    </CardsView>
   )
 }
 
@@ -630,8 +631,20 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   )
 }
 
-export function SectionDetail({section}: {section: string}) {
+function Unlisted({section}: {section: string}) {
+  const scan = useScanState(useDb())
+  const scanning = !scan.done && scan.error === '' && !scan.stopped
+  return (
+    <div className="flex grow items-center justify-center p-10 text-center text-sm text-muted-foreground">
+      {scanning ? `Nothing is listed in “${section}” yet; the scan is still running.` : `Nothing in “${section}” matches these filters.`}
+    </div>
+  )
+}
+
+export function SectionDetail({section, framed}: {section: string; framed: boolean}) {
   const view = use(ListContext)
-  const group = view && (view.groups.find(g => g.category.id === section) ?? view.groups[0])
-  return view && group ? <SectionPanel group={group} view={view} /> : null
+  const group = view?.groups.find(g => g.category.id === section)
+  if (!view) return null
+  const panel = group ? <SectionPanel group={group} view={view} /> : section && <Unlisted section={section} />
+  return framed ? <div className="flex h-[32rem] shrink-0 flex-col overflow-hidden rounded-xl border bg-card">{panel}</div> : panel
 }

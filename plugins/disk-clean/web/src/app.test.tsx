@@ -91,12 +91,17 @@ describe('cleanup', () => {
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
   })
 
-  test('card view shows every section and opens one in the list', async () => {
-    const screen = await render(<App loaded={fixture} history={at()} />)
+  test('card view shows every section and expands the one whose items are shown', async () => {
+    const history = at()
+    const screen = await render(<App loaded={fixture} history={history} />)
     await screen.getByRole('button', {name: 'Card view'}).click()
     await expect.element(screen.getByText('Large files')).toBeVisible()
-    await screen.getByRole('link', {name: /Show items/}).nth(1).click()
+    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+    await screen.getByRole('link', {name: /Show items/}).first().click()
     await expect.element(screen.getByText('~/code/web/node_modules')).toBeVisible()
+    expect(history.location.pathname).toBe('/cleanup/node')
+    expect(new URLSearchParams(history.location.search).get('view')).toBe('cards')
+    await expect.element(screen.getByRole('link', {name: /Items shown below/})).toBeVisible()
   })
 
   test('keyboard shortcuts select all, clear and reset', async () => {
@@ -609,17 +614,19 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Freed 3.5 GB')
   })
 
-  test('a lost connection says so until the stream comes back, but not during the hand-back to the watcher', async () => {
+  test('a dropped connection says so in every state until the stream comes back', async () => {
     const {screen, source} = await approveInApp()
     source.readyState = 0
     source.dispatchEvent(new Event('error'))
-    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
+    await barSays(screen, 'Reconnecting to disk-clean…')
     source.readyState = 1
+    source.dispatchEvent(new Event('open'))
+    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
     sendAll(source, cleanupEvents.slice(0, 3))
     await barSays(screen, 'Cleaning up ·')
     source.readyState = 0
     source.dispatchEvent(new Event('error'))
-    await barSays(screen, 'Reconnecting…')
+    await barSays(screen, 'Reconnecting to disk-clean…')
     source.readyState = 1
     source.dispatchEvent(new Event('open'))
     await barSays(screen, 'Cleaning up ·')
@@ -645,6 +652,22 @@ describe('cleanup in the app', () => {
     await details(screen).click()
     await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'})).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Watch the movie'})).not.toBeInTheDocument()
+    expect(document.querySelector('canvas')).toBeNull()
+  })
+
+  test('reduced motion opens the movie address as the final numbers and a static list, with no film', async () => {
+    await emulateReducedMotion('reduce')
+    const {source} = fakeEventSource()
+    const approved = ['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b', '/Users/you/Library/Caches/app-c', '/Users/you/Library/Caches/app-d']
+    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} history={at('/cleanup/caches?overlay=movie')} />)
+    await sendAll(source, cleanupEvents)
+    const movie = screen.getByRole('dialog', {name: 'Cleanup movie'})
+    await expect.element(movie.getByRole('heading', {name: 'You freed'})).toBeVisible()
+    await expect.element(movie.getByText('removed for good')).toBeVisible()
+    await expect.element(movie.getByText('3 · 3.5 GB')).toBeVisible()
+    await expect.element(movie.getByText('3s')).toBeVisible()
+    await expect.element(movie.getByRole('list', {name: 'Everything removed'}).getByText('~/Library/Caches/app-b')).toBeVisible()
+    expect(document.querySelector('[data-film="backdrop"]')).toBeNull()
     expect(document.querySelector('canvas')).toBeNull()
   })
 

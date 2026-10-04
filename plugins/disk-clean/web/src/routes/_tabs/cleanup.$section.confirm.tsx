@@ -4,15 +4,16 @@ import {ConfirmDialog, ConfirmFailed} from '@/components/confirm-dialog'
 import {messageOf} from '@/lib/api'
 import {useDb} from '@/lib/db'
 import {useBack, useDialogExit} from '@/lib/navigation'
-import {canConfirm, loadPreview, previewAt, useDecisions, useHome} from '@/lib/page-data'
+import {canConfirm, loadPreview, previewAt, scanReady, useDecisions, useHome} from '@/lib/page-data'
 import {useScanState} from '@/lib/views'
 
 export const Route = createFileRoute('/_tabs/cleanup/$section/confirm')({
   loaderDeps: ({search}) => ({add: search.add, drop: search.drop}),
-  beforeLoad: ({context, params, search}) => {
-    if (!canConfirm(context.db, search)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
+  loader: async ({context, deps, params}) => {
+    await scanReady(context.db)
+    if (!canConfirm(context.db, deps)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
+    return loadPreview(context.db, deps)
   },
-  loader: ({context, deps}) => loadPreview(context.db, deps),
   pendingMs: 150,
   pendingComponent: Checking,
   errorComponent: Failed,

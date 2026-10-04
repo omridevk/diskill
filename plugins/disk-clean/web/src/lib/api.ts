@@ -1,5 +1,3 @@
-import type {Item} from './data'
-
 export interface Plan {
   hold: {path: string; bytes: number; held: string}[]
   hold_bytes: number
@@ -14,8 +12,12 @@ export interface Plan {
 
 export const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-const body = (token: string, items: readonly Item[], extra: object) =>
-  JSON.stringify({token, items: items.map(i => ({path: i.path})), ...extra})
+export interface Selected {
+  add: string
+  drop: string
+  listed: number | null
+  fingerprint: string
+}
 
 interface RequestError extends Error {
   kind: 'server' | 'unreachable'
@@ -45,16 +47,16 @@ async function post(url: string, payload: string) {
   return response.json()
 }
 
-export function preview(token: string, items: readonly Item[]): Promise<Plan> {
-  return post('/preview', body(token, items, {}))
+export function preview(token: string, selected: Selected): Promise<Plan> {
+  return post('/preview', JSON.stringify({token, ...selected}))
 }
 
 export function rescan(token: string) {
   return post('/rescan', JSON.stringify({token}))
 }
 
-export function decide(token: string, decision: 'approve' | 'cancel', items: readonly Item[]) {
-  return post('/decide', body(token, decision === 'approve' ? items : [], {decision}))
+export function decide(token: string, decision: 'approve' | 'cancel', selected?: Selected) {
+  return post('/decide', JSON.stringify({token, decision, ...selected}))
 }
 
 export function heldAction(token: string, action: 'undo' | 'free') {

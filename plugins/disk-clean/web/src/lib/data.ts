@@ -12,6 +12,7 @@ export interface Item {
   preselect: boolean
   report: boolean
   checking?: boolean
+  line?: number
 }
 
 export interface Category {
@@ -150,3 +151,14 @@ export function outermost<T extends {path: string}>(items: readonly T[]): T[] {
 }
 
 export const sumBytes = (items: readonly {bytes: number}[]) => items.reduce((sum, i) => sum + i.bytes, 0)
+
+const isInside = (path: string, folder: string) => path === folder || path.startsWith(folder === '/' ? '/' : `${folder}/`)
+
+export function nearestFolder(tree: TreeNode, path: string): string {
+  let node = tree
+  for (;;) {
+    const child = node.children.find(c => !c.rest && isInside(path, c.path))
+    if (!child) return node.path
+    node = child
+  }
+}
