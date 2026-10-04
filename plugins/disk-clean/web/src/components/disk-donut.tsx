@@ -23,10 +23,10 @@ const PART_TEXT: Record<Part['part'], [string, string]> = {
   free: ['Free', 'Free right now'],
 }
 
-function PartCard({part, bytes, total}: Part & {total: number}) {
+function PartCard({part, bytes, total, pinned}: Part & {total: number; pinned: boolean}) {
   const [title, hint] = PART_TEXT[part]
   return (
-    <ChartCard title={title} hint={hint}>
+    <ChartCard title={title} hint={hint} pinned={pinned}>
       <BigBytes bytes={bytes} />
       <Meter label="of the disk" share={shareOf(bytes, total)} color={part === 'free' ? 'var(--color-zinc-400)' : DISK_COLORS[part]} />
     </ChartCard>
@@ -71,7 +71,7 @@ export function DiskDonut({used, selected, free, total, size}: {used: number; se
         height={size}
         tabIndex={-1}
         ariaLabel={`Disk: ${formatBytes(used - selected)} used after cleanup, ${formatBytes(selected)} selected, ${formatBytes(free)} free now`}
-        renderTooltipBody={({primaryPoint}) => primaryPoint && <PartCard part={primaryPoint.datum.part} bytes={primaryPoint.datum.bytes} total={total} />}
+        renderTooltipBody={({primaryPoint, pinned}) => primaryPoint && <PartCard part={primaryPoint.datum.part} bytes={primaryPoint.datum.bytes} total={total} pinned={pinned} />}
       />
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-[11px] text-muted-foreground">free after</span>

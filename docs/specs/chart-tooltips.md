@@ -32,3 +32,30 @@ they document. Don't build a popover of our own.
 - Keyboard pin and dismiss work.
 - Reduced motion is respected.
 - No layout shift of the chart while a tooltip is pinned.
+
+## Outcome (2026-10-04)
+
+- **Choice: click pins, everywhere.** On every chart (Storage sunburst and treemap, the Insights
+  charts, the disk donut) a click, tap or Enter pins the card, which is the library's own
+  activation. Zoom moved into the pinned Storage card as a "Zoom in" link (in the treemap, "Zoom
+  into <child>" when the tile is deeper than one level), next to "Copy path". `onSelect` no longer
+  zooms. The hover hint says "Click to pin, then zoom in"; the side panel says the same.
+- `CARD_TOOLTIP` (`components/chart-card.tsx`) is `anchor: 'point'` (the datum's centroid, so the
+  preview holds still inside one datum) and drops `sticky: false`, so the library's pinning is on.
+  `ChartCard` renders `actions` only while `pinned` (from `renderTooltipBody`), and every action
+  calls the library's `dismiss` before it navigates. Pinned cards carry the library's non-modal
+  dialog role; Escape, an outside click or a second click on the datum close them, and focus goes
+  back to the chart.
+- Actions: Storage folder card: Zoom in, Copy path. Insights folder-age card: Open in Storage (the
+  `~/...` label expanded with the server's home folder), Copy path. Insights section card: Open in
+  Cleanup. Calendar, file kinds and the donut have no actions; pinning them keeps the card still
+  and its text selectable.
+- **The hover-to-card test.** A transient card is display-only (`pointer-events: none`, inert body),
+  so the pointer cannot rest on it; reaching it is what pinning is for. The test checks that the
+  preview holds still while the pointer moves within a datum, and that a pinned card stays open and
+  in place while the pointer moves onto it and elsewhere on the chart.
+- **Tests.** `src/chart-tooltips.test.tsx` runs in Chromium and Firefox, and again in both with
+  `prefers-reduced-motion: reduce` (the card shows with no running animation there, and animates in
+  otherwise): hover anchoring, click pin with Copy path and Zoom in, Escape with focus back on the
+  chart, outside click and second click, keyboard ArrowRight, Enter, Tab into the card and Escape,
+  no layout shift while pinned, and Insights cards opening Storage and Cleanup.

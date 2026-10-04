@@ -17,7 +17,7 @@ import { Route as TabsStorageRouteImport } from './routes/_tabs/storage'
 import { Route as TabsCleanupIndexRouteImport } from './routes/_tabs/cleanup.index'
 import { Route as TabsCleanupSectionRouteImport } from './routes/_tabs/cleanup.$section'
 import { Route as TabsStorageIndexRouteImport } from './routes/_tabs/storage.index'
-import { Route as TabsStorageSplatRouteImport } from './routes/_tabs/storage.$'
+import { Route as TabsStorageFolderRouteImport } from './routes/_tabs/storage.$folder'
 import { Route as TabsCleanupSectionConfirmRouteImport } from './routes/_tabs/cleanup.$section.confirm'
 import { Route as TabsCleanupSectionFreeRouteImport } from './routes/_tabs/cleanup.$section.free'
 
@@ -60,9 +60,9 @@ const TabsStorageIndexRoute = TabsStorageIndexRouteImport.update({
   path: '/',
   getParentRoute: () => TabsStorageRoute,
 } as any)
-const TabsStorageSplatRoute = TabsStorageSplatRouteImport.update({
-  id: '/$',
-  path: '/$',
+const TabsStorageFolderRoute = TabsStorageFolderRouteImport.update({
+  id: '/$folder',
+  path: '/$folder',
   getParentRoute: () => TabsStorageRoute,
 } as any)
 const TabsCleanupSectionConfirmRoute =
@@ -83,7 +83,7 @@ export interface FileRoutesByFullPath {
   '/insights': typeof TabsInsightsRoute
   '/storage': typeof TabsStorageRouteWithChildren
   '/cleanup/$section': typeof TabsCleanupSectionRouteWithChildren
-  '/storage/$': typeof TabsStorageSplatRoute
+  '/storage/$folder': typeof TabsStorageFolderRoute
   '/cleanup/': typeof TabsCleanupIndexRoute
   '/storage/': typeof TabsStorageIndexRoute
   '/cleanup/$section/confirm': typeof TabsCleanupSectionConfirmRoute
@@ -93,7 +93,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/insights': typeof TabsInsightsRoute
   '/cleanup/$section': typeof TabsCleanupSectionRouteWithChildren
-  '/storage/$': typeof TabsStorageSplatRoute
+  '/storage/$folder': typeof TabsStorageFolderRoute
   '/cleanup': typeof TabsCleanupIndexRoute
   '/storage': typeof TabsStorageIndexRoute
   '/cleanup/$section/confirm': typeof TabsCleanupSectionConfirmRoute
@@ -107,7 +107,7 @@ export interface FileRoutesById {
   '/_tabs/insights': typeof TabsInsightsRoute
   '/_tabs/storage': typeof TabsStorageRouteWithChildren
   '/_tabs/cleanup/$section': typeof TabsCleanupSectionRouteWithChildren
-  '/_tabs/storage/$': typeof TabsStorageSplatRoute
+  '/_tabs/storage/$folder': typeof TabsStorageFolderRoute
   '/_tabs/cleanup/': typeof TabsCleanupIndexRoute
   '/_tabs/storage/': typeof TabsStorageIndexRoute
   '/_tabs/cleanup/$section/confirm': typeof TabsCleanupSectionConfirmRoute
@@ -121,7 +121,7 @@ export interface FileRouteTypes {
     | '/insights'
     | '/storage'
     | '/cleanup/$section'
-    | '/storage/$'
+    | '/storage/$folder'
     | '/cleanup/'
     | '/storage/'
     | '/cleanup/$section/confirm'
@@ -131,7 +131,7 @@ export interface FileRouteTypes {
     | '/'
     | '/insights'
     | '/cleanup/$section'
-    | '/storage/$'
+    | '/storage/$folder'
     | '/cleanup'
     | '/storage'
     | '/cleanup/$section/confirm'
@@ -144,7 +144,7 @@ export interface FileRouteTypes {
     | '/_tabs/insights'
     | '/_tabs/storage'
     | '/_tabs/cleanup/$section'
-    | '/_tabs/storage/$'
+    | '/_tabs/storage/$folder'
     | '/_tabs/cleanup/'
     | '/_tabs/storage/'
     | '/_tabs/cleanup/$section/confirm'
@@ -214,11 +214,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TabsStorageIndexRouteImport
       parentRoute: typeof TabsStorageRoute
     }
-    '/_tabs/storage/$': {
-      id: '/_tabs/storage/$'
-      path: '/$'
-      fullPath: '/storage/$'
-      preLoaderRoute: typeof TabsStorageSplatRouteImport
+    '/_tabs/storage/$folder': {
+      id: '/_tabs/storage/$folder'
+      path: '/$folder'
+      fullPath: '/storage/$folder'
+      preLoaderRoute: typeof TabsStorageFolderRouteImport
       parentRoute: typeof TabsStorageRoute
     }
     '/_tabs/cleanup/$section/confirm': {
@@ -266,12 +266,12 @@ const TabsCleanupRouteWithChildren = TabsCleanupRoute._addFileChildren(
 )
 
 interface TabsStorageRouteChildren {
-  TabsStorageSplatRoute: typeof TabsStorageSplatRoute
+  TabsStorageFolderRoute: typeof TabsStorageFolderRoute
   TabsStorageIndexRoute: typeof TabsStorageIndexRoute
 }
 
 const TabsStorageRouteChildren: TabsStorageRouteChildren = {
-  TabsStorageSplatRoute: TabsStorageSplatRoute,
+  TabsStorageFolderRoute: TabsStorageFolderRoute,
   TabsStorageIndexRoute: TabsStorageIndexRoute,
 }
 

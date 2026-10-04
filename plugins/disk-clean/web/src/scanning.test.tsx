@@ -1,4 +1,3 @@
-import type {RouterHistory} from '@tanstack/react-router'
 import {afterEach, describe, expect, test, vi} from 'vitest'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
@@ -6,7 +5,7 @@ import {NO_DATA, type Item, type Loaded} from './lib/data'
 import {fingerprint} from './lib/selection'
 import type {CategoryHead, ScanEvent} from './lib/scan-feed'
 import {at, fixture, item} from './test/fixture'
-import {fakeEventSource, mockServer, PLAN} from './test/page'
+import {fakeEventSource, mockServer, PLAN, query} from './test/page'
 import './index.css'
 
 const GB = 1024 ** 3
@@ -115,7 +114,6 @@ describe('delete while the scan is running', () => {
 })
 
 describe('selection buttons in the footer', () => {
-  const query = (history: RouterHistory) => Object.fromEntries(new URLSearchParams(history.location.search))
 
   test('Clear selection empties the selection in the address and Reset to recommended brings the preselection back', async () => {
     const history = at()

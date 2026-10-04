@@ -1,10 +1,11 @@
-import {createFileRoute, Outlet, stripSearchParams} from '@tanstack/react-router'
+import {createFileRoute, Navigate, Outlet, stripSearchParams} from '@tanstack/react-router'
 import {STORAGE_DEFAULTS, storageSearch} from '@/lib/search'
 
 export const Route = createFileRoute('/_tabs/storage')({
   validateSearch: storageSearch,
   search: {middlewares: [stripSearchParams(STORAGE_DEFAULTS)]},
   component: StorageTab,
+  notFoundComponent: () => <Navigate to="/storage" search replace />,
 })
 
 function StorageTab() {

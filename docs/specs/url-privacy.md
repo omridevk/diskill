@@ -48,3 +48,36 @@ short. Adding one needs the user's approval.
   - Old-style plain addresses (`?q=cache`, `/storage/Users/...`) don't crash. They either load
     with defaults or are read and rewritten, whichever is simpler.
 - **Rust:** nothing changes on the server side.
+
+## Outcome (2026-10-04)
+
+- **Search values.** `lib/search.ts` holds `obscureSearchValue` / `revealSearchValue` (base64url of
+  the value's UTF-8 JSON, no padding) and the router's `parseSearch: parseSearchWith(revealSearchValue)`
+  and `stringifySearch: stringifySearchWith(obscureSearchValue, ...)`, passed to `createRouter` in
+  `App.tsx`. The names say what it is: obscuring, not secrecy. `stringifySearchWith` hands only
+  strings and objects to the serializer, so every text and list value (`q`, `risk`, `view`, `sort`,
+  `overlay`, `log`, `shape`, `add`, `drop`) is encoded, while numbers and booleans (`take`,
+  `minSize`, `minAge`, `only=true`) stay as the router writes them. They are bucket sizes, counters
+  and flags, never names. Encoding them too would mean replacing `stringifySearchWith`, which this
+  spec asks us to use.
+- **Zoom.** The route is `/_tabs/storage/$folder` (`storage.$folder.tsx`). Its `params.parse` keeps a
+  well-formed token (8 or 11 base-36 characters) and turns anything else into `''`. There is no
+  `params.stringify`: whether a folder gets 8 or 11 characters depends on the whole scan tree, which
+  only the loader and the components can see, so links build the token through
+  `zoomLink(tree, path)` (`lib/folders.ts`, a per-tree token index cached in a `WeakMap`). The
+  loader resolves the token against the tree; a token that matches no folder falls back to the
+  path it was made from (when this page has seen that path, e.g. a folder that vanished in a
+  rescan) and so to its nearest existing ancestor, or to the top. A non-canonical token (the 11-char
+  form of a folder whose 8-char form is unique) is rewritten to the canonical one.
+- **Old addresses.** Plain search values fail to decode, reach the validators raw, are read, and the
+  canonicalizing redirect rewrites them encoded (`?q=cache` keeps its filter). A one-segment old
+  zoom (`/storage/Users`) is an unknown token and lands on `/storage`; a deeper one
+  (`/storage/Users/you/Library`) matches no route, and the Storage layout's `notFoundComponent`
+  redirects it to `/storage` with its search kept.
+- **Tests.** `src/url-privacy.test.tsx` (Chromium and Firefox): the codec round-trips UTF-8 with
+  only `[A-Za-z0-9_-]`; walking filters, a section, a tick, the confirm dialog, Storage zoom,
+  treemap and crumbs, Insights, tab switches, Back/Forward and a reload writes no folder name, home
+  path or filter text into any address; the progress and movie overlays likewise; a pasted link
+  restores zoom, shape and selection; another restores filter, sort and the confirm dialog; old
+  plain search values and old folder paths load without errors. `router.test.tsx` now drives every
+  URL through the same codec and covers the token fallbacks.

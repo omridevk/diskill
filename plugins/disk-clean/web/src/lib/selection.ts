@@ -62,7 +62,13 @@ function tokenSet(value: string) {
   return new Set(value ? value.split(SEPARATOR) : [])
 }
 
-const shortOf = (path: string) => fullToken(path).slice(0, SHORT)
+export const shortOf = (path: string) => fullToken(path).slice(0, SHORT)
+
+export function knownPathOf(token: string) {
+  if (token.length !== SHORT && token.length !== FULL) return undefined
+  for (const [path, hash] of hashes) if (hash.startsWith(token)) return path
+  return undefined
+}
 
 interface Notes {
   marks: string[]

@@ -9,11 +9,12 @@ import {Link, useNavigate} from '@tanstack/react-router'
 import {Fragment, useMemo, useRef, useState, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {ChartBoundary} from './chart-boundary'
-import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './chart-card'
+import {BigBytes, CARD_TOOLTIP, CardLink, ChartCard, changedAgo, CopyPath, Meter, shareOf} from './chart-card'
 import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatBytes, plural, tilde, type TreeNode} from '@/lib/data'
 import {useDb} from '@/lib/db'
+import {zoomLink} from '@/lib/folders'
 import type {Shape} from '@/lib/search'
 import {useHome, useSelection} from '@/lib/page-data'
 import type {Disk} from '@/lib/scan-feed'
@@ -76,12 +77,33 @@ interface Figures extends Disk {
   home: number
 }
 
-function FolderCard({node, parents, total, home}: {node: TreeNode | null; parents: Map<string, TreeNode>; total: number; home: string}) {
+interface FolderCardProps {
+  node: TreeNode | null
+  zoomTo: TreeNode | null
+  tree: TreeNode
+  parents: Map<string, TreeNode>
+  total: number
+  home: string
+  pinned: boolean
+  dismiss: () => void
+}
+
+function FolderCard({node, zoomTo, tree, parents, total, home, pinned, dismiss}: FolderCardProps) {
   if (!node) return null
   const parent = parents.get(node.path)
   const top = node.children.filter(c => !c.rest).slice(0, 3)
+  const actions = (
+    <>
+      {zoomTo && (
+        <CardLink to={zoomLink(tree, zoomTo.path)} onClick={dismiss}>
+          {zoomTo === node ? 'Zoom in' : `Zoom into ${zoomTo.name}`}
+        </CardLink>
+      )}
+      <CopyPath path={node.path} />
+    </>
+  )
   return (
-    <ChartCard title={titleOf(node)} subtitle={tilde(node.path, home)} hint={node.children.length > 0 ? 'Click to zoom' : undefined}>
+    <ChartCard title={titleOf(node)} subtitle={tilde(node.path, home)} hint={zoomTo ? 'Click to pin, then zoom in' : undefined} pinned={pinned} actions={actions}>
       <BigBytes bytes={node.bytes} />
       <div className="flex flex-col gap-2">
         {parent && <Meter label={`of ${titleOf(parent)}`} share={shareOf(node.bytes, parent.bytes)} />}
@@ -249,13 +271,8 @@ function useStorageDefinition(flat: ReturnType<typeof flatten> | null, tree: Tre
   return {definition, onRender}
 }
 
-function splatOf(path: string, root: string) {
-  return path === root ? '' : path.slice(1)
-}
-
 function focusOf(flat: ReturnType<typeof flatten> | null, root: string, zoom: string) {
-  const wanted = zoom ? `/${zoom}` : root
-  return flat?.byPath.has(wanted) ? wanted : root
+  return zoom && flat?.byPath.has(zoom) ? zoom : root
 }
 
 function useStorageData() {
@@ -275,16 +292,14 @@ function drillTarget(point: ChartPoint | null, flat: ReturnType<typeof flatten>,
   return node?.children.length ? node : null
 }
 
-function Crumbs({chain, root}: {chain: readonly TreeNode[]; root: string}) {
+function Crumbs({chain, tree}: {chain: readonly TreeNode[]; tree: TreeNode}) {
   return (
     <nav aria-label="Folder path" className="flex grow flex-wrap items-center gap-1 text-sm">
       {chain.map((n, i) => (
         <Fragment key={n.path}>
           {i > 0 && <span className="text-muted-foreground">/</span>}
           <Link
-            to="/storage/$"
-            params={{_splat: splatOf(n.path, root)}}
-            search
+            {...zoomLink(tree, n.path)}
             activeOptions={{exact: true}}
             className={i === chain.length - 1 ? 'font-semibold' : `text-muted-foreground transition-[color] duration-(--duration-quick) ease-(--ease-smooth-out) motion-reduce:transition-none hover:text-foreground`}
           >
@@ -315,7 +330,7 @@ function Details({shown, focusNode, total, cleanable, shape}: {shown: TreeNode; 
       ))}
     </div>
     <p className="mt-auto text-xs text-muted-foreground">
-      Click a {shape === 'sunburst' ? 'ring' : 'tile'} to zoom in, a crumb to go back. White outlines mark folders the Cleanup tab can delete.
+      Click a {shape === 'sunburst' ? 'ring' : 'tile'} to pin its card and zoom in from there, a crumb to go back. White outlines mark folders the Cleanup tab can delete.
     </p>
   </aside>
   )
@@ -345,15 +360,10 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const chain = chainOf(flat.parents, focusNode)
   const shown = hover ?? focusNode
 
-  const drill = (point: ChartPoint | null) => {
-    const node = drillTarget(point, flat, shape, focus)
-    if (node) navigate({to: '/storage/$', params: {_splat: splatOf(node.path, root)}, search: true})
-  }
-
   return (
     <div className="flex flex-col gap-5 overflow-auto px-7 py-5">
       <div className="flex items-center gap-3">
-        <Crumbs chain={chain} root={root} />
+        <Crumbs chain={chain} tree={tree} />
         <ToggleGroup value={[shape]} onValueChange={v => v[0] && navigate({to: '.', search: prev => ({...prev, shape: v[0] as Shape})})} variant="outline" size="sm" aria-label="Chart">
           <ToggleGroupItem value="sunburst">Sunburst</ToggleGroupItem>
           <ToggleGroupItem value="treemap">Treemap</ToggleGroupItem>
@@ -369,8 +379,18 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
               ariaLabel={`Storage ${shape} of ${focusNode.path}`}
               onFocusChange={point => setHover(nodeOf(point))}
               onRender={onRender}
-              onSelect={drill}
-              renderTooltipBody={({primaryPoint}) => <FolderCard node={nodeOf(primaryPoint ?? null)} parents={flat.parents} total={data.total} home={home} />}
+              renderTooltipBody={({primaryPoint, pinned, dismiss}) => (
+                <FolderCard
+                  node={nodeOf(primaryPoint ?? null)}
+                  zoomTo={drillTarget(primaryPoint ?? null, flat, shape, focus)}
+                  tree={tree}
+                  parents={flat.parents}
+                  total={data.total}
+                  home={home}
+                  pinned={pinned}
+                  dismiss={dismiss}
+                />
+              )}
             />
           </div>
         </ChartBoundary>

@@ -98,6 +98,10 @@ export function tilde(path: string, home: string) {
   return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
 }
 
+export function untilde(path: string, home: string) {
+  return home && (path === '~' || path.startsWith('~/')) ? `${home}${path.slice(1)}` : path
+}
+
 export function tildeWords(line: string, home: string) {
   return line
     .split(' ')

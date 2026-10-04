@@ -16,7 +16,7 @@ import {NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
 import {categoriesOf} from './lib/views'
 import {squarifyInBounds} from './lib/treemap-tile'
 import {at, bigSection, category, cleanupEvents, fixture, item, withSection} from './test/fixture'
-import {fakeEventSource, mockServer, PLAN, ringPoints, sendAll, sendRaw} from './test/page'
+import {fakeEventSource, mockServer, PLAN, query, ringPoints, sendAll, sendRaw} from './test/page'
 import './index.css'
 
 describe('formatBytes', () => {
@@ -128,7 +128,7 @@ describe('cleanup', () => {
     await screen.getByRole('link', {name: /Show items/}).first().click()
     await expect.element(screen.getByText('~/code/web/node_modules')).toBeVisible()
     expect(history.location.pathname).toBe('/cleanup/node')
-    expect(new URLSearchParams(history.location.search).get('view')).toBe('cards')
+    expect(query(history).view).toBe('cards')
     await expect.element(screen.getByRole('link', {name: /Items shown below/})).toBeVisible()
   })
 
@@ -162,7 +162,7 @@ describe('other tabs', () => {
     await expect.element(page.getByText('of the disk')).toBeVisible()
     await expect.element(page.getByText(/^80,000 files · changed /)).toBeVisible()
     await expect.element(page.getByText('3.8 GB cleanable in 4 items · 3.8 GB selected')).toBeVisible()
-    await expect.element(page.getByText('Click to zoom')).toBeVisible()
+    await expect.element(page.getByText('Click to pin, then zoom in')).toBeVisible()
     await expect.element(page.getByText(/apparent sizes|^x /)).not.toBeInTheDocument()
   })
 

@@ -1,5 +1,9 @@
+import type {RouterHistory} from '@tanstack/react-router'
 import {vi} from 'vitest'
+import {folderIndex} from '@/lib/folders'
+import {parseSearch, stringifySearch} from '@/lib/search'
 import type {ScanEvent} from '@/lib/scan-feed'
+import {fixture} from './fixture'
 
 const REPLAYED = () => new MessageEvent('replayed', {data: JSON.stringify({elapsed_ms: 0})})
 
@@ -77,4 +81,14 @@ export function mockServer(plan: object = PLAN, failing: ReadonlySet<string> = n
     if (failing.has(url)) return new Response('server said no', {status: 500})
     return new Response(url === '/preview' ? JSON.stringify(plan) : '{}', {status: url === '/preview' || url === '/decide' ? 200 : 202})
   })
+}
+
+export const query = (history: RouterHistory): Record<string, unknown> => parseSearch(history.location.search)
+
+export const address = (path: string, search: Record<string, unknown> = {}) => `${path}${stringifySearch(search)}`
+
+export function zoomed(path: string) {
+  const {tree} = fixture.data
+  if (!tree) throw new Error('the fixture has no storage map')
+  return `/storage/${folderIndex(tree).tokenOf(path)}`
 }

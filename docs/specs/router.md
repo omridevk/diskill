@@ -34,7 +34,7 @@ value.
 | `/cleanup/$section` | List view with that section open (Cards: that card expanded) |
 | `/cleanup/$section/confirm` | the Delete confirm modal over that section's list (hold-and-confirm spec); closing navigates back to `/cleanup/$section` with its search intact |
 | `/cleanup/$section/free` | the "Free the space now?" confirm over that section; only while something is held, otherwise redirects to `/cleanup/$section` |
-| `/storage` and `/storage/$` | Storage tab; the splat is the zoomed folder path; search: `shape` (sunburst/treemap) |
+| `/storage` and `/storage/$folder` | Storage tab; `$folder` is the zoomed folder's hash token, never its path (url-privacy.md); search: `shape` (sunburst/treemap) |
 | `/insights` | Insights tab |
 | any route, search `overlay=progress` | the cleanup progress panel (it layers over whichever tab is open); its log filter `log` (all/removed/problems/commands) |
 | any route, search `overlay=movie` | the movie overlay; Replay is `navigate` with a fresh `take` key |
@@ -47,7 +47,7 @@ down through a React context. That is routing done by hand next to the router. T
 
 - Every route file renders what its URL means. `cleanup.confirm.tsx` renders the confirm dialog
   (layered over the list through the parent's `<Outlet />`), `cleanup.free.tsx` the Free dialog,
-  `cleanup.$section.tsx` the open section (reading `Route.useParams()`), `storage.$.tsx` the zoomed
+  `cleanup.$section.tsx` the open section (reading `Route.useParams()`), `storage.$folder.tsx` the zoomed
   folder. No `useMatch` / `useChildMatches` to decide what to show; no `useParams({strict: false})`
   inside route-owned UI.
 - Route work lives in the route: the confirm plan is fetched by the `/cleanup/$section/confirm` loader
@@ -60,7 +60,7 @@ down through a React context. That is routing done by hand next to the router. T
   (`$section/confirm`), and every search param of that view survives opening and closing them.
 - Tabs are nested routes: a pathless layout route `_tabs` renders the chrome and `<Outlet/>`;
   `cleanup`, `storage` and `insights` are its children, and each tab with sub-views renders its
-  own `<Outlet/>` (`cleanup` → `$section` → `confirm`/`free`; `storage` → index / `$` zoom). The
+  own `<Outlet/>` (`cleanup` → `$section` → `confirm`/`free`; `storage` → index / `$folder` zoom). The
   root route holds only the error and not-found pages.
 - Switching tabs returns to where you were in that tab: one router-level record of each tab's last
   URL, updated by a `router.subscribe('onResolved')` registered at router creation, read by the tab

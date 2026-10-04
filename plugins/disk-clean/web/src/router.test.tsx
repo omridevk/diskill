@@ -1,14 +1,14 @@
 import type {RouterHistory} from '@tanstack/react-router'
 import {gsap} from 'gsap'
 import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest'
-import {userEvent} from 'vitest/browser'
+import {page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {NO_DATA, type Loaded} from './lib/data'
-import {NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
+import {fullToken, NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
 import {at, cleanupEvents, fixture, heldEvents} from './test/fixture'
 import {PLAN} from './test/page'
-import {fakeEventSource, mockServer, ringPoints, sendAll} from './test/page'
+import {address, fakeEventSource, mockServer, query, ringPoints, sendAll, zoomed} from './test/page'
 import './index.css'
 
 type Screen = Awaited<ReturnType<typeof render>>
@@ -25,7 +25,6 @@ describe('the URL', () => {
   })
 
   const where = (history: RouterHistory) => history.location.pathname
-  const query = (history: RouterHistory) => Object.fromEntries(new URLSearchParams(history.location.search))
   const planned = () => mockServer()
 
   async function open(url: string, loaded: Loaded = fixture) {
@@ -42,8 +41,8 @@ describe('the URL', () => {
   const ROUTES: [string, (screen: Screen) => Promise<void>][] = [
     ['/', screen => expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()],
     ['/cleanup/node', screen => expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()],
-    ['/cleanup?view=cards', screen => expect.element(screen.getByRole('button', {name: 'Card view'})).toHaveAttribute('aria-pressed', 'true')],
-    ['/storage/Users/you/Library?shape=treemap', screen => expect.element(screen.getByLabelText('Storage treemap of /Users/you/Library')).toBeVisible()],
+    [address('/cleanup', {view: 'cards'}), screen => expect.element(screen.getByRole('button', {name: 'Card view'})).toHaveAttribute('aria-pressed', 'true')],
+    [address(zoomed('/Users/you/Library'), {shape: 'treemap'}), screen => expect.element(screen.getByLabelText('Storage treemap of /Users/you/Library')).toBeVisible()],
     ['/insights', screen => expect.element(screen.getByText('Largest files')).toBeVisible()],
     ['/nowhere', screen => expect.element(screen.getByText('There is no page at this address.')).toBeVisible()],
   ]
@@ -71,8 +70,9 @@ describe('the URL', () => {
     const home = screen.getByLabelText('Storage sunburst of /Users/you')
     await expect.element(home).toBeVisible()
     await userEvent.click(home, {position: ringPoints(home.element())(0.3125, 0).local})
+    await page.getByRole('dialog').getByRole('link', {name: 'Zoom in'}).click()
     await expect.element(screen.getByLabelText('Storage sunburst of /Users/you/Library')).toBeVisible()
-    expect(where(history)).toBe('/storage/Users/you/Library')
+    expect(where(history)).toBe(zoomed('/Users/you/Library'))
 
     history.back()
     await expect.element(home).toBeVisible()
@@ -102,13 +102,13 @@ describe('the URL', () => {
     await expect.poll(() => query(history).q).toBe('app')
     expect(history.length).toBe(entries)
     await screen.getByRole('button', {name: 'safe', exact: true}).click()
-    await expect.poll(() => query(history).risk).toBe('["safe"]')
+    await expect.poll(() => query(history).risk).toEqual(['safe'])
     expect(history.length).toBe(entries + 1)
     await screen.getByRole('combobox', {name: 'Sort'}).click()
     await screen.getByRole('option', {name: 'Name'}).click()
     await expect.poll(() => query(history).sort).toBe('name-asc')
     await screen.getByRole('button', {name: 'Only selected'}).click()
-    await expect.poll(() => query(history).only).toBe('true')
+    await expect.poll(() => query(history).only).toBe(true)
     await screen.getByRole('button', {name: 'Card view'}).click()
     await expect.poll(() => query(history).view).toBe('cards')
 
@@ -124,13 +124,13 @@ describe('the URL', () => {
     await expect.element(again.screen.getByRole('button', {name: 'Only selected'})).toHaveAttribute('aria-pressed', 'true')
     await expect.element(again.screen.getByRole('button', {name: 'Card view'})).toHaveAttribute('aria-pressed', 'true')
     await again.screen.getByRole('button', {name: 'Only selected'}).click()
-    await expect.poll(() => query(again.history)).toEqual({q: 'app', risk: '["safe"]', sort: 'name-asc', view: 'cards'})
+    await expect.poll(() => query(again.history)).toEqual({q: 'app', risk: ['safe'], sort: 'name-asc', view: 'cards'})
   })
 
   test('invalid search values fall back to the defaults without errors', async () => {
     const errors = vi.spyOn(console, 'error')
-    const bad = '?view=grid&q=%5B1%5D&risk=%5B%22nope%22%2C%22safe%22%5D&minSize=5&minAge=7&sort=bogus&only=yes&overlay=nope&log=bad&take=-3'
-    const {screen} = await open(`/cleanup${bad}`)
+    const bad = {view: 'grid', q: [1], risk: ['nope', 'safe'], minSize: 5, minAge: 7, sort: 'bogus', only: 'yes', overlay: 'nope', log: 'bad', take: -3}
+    const {screen} = await open(address('/cleanup', bad))
     await expect.element(screen.getByRole('button', {name: 'List view'})).toHaveAttribute('aria-pressed', 'true')
     await expect.element(screen.getByRole('textbox', {name: 'Filter paths'})).toHaveValue('')
     await expect.element(screen.getByRole('button', {name: 'safe', exact: true})).toHaveAttribute('aria-pressed', 'true')
@@ -141,59 +141,59 @@ describe('the URL', () => {
     await expect.element(screen.getByRole('button', {name: 'Only selected'})).toHaveAttribute('aria-pressed', 'false')
     await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
     await screen.unmount()
-    const storage = await open('/storage/no/such/folder?shape=pie')
+    const storage = await open(address('/storage/zzzzzzzz', {shape: 'pie'}))
     await expect.element(storage.screen.getByLabelText('Storage sunburst of /Users/you')).toBeVisible()
     expect(errors).not.toHaveBeenCalled()
   })
 
   test('the confirm modal opens from the URL and Escape goes back to the list it came from', async () => {
     planned()
-    const cold = await open('/cleanup/caches/confirm?q=you')
+    const cold = await open(address('/cleanup/caches/confirm', {q: 'you'}))
     const dialog = cold.screen.getByRole('dialog')
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
     expect(window.fetch).toHaveBeenCalledWith('/preview', expect.objectContaining({method: 'POST'}))
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
-    expect(cold.history.location.href).toBe('/cleanup/caches?q=you')
+    expect(cold.history.location.href).toBe(address('/cleanup/caches', {q: 'you'}))
 
     await cold.screen.getByRole('link', {name: /^node_modules/}).click()
     await cold.screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
-    expect(cold.history.location.href).toBe('/cleanup/node/confirm?q=you')
+    expect(cold.history.location.href).toBe(address('/cleanup/node/confirm', {q: 'you'}))
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
-    expect(cold.history.location.href).toBe('/cleanup/node?q=you')
+    expect(cold.history.location.href).toBe(address('/cleanup/node', {q: 'you'}))
   })
 
   test('the Free confirm has its own URL over a held run: Escape goes back, forward and a reload reopen it', async () => {
     mockServer()
     const {source} = fakeEventSource()
     const loaded = {...fixture, approved: APPROVED, openEvents: () => source}
-    const {history, screen} = await open('/cleanup?q=you', loaded)
+    const {history, screen} = await open(address('/cleanup', {q: 'you'}), loaded)
     sendAll(source, heldEvents)
     await screen.getByRole('contentinfo').getByRole('button', {name: 'Free the space now'}).click()
     const dialog = screen.getByRole('dialog', {name: 'Free the space now?'})
     await expect.element(dialog).toBeVisible()
-    expect(history.location.href).toBe('/cleanup/caches/free?q=you')
+    expect(history.location.href).toBe(address('/cleanup/caches/free', {q: 'you'}))
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
-    expect(history.location.href).toBe('/cleanup/caches?q=you')
+    expect(history.location.href).toBe(address('/cleanup/caches', {q: 'you'}))
     history.forward()
     await expect.element(dialog).toBeVisible()
 
     const again = await reload(screen, history, loaded)
     sendAll(source, heldEvents)
     await expect.element(again.screen.getByRole('dialog', {name: 'Free the space now?'})).toBeVisible()
-    expect(again.history.location.href).toBe('/cleanup/caches/free?q=you')
+    expect(again.history.location.href).toBe(address('/cleanup/caches/free', {q: 'you'}))
     await again.screen.unmount()
-    const refused = await open('/cleanup/caches/free?q=you')
-    await expect.poll(() => refused.history.location.href).toBe('/cleanup/caches?q=you')
+    const refused = await open(address('/cleanup/caches/free', {q: 'you'}))
+    await expect.poll(() => refused.history.location.href).toBe(address('/cleanup/caches', {q: 'you'}))
   })
 
   test('the progress panel and the movie open from the URL, and Escape returns to the previous URL', async () => {
     const {source} = fakeEventSource()
     const loaded = {...fixture, approved: APPROVED, openEvents: () => source}
-    const {history, screen} = await open('/cleanup?overlay=progress&log=problems', loaded)
+    const {history, screen} = await open(address('/cleanup', {overlay: 'progress', log: 'problems'}), loaded)
     sendAll(source, cleanupEvents)
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
     await expect.element(panel.getByRole('button', {name: 'Problems'})).toHaveAttribute('aria-pressed', 'true')
@@ -214,7 +214,7 @@ describe('the URL', () => {
     await expect.element(movie).toBeInTheDocument()
     await expect.poll(() => document.querySelector('[data-film]')?.closest('[data-settled]'), {timeout: 10_000}).not.toBeNull()
     await movie.getByRole('button', {name: 'Replay'}).click()
-    await expect.poll(() => query(history).take).toBe('1')
+    await expect.poll(() => query(history).take).toBe(1)
     await userEvent.keyboard('{Escape}')
     await expect.element(movie).not.toBeInTheDocument()
     expect(history.location.href).toBe('/cleanup/caches')
@@ -300,7 +300,7 @@ describe('the selection in the URL', () => {
     const {[APP_A]: _dropped, ...rest} = rowSelectionOf(categories, NO_PICKS)
     const {drop} = picksOf(categories, rest)
     expect(drop).toMatch(/^[0-9a-z]{8}$/)
-    const {screen} = await open(`/cleanup?add=_node&drop=${drop}`)
+    const {screen} = await open(address('/cleanup', {add: '_node', drop}))
     await expect.element(footer(screen).getByText('4 items selected · 4.8 GB')).toBeVisible()
     await expect.element(screen.getByRole('checkbox', {name: 'Select all in node_modules'})).toBeChecked()
     await expect.element(screen.getByRole('checkbox', {name: '~/Library/Caches/app-a'})).not.toBeChecked()
@@ -308,7 +308,7 @@ describe('the selection in the URL', () => {
 
   test('garbage selection values fall back to the preselection without errors', async () => {
     const errors = vi.spyOn(console, 'error')
-    const {screen} = await open('/cleanup?add=%5B%22x%22%5D&drop=..%2F%2F.ZZZZZZZZ._nope.12')
+    const {screen} = await open(address('/cleanup', {add: ['x'], drop: '..//.ZZZZZZZZ._nope.12'}))
     await expect.element(footer(screen).getByText('4 items selected · 3.8 GB')).toBeVisible()
     expect(errors).not.toHaveBeenCalled()
   })
@@ -411,13 +411,13 @@ describe('dialogs and tabs keep your place', () => {
 
   test('Delete and Escape keep the open section and every search param', async () => {
     mockServer()
-    const url = '/cleanup/node?q=web&sort=name-asc'
+    const url = address('/cleanup/node', {q: 'web', sort: 'name-asc'})
     const {history, screen} = await open(url)
     await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
     await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
     const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
-    expect(history.location.href).toBe('/cleanup/node/confirm?q=web&sort=name-asc')
+    expect(history.location.href).toBe(address('/cleanup/node/confirm', {q: 'web', sort: 'name-asc'}))
     expect(sectionTitle()).toBe('node_modules')
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
@@ -426,12 +426,12 @@ describe('dialogs and tabs keep your place', () => {
   })
 
   test('a tab returns to the section and search it was left at', async () => {
-    const {history, screen} = await open('/cleanup/node?q=web')
+    const {history, screen} = await open(address('/cleanup/node', {q: 'web'}))
     await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
     await screen.getByRole('tab', {name: 'Storage'}).click()
     await expect.element(screen.getByLabelText('Storage sunburst of /Users/you')).toBeVisible()
     await screen.getByRole('tab', {name: 'Cleanup'}).click()
-    await expect.poll(() => history.location.href).toBe('/cleanup/node?q=web')
+    await expect.poll(() => history.location.href).toBe(address('/cleanup/node', {q: 'web'}))
     await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
     await expect.element(screen.getByRole('textbox', {name: 'Filter paths'})).toHaveValue('web')
   })
@@ -442,11 +442,11 @@ describe('dialogs and tabs keep your place', () => {
     await screen.getByRole('link', {name: /^node_modules/}).click()
     await expect.poll(() => history.location.pathname).toBe('/cleanup/node')
     await screen.getByRole('textbox', {name: 'Filter paths'}).fill('web')
-    await expect.poll(() => history.location.href).toBe('/cleanup/node?q=web')
+    await expect.poll(() => history.location.href).toBe(address('/cleanup/node', {q: 'web'}))
     await screen.getByRole('tab', {name: 'Storage'}).click()
     await expect.poll(() => history.location.pathname).toBe('/storage')
     await screen.getByRole('tab', {name: 'Cleanup'}).click()
-    await expect.poll(() => history.location.href).toBe('/cleanup/node?q=web')
+    await expect.poll(() => history.location.href).toBe(address('/cleanup/node', {q: 'web'}))
     await expect.element(screen.getByRole('textbox', {name: 'Filter paths'})).toHaveValue('web')
   })
 
@@ -544,11 +544,15 @@ describe('route guards wait for the scan to catch up', () => {
     }
   })
 
-  test('a storage zoom path that does not exist moves to its nearest existing folder', async () => {
+  test('a storage zoom token that matches no folder moves to its nearest existing folder, or the top', async () => {
+    const gone = fullToken('/Users/you/Library/nope/deeper')
     const cases: [string, string][] = [
-      ['/storage/Users/you/Library/nope/deeper', '/storage/Users/you/Library'],
-      ['/storage/Users/you/nowhere', '/storage'],
-      ['/storage/elsewhere', '/storage'],
+      [`/storage/${gone}`, zoomed('/Users/you/Library')],
+      [`/storage/${fullToken('/Users/you/Library')}`, zoomed('/Users/you/Library')],
+      [`/storage/${fullToken('/Users/you/nowhere')}`, '/storage'],
+      ['/storage/zzzzzzzz', '/storage'],
+      ['/storage/not-a-token', '/storage'],
+      [zoomed('/Users/you'), '/storage'],
     ]
     for (const [url, landed] of cases) {
       const history = at(url)
@@ -572,7 +576,7 @@ describe('URL hygiene', () => {
     const history = at(`/cleanup/caches?overlay=zzz&view%5B%5D=cards&q=%20%20&drop=${drop}&add=_nope`)
     const screen = await render(<App loaded={fixture} history={history} />)
     await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
-    await expect.poll(() => history.location.search).toBe(`?drop=${tokenOfApp()}`)
+    await expect.poll(() => history.location.search).toBe(address('', {drop: tokenOfApp()}))
   })
 
   test('tab links carry no empty selection params', async () => {
