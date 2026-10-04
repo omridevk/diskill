@@ -1,0 +1,57 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": [
+    "**/*.test.*"
+  ],
+  "rules": {
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "react",
+            "importNames": [
+              "useEffect",
+              "useLayoutEffect"
+            ],
+            "message": "Effects are banned: see docs/specs/no-effects.md for the replacement."
+          }
+        ]
+      }
+    ],
+    "no-restricted-properties": [
+      "error",
+      {
+        "object": "React",
+        "property": "useEffect",
+        "message": "Effects are banned: see docs/specs/no-effects.md for the replacement."
+      },
+      {
+        "object": "React",
+        "property": "useLayoutEffect",
+        "message": "Effects are banned: see docs/specs/no-effects.md for the replacement."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "src/components/ui/**"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    },
+    {
+      "files": [
+        "src/components/shell.tsx",
+        "src/components/cleanup.tsx",
+        "src/lib/live.ts",
+        "src/lib/cleanup.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    }
+  ]
+}

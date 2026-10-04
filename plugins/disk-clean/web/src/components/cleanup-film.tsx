@@ -1,7 +1,7 @@
 import {Dialog as DialogPrimitive} from '@base-ui/react/dialog'
 import {useGSAP} from '@gsap/react'
 import {ChevronDown, X} from 'lucide-react'
-import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
+import {Suspense, use, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
 import {formatDuration, formatUntil, totalsOf, useOutcomes, type Cleanup, type FilmPlan, type Outcome, type Totals} from '@/lib/cleanup'
@@ -331,48 +331,41 @@ function inkOffset(text: string) {
   }
 }
 
-function useInkOffset(text: string) {
-  const [offset, setOffset] = useState<{x: number; y: number; at: number} | null>(null)
-  useEffect(() => {
-    let live = true
-    document.fonts.load(FIGURE, text).then(() => live && setOffset({...inkOffset(text), at: performance.now()}))
-    return () => {
-      live = false
-    }
-  }, [text])
-  return offset
+const fontsLoading = new Map<string, Promise<void>>()
+
+function useFigureFont(text: string) {
+  if (document.fonts.check(FIGURE, text)) return
+  const loading = fontsLoading.get(text) ?? document.fonts.load(FIGURE, text).then(
+    () => undefined,
+    () => undefined,
+  )
+  fontsLoading.set(text, loading)
+  use(loading)
 }
 
-function useLanding(landing: boolean, mounted: number | null, onLanded: () => void) {
-  useEffect(() => {
-    if (!landing || mounted === null) return
-    const landsAt = mounted + cssMs('--gather-dur', 1600) + cssMs('--duration-medium', 350)
-    const timer = setTimeout(onLanded, Math.max(0, landsAt - performance.now()))
-    return () => clearTimeout(timer)
-  }, [landing, mounted, onLanded])
-}
-
-function Particles({text, landing, onLanded}: {text: string; landing: boolean; onLanded: () => void}) {
+function Particles({text, onLanded}: {text: string; onLanded: () => void}) {
   const gather = cssMs('--gather-dur', 1600)
-  const offset = useInkOffset(text)
-  useLanding(landing, offset?.at ?? null, onLanded)
-  if (!offset) return null
+  useFigureFont(text)
+  const offset = useMemo(() => inkOffset(text), [text])
   return (
-    <ParticleText
-      text={text}
-      fontFamily={FIGURE_FONT.family}
-      fontSize={FIGURE_FONT.size}
-      fontWeight={FIGURE_FONT.weight}
-      particleSize={2.2}
-      density={2}
-      color="#f5f8ff"
-      highlightColor="#a9c8f0"
-      glow={false}
-      gatherDuration={gather - PARTICLE_STAGGER}
-      stagger={PARTICLE_STAGGER}
-      scatter={PARTICLE_SCATTER}
-      style={{minHeight: 0, height: 320, transform: `translate(${offset.x}px, ${offset.y}px)`}}
-    />
+    <>
+      <i aria-hidden className="t-clock absolute" style={{animationDuration: `${gather + cssMs('--duration-medium', 350)}ms`}} onAnimationEnd={onLanded} />
+      <ParticleText
+        text={text}
+        fontFamily={FIGURE_FONT.family}
+        fontSize={FIGURE_FONT.size}
+        fontWeight={FIGURE_FONT.weight}
+        particleSize={2.2}
+        density={2}
+        color="#f5f8ff"
+        highlightColor="#a9c8f0"
+        glow={false}
+        gatherDuration={gather - PARTICLE_STAGGER}
+        stagger={PARTICLE_STAGGER}
+        scatter={PARTICLE_SCATTER}
+        style={{minHeight: 0, height: 320, transform: `translate(${offset.x}px, ${offset.y}px)`}}
+      />
+    </>
   )
 }
 
@@ -439,7 +432,11 @@ function Finale({plan, cleanup, all, particles, held, onLanded, onReplay}: Final
             {figureOf(cleanup, totals, all, freed)}
           </div>
           <div data-film="particles" aria-hidden className="pointer-events-none absolute inset-x-0 -top-28 h-[320px]">
-            {particles !== 'off' && <Particles text={formatBytes(freed)} landing={particles === 'landing'} onLanded={onLanded} />}
+            {particles !== 'off' && (
+              <Suspense fallback={null}>
+                <Particles text={formatBytes(freed)} onLanded={onLanded} />
+              </Suspense>
+            )}
           </div>
         </div>
         <HeldNote cleanup={cleanup} totals={totals} held={held} />
@@ -467,9 +464,21 @@ function Finale({plan, cleanup, all, particles, held, onLanded, onReplay}: Final
 function useFilm(container: HTMLElement | null, plan: FilmPlan, cleanup: Cleanup, running: (on: boolean) => void) {
   const latest = useRef(cleanup)
   const film = useRef<FilmState | null>(null)
+  const landing = useRef({phase: 'off' as ParticlePhase, landed: false})
   const [shred, setShred] = useState<Outcome | null>(null)
   const [particles, setParticles] = useState<ParticlePhase>('off')
-  const {contextSafe} = useGSAP(
+  const play = () => void film.current?.tl.play()
+  const particlesTo = (phase: ParticlePhase) => {
+    if (phase === 'gather') landing.current.landed = false
+    landing.current.phase = phase
+    setParticles(phase)
+    if (phase === 'landing' && landing.current.landed) queueMicrotask(play)
+  }
+  const landed = () => {
+    landing.current.landed = true
+    if (landing.current.phase === 'landing') play()
+  }
+  useGSAP(
     (_, contextSafe) => {
       if (!container || !contextSafe) return
       const tail = contextSafe(() => pump(film.current, latest.current, true))
@@ -483,18 +492,20 @@ function useFilm(container: HTMLElement | null, plan: FilmPlan, cleanup: Cleanup
         current.flood = latest.current.log.length > current.processed
         pump(current, latest.current)
       })
-      film.current = createFilm(container, plan, {shred: setShred, particles: setParticles, running}, tail, ready)
+      film.current = createFilm(container, plan, {shred: setShred, particles: particlesTo, running}, tail, ready)
       film.current.backlog = latest.current.log.length
       document.addEventListener('visibilitychange', visible)
       return () => document.removeEventListener('visibilitychange', visible)
     },
     {dependencies: [container]},
   )
-  useLayoutEffect(() => {
-    latest.current = cleanup
-    contextSafe(() => pump(film.current, cleanup))()
-  }, [cleanup, contextSafe])
-  const landed = useCallback(() => void film.current?.tl.play(), [])
+  useGSAP(
+    () => {
+      latest.current = cleanup
+      pump(film.current, cleanup)
+    },
+    {dependencies: [cleanup]},
+  )
   return {shred, particles, landed}
 }
 

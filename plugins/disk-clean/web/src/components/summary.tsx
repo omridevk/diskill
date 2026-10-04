@@ -1,7 +1,7 @@
-import {useEffect, useState, type ReactNode} from 'react'
+import {useState, type AnimationEvent, type ReactNode} from 'react'
 import {resultOf, type CleanupProgress} from '@/lib/cleanup'
 import {formatBytes, type ScanData} from '@/lib/data'
-import {cssMs, useReducedMotion} from '@/lib/motion'
+import {useReducedMotion} from '@/lib/motion'
 import type {Selection} from '@/lib/selection'
 import {DISK_COLORS, DiskDonut} from './disk-donut'
 import {FlowField} from './radiant/flow-field'
@@ -19,15 +19,13 @@ function Legend({color, label, outlined}: {color: string; label: string; outline
 function LoadingBackdrop({scanning}: {scanning: boolean}) {
   const reduced = useReducedMotion()
   const [present, setPresent] = useState(scanning)
-  if (scanning && !present) setPresent(true)
-  useEffect(() => {
-    if (scanning) return
-    const timer = setTimeout(() => setPresent(false), reduced ? 0 : cssMs('--backdrop-dur', 500))
-    return () => clearTimeout(timer)
-  }, [scanning, reduced])
+  if (scanning !== present && (scanning || reduced)) setPresent(scanning)
+  const leave = (event: AnimationEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) setPresent(false)
+  }
   if (!present) return null
   return (
-    <div className="t-backdrop pointer-events-none absolute inset-0 -z-10" data-state={scanning ? 'in' : 'out'}>
+    <div className="t-backdrop pointer-events-none absolute inset-0 -z-10" data-state={scanning ? 'in' : 'out'} onAnimationEnd={leave}>
       <FlowField className="size-full" />
     </div>
   )

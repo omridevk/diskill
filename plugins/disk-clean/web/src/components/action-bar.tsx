@@ -1,5 +1,5 @@
 import {Trash2, X} from 'lucide-react'
-import {useEffect, useState, type ReactNode, type RefObject} from 'react'
+import {useState, type AnimationEvent, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import type {CleanupProgress} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
@@ -9,16 +9,25 @@ import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
 import FuseButton from './react-bits/fuse-button'
 
-function useCountdown(running: boolean, ms: number) {
-  const [left, setLeft] = useState(ms)
-  useEffect(() => {
-    setLeft(ms)
-    if (!running) return
-    const started = performance.now()
-    const timer = setInterval(() => setLeft(Math.max(0, ms - (performance.now() - started))), 250)
-    return () => clearInterval(timer)
-  }, [running, ms])
-  return Math.ceil(left / 1000)
+function UndoCountdown({ms}: {ms: number}) {
+  const steps = Math.ceil(ms / 1000)
+  const [left, setLeft] = useState(steps)
+  const tick = (event: AnimationEvent<HTMLSpanElement>) => setLeft(Math.max(0, steps - Math.round(event.elapsedTime)))
+  return (
+    <span
+      className="t-clock"
+      style={{animationDuration: '1000ms', animationIterationCount: steps, animationDelay: `${ms - steps * 1000}ms`}}
+      onAnimationIteration={tick}
+      onAnimationEnd={() => setLeft(0)}
+    >
+      Undo ({left}s)
+    </span>
+  )
+}
+
+function undoLabel(reduced: boolean, armed: boolean, ms: number) {
+  if (!reduced) return 'Undo'
+  return armed ? <UndoCountdown ms={ms} /> : `Undo (${Math.ceil(ms / 1000)}s)`
 }
 
 interface FuseAction {
@@ -34,11 +43,10 @@ function FuseAction({label, doneLabel, icon, background, color, onCommit}: FuseA
   const reduced = useReducedMotion()
   const undoWindow = cssMs('--fuse-window', 4000)
   const [armed, setArmed] = useState(false)
-  const seconds = useCountdown(armed && reduced, undoWindow)
   return (
     <FuseButton
       label={label}
-      undoLabel={reduced ? `Undo (${seconds}s)` : 'Undo'}
+      undoLabel={undoLabel(reduced, armed, undoWindow)}
       doneLabel={doneLabel}
       icon={icon}
       size="sm"

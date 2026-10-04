@@ -594,6 +594,15 @@
   .t-skel-skeleton.is-pulsing > * { animation: none !important; }
 }
 
+/* A silent CSS clock: its animation events time countdowns and waits. */
+.t-clock {
+  animation-name: t-clock;
+  animation-timing-function: linear;
+}
+@keyframes t-clock {
+  to { opacity: 1; }
+}
+
 /* Scan backdrop: fades in under the summary while the walk runs, out on walked. */
 :root {
   --backdrop-opacity: 0.9;
@@ -610,7 +619,10 @@
   .t-backdrop { opacity: 0; }
 }
 .t-backdrop[data-state="out"] {
-  opacity: 0;
+  animation: t-backdrop-out var(--backdrop-dur) var(--ease-in-out) both;
+}
+@keyframes t-backdrop-out {
+  to { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
