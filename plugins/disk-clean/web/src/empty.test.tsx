@@ -111,7 +111,7 @@ describe('one truthful empty state', () => {
 })
 
 async function settledBoxes(screen: Screen) {
-  await Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished))
+  await settled()
   return boxes(screen)
 }
 
@@ -166,7 +166,8 @@ describe('selection warnings never move the page', () => {
 const WIDTHS = [1024, 1280, 1440]
 
 async function settled() {
-  await Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished))
+  const finite = document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity)
+  await Promise.all(finite.map(animation => animation.finished.catch(() => undefined)))
 }
 
 function contentOf(message: Element) {

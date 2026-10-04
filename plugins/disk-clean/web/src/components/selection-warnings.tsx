@@ -44,7 +44,7 @@ export function WarningChip({warnings}: {warnings: SelectionWarnings}) {
   if (text === '') return null
   return (
     <Popover>
-      <PopoverTrigger openOnHover delay={80} className={badgeVariants({variant: 'outline', className: 'ml-auto h-6 shrink-0 cursor-pointer border-amber-500/30 bg-amber-500/10 text-amber-300'})}>
+      <PopoverTrigger openOnHover delay={80} className={badgeVariants({variant: 'outline', className: 'h-6 max-w-full cursor-pointer border-amber-500/30 bg-amber-500/10 text-amber-300'})}>
         <TriangleAlert /> {text}
       </PopoverTrigger>
       <PopoverContent side="top" className="w-80 text-xs">

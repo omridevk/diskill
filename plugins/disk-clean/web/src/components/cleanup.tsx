@@ -97,7 +97,8 @@ function pickedLabel({category, shown}: Group, progressed: Progressed | null) {
 
 function SectionCheckbox({group, locked, choose}: {group: Group; locked: boolean; choose: Choose}) {
   const {category, shown} = group
-  if (category.risk === 'report' || shown.selectable === 0) return null
+  if (category.risk === 'report') return null
+  if (shown.selectable === 0) return <span className="mt-0.5 size-4 shrink-0" />
   const all = shown.picked >= shown.selectable
   return (
     <Checkbox
@@ -143,10 +144,10 @@ function SectionBar({group, max, progressed}: {group: Group; max: number; progre
 
 function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
   const {category, shown} = group
-  if (shown.selectable < QUICK_SELECT_MIN) return null
+  const few = shown.selectable < QUICK_SELECT_MIN
   const idle = (days: number) => () => choose(category.id, entry => (entry.age ?? -1) >= days)
   return (
-    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+    <div className={`flex items-center gap-1 text-xs text-muted-foreground ${few ? 'invisible' : ''}`} inert={few}>
       <span className="pr-1">Select:</span>
       <Button size="xs" variant="ghost" onClick={() => choose(category.id, () => true)}>
         all {counted(shown.selectable)}

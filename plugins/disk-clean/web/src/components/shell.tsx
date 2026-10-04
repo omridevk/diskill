@@ -108,7 +108,7 @@ function ScanSummary({db, scan, selection, progress, approved}: {db: Db; scan: R
       counter={scan.tracking && <ScanCounter scan={scan.scan} />}
       status={
         <>
-          {scan.tracking && <ScanStatus scan={scan.scan} />}
+          {scan.tracking && <span className="w-56 shrink-0"><ScanStatus scan={scan.scan} /></span>}
           <RescanButton scan={scan.scan} approved={approved} onRescan={scan.rescan} />
           <RequestError db={db} action="rescan" onRetry={scan.rescan} />
         </>

@@ -30,7 +30,7 @@ export function ScanCounter({scan}: {scan: Scan}) {
   const {files, bytes, dir} = useScanProgress(useDb())
   return (
     <div className="flex h-5 min-w-0 items-baseline gap-3 text-[13px] text-muted-foreground tabular-nums">
-      <span className="shrink-0">
+      <span className="w-64 shrink-0">
         {plural(files, 'file', 'files')} · {formatBytes(bytes)}
         {scan.walked ? ' scanned' : ''}
       </span>
