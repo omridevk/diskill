@@ -7,13 +7,16 @@ function messageData(message: Event): unknown {
   return JSON.parse(message.data)
 }
 
+const PER_FRAME = 300
+
 function perFrame<T>(apply: (events: T[]) => void) {
   let queue: T[] = []
   let frame = 0
   const flush = () => {
     frame = 0
-    const taken = queue
-    queue = []
+    const taken = queue.slice(0, PER_FRAME)
+    queue = queue.slice(PER_FRAME)
+    if (queue.length > 0) frame = requestAnimationFrame(flush)
     if (taken.length > 0) apply(taken)
   }
   const take = (event: T) => {
@@ -22,7 +25,10 @@ function perFrame<T>(apply: (events: T[]) => void) {
   }
   const stop = () => {
     cancelAnimationFrame(frame)
-    flush()
+    frame = 0
+    const taken = queue
+    queue = []
+    if (taken.length > 0) apply(taken)
   }
   return {take, stop}
 }
