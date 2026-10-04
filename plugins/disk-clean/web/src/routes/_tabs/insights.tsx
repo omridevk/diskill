@@ -3,7 +3,7 @@ import {Insights} from '@/components/insights'
 import {Streamed} from '@/components/streamed'
 import {useScanData} from '@/lib/page-data'
 
-export const Route = createFileRoute('/insights')({
+export const Route = createFileRoute('/_tabs/insights')({
   component: InsightsTab,
 })
 

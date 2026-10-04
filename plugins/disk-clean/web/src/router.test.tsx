@@ -238,6 +238,12 @@ describe('the URL', () => {
     await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
   })
 
+  test('an unknown address shows the root not-found page without the chrome', async () => {
+    const {screen} = await open('/nowhere')
+    await expect.element(screen.getByText('There is no page at this address.')).toBeVisible()
+    await expect.element(screen.getByRole('tablist')).not.toBeInTheDocument()
+  })
+
   test('a /cleanup/free deep link with nothing held redirects to the list', async () => {
     const {history, screen} = await open('/cleanup/caches/free')
     await expect.poll(() => history.location.href).toBe('/cleanup/caches')
@@ -383,6 +389,7 @@ describe('errors are shown, never swallowed', () => {
     const tree = JSON.parse('{"name": "~", "path": "/Users/you", "bytes": 1, "files": 1, "mtime": 0, "children": null}')
     const {screen} = await open('/storage', {...fixture, data: {...fixture.data, tree}})
     await expect.element(screen.getByRole('alert').getByText('This page hit a problem')).toBeVisible()
+    await expect.element(screen.getByRole('tablist')).not.toBeInTheDocument()
     expect(errors).toHaveBeenCalled()
   })
 })
@@ -426,6 +433,20 @@ describe('dialogs and tabs keep your place', () => {
     await screen.getByRole('tab', {name: 'Cleanup'}).click()
     await expect.poll(() => history.location.href).toBe('/cleanup/node?q=web')
     await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
+    await expect.element(screen.getByRole('textbox', {name: 'Filter paths'})).toHaveValue('web')
+  })
+
+  test('a tab returns to where you left it after clicking a section and typing a filter', async () => {
+    const {history, screen} = await open('/cleanup')
+    await expect.poll(() => history.location.pathname).toBe('/cleanup/caches')
+    await screen.getByRole('link', {name: /^node_modules/}).click()
+    await expect.poll(() => history.location.pathname).toBe('/cleanup/node')
+    await screen.getByRole('textbox', {name: 'Filter paths'}).fill('web')
+    await expect.poll(() => history.location.href).toBe('/cleanup/node?q=web')
+    await screen.getByRole('tab', {name: 'Storage'}).click()
+    await expect.poll(() => history.location.pathname).toBe('/storage')
+    await screen.getByRole('tab', {name: 'Cleanup'}).click()
+    await expect.poll(() => history.location.href).toBe('/cleanup/node?q=web')
     await expect.element(screen.getByRole('textbox', {name: 'Filter paths'})).toHaveValue('web')
   })
 

@@ -3,7 +3,7 @@ import {ConfirmDialog, ConfirmFailed} from '@/components/confirm-dialog'
 import {useBack, useDialogExit} from '@/lib/navigation'
 import {canConfirm, messageOf, planFor, useDecisions, useHome} from '@/lib/page-data'
 
-export const Route = createFileRoute('/cleanup/$section/confirm')({
+export const Route = createFileRoute('/_tabs/cleanup/$section/confirm')({
   loaderDeps: ({search}) => ({add: search.add, drop: search.drop}),
   beforeLoad: ({context, params, search}) => {
     if (!canConfirm(context.page, search)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})

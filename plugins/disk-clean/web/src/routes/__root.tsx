@@ -1,26 +1,15 @@
 import {createRootRouteWithContext, Link, retainSearchParams, stripSearchParams, useRouter, type ErrorComponentProps} from '@tanstack/react-router'
-import {Shell} from '@/components/shell'
 import {Button} from '@/components/ui/button'
-import {messageOf, PageContext, usePageState, type Page} from '@/lib/page-data'
+import {messageOf, type Page} from '@/lib/page-data'
+import type {TabMemory} from '@/lib/tab-memory'
 import {ROOT_DEFAULTS, rootSearch} from '@/lib/search'
 
-export const Route = createRootRouteWithContext<{page: Page}>()({
+export const Route = createRootRouteWithContext<{page: Page; tabs: TabMemory}>()({
   validateSearch: rootSearch,
   search: {middlewares: [retainSearchParams(['add', 'drop']), stripSearchParams(ROOT_DEFAULTS)]},
-  component: Root,
   notFoundComponent: NotFound,
   errorComponent: Broken,
 })
-
-function Root() {
-  const page = Route.useRouteContext({select: context => context.page})
-  const state = usePageState(page)
-  return (
-    <PageContext value={state}>
-      <Shell />
-    </PageContext>
-  )
-}
 
 function NotFound() {
   return (

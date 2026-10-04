@@ -1,7 +1,7 @@
 import {createFileRoute, Link, notFound, Outlet} from '@tanstack/react-router'
 import {OpenSection} from './-open-section'
 
-export const Route = createFileRoute('/cleanup/$section')({
+export const Route = createFileRoute('/_tabs/cleanup/$section')({
   beforeLoad: ({context, params}) => {
     const {scan} = context.page.seen
     if (scan.done && !scan.data.categories.some(c => c.id === params.section)) throw notFound()

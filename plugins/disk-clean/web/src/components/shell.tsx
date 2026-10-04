@@ -1,6 +1,6 @@
-import {Link, linkOptions, Outlet, useLinkProps, useLocation, useNavigate} from '@tanstack/react-router'
+import {getRouteApi, Link, linkOptions, Outlet, useLinkProps, useNavigate} from '@tanstack/react-router'
 import {HardDrive} from 'lucide-react'
-import {useRef, useState, type RefObject} from 'react'
+import {useRef, useSyncExternalStore, type RefObject} from 'react'
 import {TAB_LINK, TabLinks} from '@/components/ui/tabs'
 import {resultBytes, type CleanupProgress} from '@/lib/cleanup'
 import {firstSection} from '@/lib/data'
@@ -49,21 +49,21 @@ function Status({items, progress, lost}: {items: number; progress: CleanupProgre
   )
 }
 
-const TABS = linkOptions([
-  {to: '/cleanup', label: 'Cleanup'},
-  {to: '/storage/$', params: {_splat: ''}, label: 'Storage'},
-  {to: '/insights', label: 'Insights'},
-])
+const TABS = [
+  {id: '/_tabs/cleanup', label: 'Cleanup', link: linkOptions({to: '/cleanup'})},
+  {id: '/_tabs/storage', label: 'Storage', link: linkOptions({to: '/storage'})},
+  {id: '/_tabs/insights', label: 'Insights', link: linkOptions({to: '/insights'})},
+] as const
+
+const root = getRouteApi('__root__')
 
 function TabLink({tab}: {tab: (typeof TABS)[number]}) {
-  const {label, ...start} = tab
-  const here = useLocation({select: location => location.href})
-  const active = 'data-status' in useLinkProps({...start, activeOptions: {includeSearch: false}})
-  const [last, setLast] = useState<string | undefined>(undefined)
-  if (active && last !== here) setLast(here)
+  const tabs = root.useRouteContext({select: context => context.tabs})
+  const last = useSyncExternalStore(tabs.subscribe, () => tabs.hrefOf(tab.id))
+  const active = 'data-status' in useLinkProps({...tab.link, activeOptions: {includeSearch: false}})
   return (
-    <Link {...start} href={active ? here : last} role="tab" aria-selected={active} className={TAB_LINK}>
-      {label}
+    <Link key={last} {...tab.link} href={last} role="tab" aria-selected={active} className={TAB_LINK}>
+      {tab.label}
     </Link>
   )
 }
@@ -72,7 +72,7 @@ function Tabs() {
   return (
     <TabLinks label="Views">
       {TABS.map(tab => (
-        <TabLink key={tab.label} tab={tab} />
+        <TabLink key={tab.id} tab={tab} />
       ))}
     </TabLinks>
   )

@@ -4,7 +4,7 @@ import {freeOffer} from '@/lib/cleanup'
 import {useBack, useDialogExit} from '@/lib/navigation'
 import {useDecisions, useProgress} from '@/lib/page-data'
 
-export const Route = createFileRoute('/cleanup/$section/free')({
+export const Route = createFileRoute('/_tabs/cleanup/$section/free')({
   beforeLoad: ({context, params}) => {
     if (context.page.seen.offer === 'refused') throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
   },
