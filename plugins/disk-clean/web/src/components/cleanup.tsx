@@ -87,6 +87,7 @@ function pickedCount(rows: readonly EntryRow[], on: RowSelectionState) {
 interface Removal {
   bytes: number
   count: number
+  restored: number
 }
 
 const CLEARED = new Set(['removed', 'held', 'freed'])
@@ -94,11 +95,27 @@ const CLEARED = new Set(['removed', 'held', 'freed'])
 function removalsOf(progress: CleanupProgress | null) {
   const removals = new Map<string, Removal>()
   for (const outcome of progress?.byKey.values() ?? []) {
-    if (!CLEARED.has(outcome.kind)) continue
-    const known = removals.get(outcome.section) ?? {bytes: 0, count: 0}
-    removals.set(outcome.section, {bytes: known.bytes + outcome.bytes, count: known.count + 1})
+    const restored = outcome.kind === 'restored'
+    if (!restored && !CLEARED.has(outcome.kind)) continue
+    const known = removals.get(outcome.section) ?? {bytes: 0, count: 0, restored: 0}
+    removals.set(outcome.section, {
+      bytes: known.bytes + outcome.bytes,
+      count: known.count + (restored ? 0 : 1),
+      restored: known.restored + (restored ? 1 : 0),
+    })
   }
   return removals
+}
+
+function sectionProgress(removal: Removal | undefined, total: number) {
+  const done = removal?.count ?? 0
+  const restored = removal?.restored ?? 0
+  if (restored === 0) return `${done} of ${total} done`
+  return done === 0 ? `${restored} restored` : `${done} of ${total} done · ${restored} restored`
+}
+
+function onlyRestored(removal: Removal | undefined) {
+  return removal !== undefined && removal.count === 0 && removal.restored > 0
 }
 
 interface Progressed {
@@ -115,7 +132,7 @@ function pickedLabel(group: Group, on: RowSelectionState, progressed: Progressed
   if (group.category.risk === 'report') return `${rows.length} listed`
   if (progressed) {
     const plan = planned(group.category.id, progressed)
-    return plan ? `${progressed.removals.get(group.category.id)?.count ?? 0} of ${plan.count} done` : 'not approved'
+    return plan ? sectionProgress(progressed.removals.get(group.category.id), plan.count) : 'not approved'
   }
   return `${pickedCount(rows, on)}/${selectableCount(rows)}`
 }
@@ -145,18 +162,20 @@ function SectionBar({group, max, progressed}: {group: Group; max: number; progre
     )
   }
   const plan = planned(category.id, progressed)
-  const share = plan && plan.bytes > 0 ? Math.min(1, (progressed.removals.get(category.id)?.bytes ?? 0) / plan.bytes) : 0
+  const removal = progressed.removals.get(category.id)
+  const share = plan && plan.bytes > 0 ? Math.min(1, (removal?.bytes ?? 0) / plan.bytes) : 0
   return (
     <span
       role="progressbar"
       aria-label={`${category.title} done`}
+      aria-valuetext={plan ? sectionProgress(removal, plan.count) : undefined}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(share * 100)}
       className="h-[3px] grow overflow-hidden rounded-full bg-zinc-800"
     >
       <span
-        className={`block h-[3px] origin-left transition-transform duration-(--duration-very-slow) ease-(--ease-smooth-out) motion-reduce:transition-none ${RISK_BAR[category.risk]}`}
+        className={`block h-[3px] origin-left transition-transform duration-(--duration-very-slow) ease-(--ease-smooth-out) motion-reduce:transition-none ${onlyRestored(removal) ? 'bg-muted-foreground' : RISK_BAR[category.risk]}`}
         style={{transform: `scaleX(${share})`}}
       />
     </span>

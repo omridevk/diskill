@@ -32,7 +32,7 @@ export function FreeDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Keep them held
           </Button>
-          <Button className="bg-red-600 text-white hover:bg-red-600/90" onClick={onFree}>
+          <Button variant="destructive" onClick={onFree}>
             Free {formatBytes(progress.held)} for good
           </Button>
         </DialogFooter>

@@ -1,11 +1,11 @@
 import {useVirtualizer} from '@tanstack/react-virtual'
 import {Loader2} from 'lucide-react'
-import {useRef, type ReactNode, type RefObject} from 'react'
+import {Fragment, useRef, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
 import type {Plan} from '@/lib/api'
 import {formatUntil} from '@/lib/cleanup'
-import {formatBytes} from '@/lib/data'
+import {formatBytes, tilde, tildeWords} from '@/lib/data'
 
 const ROW = 28
 
@@ -20,7 +20,15 @@ function Group({title, note, tone, children}: {title: string; note: string; tone
   )
 }
 
-function HeldPaths({rows}: {rows: Plan['hold']}) {
+function TailPath({path}: {path: string}) {
+  return (
+    <span className="min-w-0 grow truncate text-left [direction:rtl]">
+      <bdi dir="ltr">{path}</bdi>
+    </span>
+  )
+}
+
+function HeldPaths({rows, home}: {rows: Plan['hold']; home: string}) {
   const scroller = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({count: rows.length, getScrollElement: () => scroller.current, estimateSize: () => ROW, overscan: 12})
   return (
@@ -37,7 +45,7 @@ function HeldPaths({rows}: {rows: Plan['hold']}) {
                 className="absolute top-0 left-0 flex w-full items-center gap-3 px-3 font-mono text-xs"
                 style={{height: ROW, transform: `translateY(${virtual.start}px)`}}
               >
-                <span className="min-w-0 grow truncate">{row.path}</span>
+                <TailPath path={tilde(row.path, home)} />
                 <span className="shrink-0 text-muted-foreground tabular-nums">{formatBytes(row.bytes)}</span>
               </li>
             )
@@ -48,12 +56,31 @@ function HeldPaths({rows}: {rows: Plan['hold']}) {
   )
 }
 
+function Word({word}: {word: string}) {
+  const parts = word.split('/')
+  return parts.map((part, i) => (
+    <Fragment key={i}>
+      {i > 0 && <wbr />}
+      <span className="whitespace-nowrap">{i < parts.length - 1 ? `${part}/` : part}</span>
+    </Fragment>
+  ))
+}
+
+function Breakable({text}: {text: string}) {
+  return text.split(' ').map((word, i) => (
+    <Fragment key={i}>
+      {i > 0 && ' '}
+      <Word word={word} />
+    </Fragment>
+  ))
+}
+
 function Lines({label, lines}: {label: string; lines: string[]}) {
   return (
-    <ul aria-label={label} className="max-h-[22vh] overflow-y-auto rounded-lg border bg-background px-3 py-2 font-mono text-xs leading-relaxed">
+    <ul aria-label={label} className="max-h-[22vh] divide-y overflow-y-auto rounded-lg border bg-background font-mono text-xs leading-relaxed">
       {lines.map((line, i) => (
-        <li key={i} className="break-all">
-          {line}
+        <li key={i} className="overflow-x-auto py-1.5 pr-3 pl-7 -indent-4">
+          <Breakable text={line} />
         </li>
       ))}
     </ul>
@@ -86,23 +113,23 @@ function Totals({plan}: {plan: Plan}) {
   )
 }
 
-function Body({plan}: {plan: Plan}) {
+function Body({plan, home}: {plan: Plan; home: string}) {
   return (
     <>
       <Totals plan={plan} />
       {plan.hold.length > 0 && (
         <Group title="Moved to hold (undo available)" note={`until ${formatUntil(plan.hold_until)}, space comes back when you free them`} tone="text-foreground">
-          <HeldPaths rows={plan.hold} />
+          <HeldPaths rows={plan.hold} home={home} />
         </Group>
       )}
       {plan.final.length > 0 && (
         <Group title="Can't be undone" note="worktree removals, held runs and fixed commands run exactly as below" tone="text-amber-300">
-          <Lines label="Can't be undone" lines={plan.final} />
+          <Lines label="Can't be undone" lines={plan.final.map(line => tildeWords(line, home))} />
         </Group>
       )}
       {plan.rejected.length > 0 && (
-        <Group title="Rejected by the safety checks" note="these stay where they are" tone="text-red-300">
-          <Lines label="Rejected by the safety checks" lines={plan.rejected.map(r => `${r.path}: ${r.reason}`)} />
+        <Group title="Rejected by the safety checks" note="these stay where they are" tone="text-destructive">
+          <Lines label="Rejected by the safety checks" lines={plan.rejected.map(r => `${tilde(r.path, home)}: ${r.reason}`)} />
         </Group>
       )}
     </>
@@ -111,12 +138,14 @@ function Body({plan}: {plan: Plan}) {
 
 export function ConfirmDialog({
   plan,
+  home,
   open,
   onOpenChange,
   onConfirm,
   returnFocus,
 }: {
   plan: Plan | null
+  home: string
   open: boolean
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
@@ -133,7 +162,7 @@ export function ConfirmDialog({
           </DialogDescription>
         </DialogHeader>
         {plan ? (
-          <Body plan={plan} />
+          <Body plan={plan} home={home} />
         ) : (
           <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> Checking the selection…
@@ -146,7 +175,7 @@ export function ConfirmDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button className="bg-red-600 text-white hover:bg-red-600/90" disabled={!plan || plan.count === 0} onClick={onConfirm}>
+          <Button variant="destructive" disabled={!plan || plan.count === 0} onClick={onConfirm}>
             {plan ? confirmLabel(plan) : 'Delete'}
           </Button>
         </DialogFooter>

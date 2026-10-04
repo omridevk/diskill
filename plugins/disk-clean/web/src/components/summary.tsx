@@ -1,5 +1,5 @@
 import {useEffect, useState, type ReactNode} from 'react'
-import type {CleanupProgress} from '@/lib/cleanup'
+import {resultOf, type CleanupProgress} from '@/lib/cleanup'
 import {formatBytes, type ScanData} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
 import type {Selection} from '@/lib/selection'
@@ -52,7 +52,10 @@ function FreeSpace({before, after, total, live}: {before: number; after: number;
 
 function progressLabel(progress: CleanupProgress | null) {
   if (!progress) return 'Selected to free'
-  return progress.held > 0 ? 'Held, not freed yet' : 'Freed'
+  const result = resultOf(progress)
+  if (result === 'held') return 'Held, not freed yet'
+  if (result === 'freed') return 'Freed'
+  return progress.freed > 0 ? `Restored · nothing is held · freed ${formatBytes(progress.freed)}` : 'Restored · nothing is held'
 }
 
 export function Summary({

@@ -6,7 +6,7 @@ import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {formatBytes} from './lib/data'
 import {at, fixture, freeEvents, heldEvents, undoEvents} from './test/fixture'
-import {fakeEventSource, mockServer, sendAll} from './test/page'
+import {fakeEventSource, mockServer, PLAN, sendAll} from './test/page'
 import './index.css'
 
 const GB = 1024 ** 3
@@ -19,8 +19,11 @@ const barSays = (screen: Screen, text: string) => expect.poll(() => statusOf(scr
 const posted = (url: string) => vi.mocked(window.fetch).mock.calls.filter(([to]) => String(to) === url)
 const footer = (screen: Screen) => screen.getByRole('contentinfo')
 
-async function openApp(url = '/cleanup') {
-  mockServer()
+const LONG_NAME = 'ms-vscode.cpptools-a-very-long-item-name-that-must-stay-visible'
+const LONG = `/Users/you/Library/Application Support/Code/User/workspaceStorage/0f3a9c2b7d1e4a6f8b5c3d2e1f0a9b8c/${LONG_NAME}`
+
+async function openApp(url = '/cleanup', plan: object = PLAN) {
+  mockServer(plan)
   const {source} = fakeEventSource()
   const history: RouterHistory = at(url)
   const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={history} />)
@@ -78,6 +81,19 @@ describe('Delete asks in a modal', () => {
     await expect.element(screen.getByRole('button', {name: 'Undo'})).not.toBeInTheDocument()
     await expect.element(screen.getByRole('button', {name: DELETE})).not.toBeInTheDocument()
   })
+
+  test('paths read from the home folder, and a long path keeps its name', async () => {
+    const plan = {...PLAN, hold: [{path: LONG, bytes: GB, held: '/Users/you/.cache/disk-clean/held/run-1/9'}, ...PLAN.hold]}
+    const {screen} = await openApp('/cleanup', plan)
+    await screen.getByRole('button', {name: DELETE}).click()
+    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    const held = dialog.getByRole('list', {name: 'Moved to hold'}).getByRole('listitem')
+    await expect.element(held.first()).toHaveTextContent(`~/Library/Application Support/Code/User/workspaceStorage/0f3a9c2b7d1e4a6f8b5c3d2e1f0a9b8c/${LONG_NAME}1.0 GB`)
+    await expect.element(held.nth(1)).toHaveTextContent('~/Library/Caches/app-a2.0 GB')
+    await expect.element(dialog.getByRole('list', {name: "Can't be undone"}).getByRole('listitem').first()).toHaveTextContent('git -C ~/code worktree remove ~/code/wt')
+    await expect.element(dialog.getByRole('list', {name: 'Rejected by the safety checks'})).toHaveTextContent('~/old: already gone')
+    await expect.element(dialog.getByText('/Users/you', {exact: false})).not.toBeInTheDocument()
+  })
 })
 
 describe('held, then undone or freed', () => {
@@ -103,6 +119,14 @@ describe('held, then undone or freed', () => {
     await sendAll(source, undoEvents.slice(2))
     await barSays(screen, `Restored ${formatBytes(3.75 * GB)} · nothing is held`)
     await expect.element(screen.getByText('restored', {exact: true}).first()).toBeVisible()
+    await expect.element(screen.getByText('4 restored', {exact: true})).toBeVisible()
+    await expect.element(screen.getByText(/ of \d+ done/)).not.toBeInTheDocument()
+    await expect.element(screen.getByText(`Restored · nothing is held · freed ${formatBytes(GB)}`)).toBeVisible()
+    await expect.poll(() => footer(screen).element().textContent).toMatch(new RegExp(`^Restored ${formatBytes(3.75 * GB)} · nothing is held`))
+    await screen.getByRole('button', {name: 'Details'}).click()
+    const details = screen.getByRole('dialog', {name: 'Cleanup progress'})
+    await expect.element(details.getByText('Restored', {exact: true})).toBeVisible()
+    await expect.element(details.getByText(`Nothing is held · freed ${formatBytes(GB)}`)).toBeVisible()
     await expect.element(footer(screen).getByRole('button', {name: 'Free the space now'})).not.toBeInTheDocument()
     expect(source.readyState).toBe(2)
   })

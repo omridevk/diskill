@@ -12,7 +12,7 @@ import {ChartBoundary} from './chart-boundary'
 import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './chart-card'
 import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatBytes, type Category, type ScanData, type TreeNode} from '@/lib/data'
+import {formatBytes, homeOf, tilde, type Category, type ScanData, type TreeNode} from '@/lib/data'
 import type {Shape} from '@/lib/search'
 import {outermost, sumBytes, type Selection} from '@/lib/selection'
 import {squarifyInBounds} from '@/lib/treemap-tile'
@@ -62,15 +62,6 @@ function subtree(root: TreeNode, depth: number): Row[] {
 function nodeOf(point: ChartPoint | null) {
   const datum = point?.datum as SunburstNode<Row> | TreemapNode<Row> | undefined
   return datum?.data?.node ?? null
-}
-
-function homeOf(root: TreeNode): string {
-  if (root.name === '~') return root.path
-  return root.children.map(homeOf).find(Boolean) ?? ''
-}
-
-function tilde(path: string, home: string) {
-  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
 }
 
 function titleOf(node: TreeNode) {

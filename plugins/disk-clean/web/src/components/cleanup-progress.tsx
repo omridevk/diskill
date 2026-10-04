@@ -5,7 +5,7 @@ import {memo, useMemo, useRef, type ReactNode, type Ref, type RefObject} from 'r
 import {Button} from '@/components/ui/button'
 import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/components/ui/sheet'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatDuration, formatUntil, jobRunning, type Outcome, type CleanupProgress} from '@/lib/cleanup'
+import {formatDuration, formatUntil, jobRunning, resultBytes, resultOf, type Outcome, type CleanupProgress} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
 import {useBack} from '@/lib/navigation'
 import {LOG_FILTERS, type LogFilter, type Overlay} from '@/lib/search'
@@ -165,20 +165,23 @@ function FreeSpace({progress}: {progress: CleanupProgress}) {
   return <Stat label="Free space">{before === undefined || progress.free === null ? 'not started' : `${formatBytes(before)} → ${formatBytes(progress.free)}`}</Stat>
 }
 
+function headlineOf(progress: CleanupProgress) {
+  const result = resultOf(progress)
+  if (result === 'held') return {label: 'Held, not freed yet', note: `Freed ${formatBytes(progress.freed)} · undo until ${formatUntil(progress.holdUntil)}`}
+  if (result === 'restored') return {label: 'Restored', note: `Nothing is held · freed ${formatBytes(progress.freed)}`}
+  return {label: progress.cleanup.done ? 'Freed' : 'Freed so far', note: ''}
+}
+
 function Stats({progress}: {progress: CleanupProgress}) {
-  const holding = progress.held > 0
+  const {label, note} = headlineOf(progress)
   return (
     <div className="flex flex-col gap-4 px-4">
       <div className="flex flex-col gap-1">
-        <span className="text-xs text-muted-foreground">{holding ? 'Held, not freed yet' : progress.cleanup.done ? 'Freed' : 'Freed so far'}</span>
+        <span className="text-xs text-muted-foreground">{label}</span>
         <span className="text-4xl leading-none font-bold tracking-tighter tabular-nums">
-          <SpinningBytes bytes={holding ? progress.held : progress.freed} />
+          <SpinningBytes bytes={resultBytes(progress)} />
         </span>
-        {holding && (
-          <span className="text-xs text-muted-foreground">
-            Freed {formatBytes(progress.freed)} · undo until {formatUntil(progress.holdUntil)}
-          </span>
-        )}
+        {note && <span className="text-xs text-muted-foreground">{note}</span>}
       </div>
       <div className="grid grid-cols-3 gap-3">
         <Stat label="Items done">
@@ -272,10 +275,19 @@ function Rows({outcomes}: {outcomes: readonly Outcome[]}) {
   )
 }
 
+const PANEL_JOB = {free: 'Freeing the held items for good', undo: 'Putting the held items back'}
+const FOOTER_JOB = {free: 'Freeing the held items…', undo: 'Putting the held items back…'}
+
+function runningJob(progress: CleanupProgress) {
+  return jobRunning(progress) ? progress.cleanup.job : null
+}
+
 function panelState(progress: CleanupProgress) {
   const {cleanup} = progress
-  if (jobRunning(progress)) return cleanup.job?.kind === 'free' ? 'Freeing the held items for good' : 'Putting the held items back'
+  const job = runningJob(progress)
+  if (job) return PANEL_JOB[job.kind]
   if (progress.held > 0) return 'Held, not freed yet: Undo puts everything back, Free the space now deletes it for good'
+  if (cleanup.done && progress.restored > 0) return 'Restored: everything held was put back'
   if (cleanup.done) return 'Finished'
   if (cleanup.abandoned) return cleanup.started ? 'Stopped before it finished' : 'The cleanup did not start'
   return cleanup.started ? 'Deleting in the background' : 'Waiting for the deletion to start'
@@ -333,8 +345,10 @@ function ProgressPanel({
 
 function footerTitle(progress: CleanupProgress) {
   const {cleanup} = progress
-  if (jobRunning(progress)) return cleanup.job?.kind === 'free' ? 'Freeing the held items…' : 'Putting the held items back…'
+  const job = runningJob(progress)
+  if (job) return FOOTER_JOB[job.kind]
   if (progress.held > 0) return `Held ${formatBytes(progress.held)} · not freed yet`
+  if (cleanup.done && progress.restored > 0) return `Restored ${formatBytes(progress.restored)} · nothing is held`
   if (cleanup.done) return 'Cleanup finished'
   if (cleanup.abandoned) return cleanup.started ? 'The cleanup stopped before it finished' : 'The cleanup did not start'
   return 'Approved: the deletion runs in the background'

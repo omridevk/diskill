@@ -412,6 +412,17 @@ export function freeOffer(progress: CleanupProgress | null): FreeOffer {
   return progress.held > 0 ? 'offered' : 'refused'
 }
 
+export function resultOf(progress: CleanupProgress): 'held' | 'restored' | 'freed' {
+  if (progress.held > 0) return 'held'
+  return progress.restored > 0 ? 'restored' : 'freed'
+}
+
+export function resultBytes(progress: CleanupProgress) {
+  const result = resultOf(progress)
+  if (result === 'held') return progress.held
+  return result === 'restored' ? progress.restored : progress.freed
+}
+
 export function jobRunning(progress: CleanupProgress) {
   return progress.cleanup.job !== null && progress.cleanup.job.done === null
 }

@@ -163,13 +163,13 @@ describe('other tabs', () => {
 describe('confirm dialog', () => {
   test('lists totals, every held path with its size, the steps that cannot be undone and the rejections', async () => {
     const confirmed = vi.fn()
-    const screen = await render(<ConfirmDialog plan={PLAN} open onOpenChange={() => {}} onConfirm={confirmed} />)
+    const screen = await render(<ConfirmDialog plan={PLAN} home="/Users/you" open onOpenChange={() => {}} onConfirm={confirmed} />)
     const held = screen.getByRole('list', {name: 'Moved to hold'})
     await expect.element(screen.getByRole('heading', {name: /^Moved to hold \(undo available\)/})).toBeVisible()
     await expect.poll(() => held.getByRole('listitem').elements().length).toBe(4)
-    await expect.element(held.getByRole('listitem').first()).toHaveTextContent('/Users/you/Library/Caches/app-a2.0 GB')
-    await expect.element(screen.getByRole('list', {name: "Can't be undone"})).toHaveTextContent('git -C /Users/you/code worktree remove /Users/you/code/wtgit -C /Users/you/code worktree prunedocker system prune -f')
-    await expect.element(screen.getByRole('list', {name: 'Rejected by the safety checks'})).toHaveTextContent('/Users/you/old: already gone')
+    await expect.element(held.getByRole('listitem').first()).toHaveTextContent('~/Library/Caches/app-a2.0 GB')
+    await expect.element(screen.getByRole('list', {name: "Can't be undone"})).toHaveTextContent('git -C ~/code worktree remove ~/code/wtgit -C ~/code worktree prunedocker system prune -f')
+    await expect.element(screen.getByRole('list', {name: 'Rejected by the safety checks'})).toHaveTextContent('~/old: already gone')
     await expect.element(screen.getByText('6 items in total')).toBeVisible()
     await screen.getByRole('button', {name: "Move 4 items to hold + 2 that can't be undone"}).click()
     expect(confirmed).toHaveBeenCalledOnce()
@@ -177,10 +177,10 @@ describe('confirm dialog', () => {
 
   test('says Delete when nothing can be held, and waits for the plan', async () => {
     const plan = {...PLAN, hold: [], hold_bytes: 0, count: 2}
-    const screen = await render(<ConfirmDialog plan={plan} open onOpenChange={() => {}} onConfirm={() => {}} />)
+    const screen = await render(<ConfirmDialog plan={plan} home="" open onOpenChange={() => {}} onConfirm={() => {}} />)
     await expect.element(screen.getByRole('button', {name: 'Delete 2 items'})).toBeEnabled()
     await expect.element(screen.getByRole('list', {name: 'Moved to hold'})).not.toBeInTheDocument()
-    await screen.rerender(<ConfirmDialog plan={null} open onOpenChange={() => {}} onConfirm={() => {}} />)
+    await screen.rerender(<ConfirmDialog plan={null} home="" open onOpenChange={() => {}} onConfirm={() => {}} />)
     await expect.element(screen.getByText('Checking the selection…')).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Delete'})).toBeDisabled()
   })

@@ -85,6 +85,26 @@ export async function load(): Promise<Loaded> {
   return 'approved' in parsed ? {data: parsed, token, approved: parsed.selection} : {data: parsed, token}
 }
 
+export function homeOf(root: TreeNode | null): string {
+  if (!root) return ''
+  if (root.name === '~') return root.path
+  return root.children.map(homeOf).find(Boolean) ?? ''
+}
+
+export function tilde(path: string, home: string) {
+  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
+}
+
+export function tildeWords(line: string, home: string) {
+  return line
+    .split(' ')
+    .map(word => {
+      const quote = word.startsWith("'") ? "'" : ''
+      return quote + tilde(word.slice(quote.length), home)
+    })
+    .join(' ')
+}
+
 const UNITS = ['KB', 'MB', 'GB', 'TB']
 
 export function formatBytes(n: number): string {

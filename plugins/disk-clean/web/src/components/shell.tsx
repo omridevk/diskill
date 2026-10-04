@@ -3,8 +3,8 @@ import {HardDrive} from 'lucide-react'
 import {createContext, use, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs'
 import {decide, heldAction, preview, type Plan} from '@/lib/api'
-import {filmPlan, freeOffer, useCleanupProgress, type CleanupProgress, type FilmPlan} from '@/lib/cleanup'
-import type {Item, Loaded, ScanData} from '@/lib/data'
+import {filmPlan, freeOffer, resultBytes, useCleanupProgress, type CleanupProgress, type FilmPlan} from '@/lib/cleanup'
+import {homeOf, type Item, type Loaded, type ScanData} from '@/lib/data'
 import {useScan} from '@/lib/live'
 import type {Scan} from '@/lib/scan'
 import {useShownOnMount} from '@/lib/motion'
@@ -158,7 +158,7 @@ function ScanSummary({live, scan, selection, progress, approved, onRescan}: {liv
     <Summary
       data={scan.data}
       selection={selection}
-      bytes={progress ? (progress.held > 0 ? progress.held : progress.freed) : hero.bytes}
+      bytes={progress ? resultBytes(progress) : hero.bytes}
       overlay={hero.overlay}
       counter={tracking && <ScanCounter scan={scan} />}
       status={
@@ -175,6 +175,7 @@ function ScanSummary({live, scan, selection, progress, approved, onRescan}: {liv
 
 interface ConfirmProps {
   plan: Plan | null
+  home: string
   ready: boolean
   approved: boolean
   onCheck: () => void
@@ -186,7 +187,7 @@ function useRouteOpen(to: '/cleanup/confirm' | '/cleanup/free') {
   return useMatch({from: to, shouldThrow: false, select: () => true}) ?? false
 }
 
-function DeleteConfirm({plan, ready, approved, onCheck, onApprove, returnFocus}: ConfirmProps) {
+function DeleteConfirm({plan, home, ready, approved, onCheck, onApprove, returnFocus}: ConfirmProps) {
   const open = useRouteOpen('/cleanup/confirm')
   const navigate = useNavigate()
   const back = useBack()
@@ -202,6 +203,7 @@ function DeleteConfirm({plan, ready, approved, onCheck, onApprove, returnFocus}:
   return (
     <ConfirmDialog
       plan={plan}
+      home={home}
       open={open}
       onOpenChange={next => next || back({to: '/cleanup', search: true})}
       onConfirm={approve}
@@ -307,6 +309,7 @@ export function Shell({loaded}: {loaded: Loaded}) {
         <ActionBar key={scan.rescans} selection={selection} locked={locked} progress={progress} deleteRef={deleteRef} held={held.actions} onCancel={cancel} onDelete={openConfirm} />
         <DeleteConfirm
           plan={plan}
+          home={homeOf(data.tree)}
           ready={!locked && !previewing && error === '' && selection.selected.length > 0}
           approved={approved}
           onCheck={check}
