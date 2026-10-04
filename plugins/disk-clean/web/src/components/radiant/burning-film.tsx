@@ -247,7 +247,11 @@ function createBurningFilm(canvas: HTMLCanvasElement): Renderer | null {
 }
 
 export function BurningFilm({className, running = true}: {className?: string; running?: boolean}) {
-  const {host, failed} = useCanvasRenderer(createBurningFilm, RENDER_SCALE, running)
+  const {host, canvas, failed} = useCanvasRenderer(createBurningFilm, RENDER_SCALE, running)
   if (failed) return null
-  return <div ref={host} aria-hidden className={className} />
+  return (
+    <div ref={host} aria-hidden className={className}>
+      <canvas ref={canvas} className="block size-full" />
+    </div>
+  )
 }

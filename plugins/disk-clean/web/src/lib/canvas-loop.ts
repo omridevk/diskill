@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from 'react'
+import {useCallback, useRef, useState} from 'react'
 import {useReducedMotion} from './motion'
 
 export interface Renderer {
@@ -66,45 +66,37 @@ function runLoop(canvas: HTMLCanvasElement, renderer: Renderer, scale: number) {
   }
 }
 
-function mountCanvas(host: HTMLElement) {
-  const canvas = document.createElement('canvas')
-  canvas.className = 'block size-full'
-  canvas.setAttribute('aria-hidden', 'true')
-  host.append(canvas)
-  return canvas
-}
-
 interface Mounted {
   canvas: HTMLCanvasElement
   renderer: Renderer
 }
 
 export function useCanvasRenderer(create: CreateRenderer, scale = 1, running = true) {
-  const host = useRef<HTMLDivElement>(null)
   const reduced = useReducedMotion()
-  const [mounted, setMounted] = useState<Mounted | null>(null)
+  const mounted = useRef<Mounted | null>(null)
   const [failed, setFailed] = useState(false)
-  useEffect(() => {
-    if (!host.current) return
-    const canvas = mountCanvas(host.current)
-    const renderer = create(canvas)
-    if (!renderer) {
-      canvas.remove()
-      return setFailed(true)
-    }
-    fit(canvas, renderer, scale)
-    renderer.still()
-    setMounted({canvas, renderer})
-    return () => {
-      setMounted(null)
-      renderer.dispose()
-      canvas.remove()
-    }
-  }, [create])
-  useEffect(() => {
-    if (!mounted) return
-    const {canvas, renderer} = mounted
-    return reduced || !running ? drawStill(canvas, renderer, scale) : runLoop(canvas, renderer, scale)
-  }, [mounted, reduced, running, scale])
-  return {host, failed}
+  const canvas = useCallback(
+    (el: HTMLCanvasElement | null) => {
+      if (!el) return
+      const renderer = create(el)
+      if (!renderer) return setFailed(true)
+      fit(el, renderer, scale)
+      renderer.still()
+      mounted.current = {canvas: el, renderer}
+      return () => {
+        mounted.current = null
+        renderer.dispose()
+      }
+    },
+    [create],
+  )
+  const host = useCallback(
+    (el: HTMLDivElement | null) => {
+      const current = mounted.current
+      if (!el || !current) return
+      return reduced || !running ? drawStill(current.canvas, current.renderer, scale) : runLoop(current.canvas, current.renderer, scale)
+    },
+    [create, reduced, running, scale],
+  )
+  return {host, canvas, failed}
 }

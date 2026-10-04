@@ -193,7 +193,11 @@ function createFlowField(canvas: HTMLCanvasElement): Renderer | null {
 }
 
 export function FlowField({className}: {className?: string}) {
-  const {host, failed} = useCanvasRenderer(createFlowField)
+  const {host, canvas, failed} = useCanvasRenderer(createFlowField)
   if (failed) return null
-  return <div ref={host} aria-hidden className={className} />
+  return (
+    <div ref={host} aria-hidden className={className}>
+      <canvas ref={canvas} className="block size-full" />
+    </div>
+  )
 }

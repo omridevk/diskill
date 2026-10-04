@@ -1,13 +1,25 @@
-import {useCallback, useSyncExternalStore} from 'react'
+import {useSyncExternalStore} from 'react'
 
-export function useNow(running: boolean, every: number) {
-  const subscribe = useCallback(
-    (onChange: () => void) => {
-      if (!running) return () => {}
-      const timer = setInterval(onChange, every)
-      return () => clearInterval(timer)
-    },
-    [running, every],
-  )
-  return useSyncExternalStore(subscribe, () => (running ? Math.floor(performance.now() / every) * every : 0))
+const TICK_MS = 100
+
+let now = 0
+
+function ticking(notify: () => void) {
+  const timer = setInterval(() => {
+    now = performance.now()
+    notify()
+  }, TICK_MS)
+  return () => clearInterval(timer)
+}
+
+function still() {
+  return () => {}
+}
+
+function read() {
+  return now
+}
+
+export function useClock(running: boolean) {
+  return useSyncExternalStore(running ? ticking : still, read)
 }

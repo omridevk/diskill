@@ -23,19 +23,19 @@ function useExit() {
   const back = useBack()
   const {section} = Route.useParams()
   const leave = () => back({to: '/cleanup/$section', params: {section}, search: true})
-  return {open: exit.open, onClose: () => exit.leave(leave), onClosed: () => exit.then?.(), leave: exit.leave}
+  return {dialog: {open: exit.open, onClose: () => exit.leave(leave), onClosed: () => exit.after?.()}, leave: exit.leave}
 }
 
 function Checking() {
   const home = useHome()
-  const {leave, ...exit} = useExit()
-  return <ConfirmDialog plan={null} home={home} {...exit} onConfirm={exit.onClose} />
+  const {dialog} = useExit()
+  return <ConfirmDialog plan={null} home={home} {...dialog} onConfirm={dialog.onClose} />
 }
 
 function Failed({error}: ErrorComponentProps) {
   const router = useRouter()
-  const {leave, ...exit} = useExit()
-  return <ConfirmFailed message={messageOf(error)} {...exit} onRetry={() => router.invalidate()} />
+  const {dialog} = useExit()
+  return <ConfirmFailed message={messageOf(error)} {...dialog} onRetry={() => router.invalidate()} />
 }
 
 function Confirm() {
@@ -44,10 +44,10 @@ function Confirm() {
   const {approve} = useDecisions()
   const navigate = Route.useNavigate()
   const home = useHome()
-  const {leave, ...exit} = useExit()
+  const {dialog, leave} = useExit()
   const confirm = () => {
     approve(picks)
     leave(() => navigate({to: '/cleanup/$section', params: true, search: true, replace: true}))
   }
-  return <ConfirmDialog plan={data[0] ?? null} home={home} {...exit} onConfirm={confirm} />
+  return <ConfirmDialog plan={data[0] ?? null} home={home} {...dialog} onConfirm={confirm} />
 }

@@ -3,7 +3,7 @@ import type {RowSelectionState} from '@tanstack/react-table'
 import {useCallback, useMemo, useSyncExternalStore} from 'react'
 import {outermost, sumBytes, type Category} from './data'
 import type {Action, Db, Request, Session} from './db'
-import type {CategoryHead, Disk, Entry, Nest, ScanProgress, ScanState} from './scan-feed'
+import type {CategoryHead, Disk, Entry, ScanProgress, ScanState} from './scan-feed'
 import type {Sort} from './search'
 
 function first<T>(rows: readonly T[], fallback: T) {

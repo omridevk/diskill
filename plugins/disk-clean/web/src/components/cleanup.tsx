@@ -286,9 +286,9 @@ function ListView({groups, on, progressed, children}: {groups: Group[]; on: RowS
 }
 
 function SectionPanel({table, group, progressed}: {table: CleanupTable; group: Group; progressed: Progressed | null}) {
-  const reveal = useReveal(group.category.id)
+  const replay = useReveal(group.category.id)
   return (
-    <main ref={reveal} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
+    <main key={group.category.id} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
       <div className="flex flex-col gap-2.5 border-b px-6 pt-4 pb-3">
         <div className="flex items-center gap-2.5">
           <h2 className="text-lg font-semibold tracking-tight">{group.category.title}</h2>
@@ -619,7 +619,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   const onList = useListChange()
   const table = useCleanupTable(entries, selection, list, onList, progress)
   const search = useRef<HTMLInputElement>(null)
-  const reveal = useReveal(list.view)
+  const replay = useReveal(list.view)
   const groups = groupsOf(table, sections)
   const hidden = useHidden(table, list, selection.selected)
   const on = selection.rowSelection
@@ -639,7 +639,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
       <div ref={keys} className="flex min-h-0 grow flex-col">
         <Toolbar table={table} list={list} onList={onList} searchRef={search} />
         <Warnings hidden={hidden} risky={selection.risky} />
-        <div ref={reveal} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
+        <div key={list.view} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
           <Body groups={groups} list={list} onList={onList} progressed={progressed} on={on}>
             {children}
           </Body>

@@ -793,7 +793,7 @@ describe('cancel', () => {
 function Swapping({text}: {text: string}) {
   const label = useTextSwap(text)
   return (
-    <span ref={label.ref} className="t-text-swap">
+    <span key={label.shown} className={label.className} onAnimationEnd={label.onAnimationEnd}>
       {label.shown}
     </span>
   )

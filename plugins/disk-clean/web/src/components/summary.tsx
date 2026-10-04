@@ -1,4 +1,4 @@
-import {useState, type ReactNode} from 'react'
+import {useState, type AnimationEvent, type ReactNode} from 'react'
 import {formatBytes, plural} from '@/lib/data'
 import {resultOf, type CleanupProgress} from '@/lib/progress'
 import type {Disk} from '@/lib/scan-feed'
@@ -19,15 +19,14 @@ function Legend({color, label, outlined}: {color: string; label: string; outline
 
 function LoadingBackdrop({scanning}: {scanning: boolean}) {
   const reduced = useReducedMotion()
-  const [fading, setFading] = useState(false)
-  const [was, setWas] = useState(scanning)
-  if (was !== scanning) {
-    setWas(scanning)
-    setFading(!scanning && !reduced)
+  const [present, setPresent] = useState(scanning)
+  if (scanning !== present && (scanning || reduced)) setPresent(scanning)
+  const leave = (event: AnimationEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) setPresent(false)
   }
-  if (!scanning && !fading) return null
+  if (!present) return null
   return (
-    <div className="t-backdrop pointer-events-none absolute inset-0 -z-10" data-state={scanning ? 'in' : 'out'} onAnimationEnd={event => event.target === event.currentTarget && setFading(false)}>
+    <div className="t-backdrop pointer-events-none absolute inset-0 -z-10" data-state={scanning ? 'in' : 'out'} onAnimationEnd={leave}>
       <FlowField className="size-full" />
     </div>
   )

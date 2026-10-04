@@ -1,5 +1,5 @@
 import {useLiveQuery} from '@tanstack/react-db'
-import {useMemo, useState, useSyncExternalStore} from 'react'
+import {useMemo} from 'react'
 import type {CleanupEvent, EventRow, Of, OutcomeKind} from './cleanup-feed'
 import type {Db, Link, Planned} from './db'
 import {useDisk, useSession} from './views'

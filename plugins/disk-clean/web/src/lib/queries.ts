@@ -1,4 +1,4 @@
-import {count, createLiveQueryCollection, eq, inArray, isNull, like, max, not, or, sum, type Collection} from '@tanstack/db'
+import {count, createLiveQueryCollection, eq, inArray, isNull, like, not, or, sum, type Collection} from '@tanstack/db'
 import type {CleanupEvent, EventRow} from './cleanup-feed'
 import type {Planned} from './db'
 import type {CategoryHead, Entry} from './scan-feed'

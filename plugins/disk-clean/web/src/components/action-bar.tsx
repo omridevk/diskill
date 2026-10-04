@@ -1,6 +1,5 @@
 import {Trash2, X} from 'lucide-react'
-import {useState, type ReactNode} from 'react'
-import {useNow} from '@/lib/clock'
+import {useState, type AnimationEvent, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
 import type {CleanupProgress} from '@/lib/progress'
 import {formatBytes, plural} from '@/lib/data'
@@ -10,12 +9,25 @@ import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
 import FuseButton from './react-bits/fuse-button'
 
-const TICK = 250
+function UndoCountdown({ms}: {ms: number}) {
+  const steps = Math.ceil(ms / 1000)
+  const [left, setLeft] = useState(steps)
+  const tick = (event: AnimationEvent<HTMLSpanElement>) => setLeft(Math.max(0, steps - Math.round(event.elapsedTime)))
+  return (
+    <span
+      className="t-clock"
+      style={{animationDuration: '1000ms', animationIterationCount: steps, animationDelay: `${ms - steps * 1000}ms`}}
+      onAnimationIteration={tick}
+      onAnimationEnd={() => setLeft(0)}
+    >
+      Undo ({left}s)
+    </span>
+  )
+}
 
-function useCountdown(armedAt: number | null, ms: number) {
-  const now = useNow(armedAt !== null, TICK)
-  const left = armedAt === null ? ms : Math.max(0, ms - Math.max(0, now - armedAt))
-  return Math.ceil(left / 1000)
+function undoLabel(reduced: boolean, armed: boolean, ms: number) {
+  if (!reduced) return 'Undo'
+  return armed ? <UndoCountdown ms={ms} /> : `Undo (${Math.ceil(ms / 1000)}s)`
 }
 
 interface FuseAction {
@@ -30,12 +42,11 @@ interface FuseAction {
 function FuseAction({label, doneLabel, icon, background, color, onCommit}: FuseAction) {
   const reduced = useReducedMotion()
   const undoWindow = cssMs('--fuse-window', 4000)
-  const [armedAt, setArmedAt] = useState<number | null>(null)
-  const seconds = useCountdown(reduced ? armedAt : null, undoWindow)
+  const [armed, setArmed] = useState(false)
   return (
     <FuseButton
       label={label}
-      undoLabel={reduced ? `Undo (${seconds}s)` : 'Undo'}
+      undoLabel={undoLabel(reduced, armed, undoWindow)}
       doneLabel={doneLabel}
       icon={icon}
       size="sm"
@@ -48,7 +59,7 @@ function FuseAction({label, doneLabel, icon, background, color, onCommit}: FuseA
       undoWindow={undoWindow}
       commitOn="fuseEnd"
       onCommit={onCommit}
-      onPhaseChange={phase => setArmedAt(phase === 'armed' ? performance.now() : null)}
+      onPhaseChange={phase => setArmed(phase === 'armed')}
     />
   )
 }

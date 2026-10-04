@@ -15,8 +15,10 @@
   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 // fallow-ignore-file complexity
-import {useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode} from 'react'
+import {useCallback, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode} from 'react'
 import {flushSync} from 'react-dom'
+import {useGSAP} from '@gsap/react'
+import {gsap} from 'gsap'
 
 const FOLLOW = 30
 const SETTLE = 16
@@ -544,6 +546,7 @@ const Shredder = <T extends ShredderItem>({
     const same = ids.every((id, i) => id === cfg.current.items[i]?.id)
     if (same) return false
     flushSync(() => setOrder(ids))
+    settle(null, null)
     return true
   }
 
@@ -1071,88 +1074,9 @@ const Shredder = <T extends ShredderItem>({
     begin(item, 'carry', null)
   }
 
-  useLayoutEffect(() => {
-    settle(null, null)
-  })
-
-  useEffect(() => {
-    const s = sim.current
-    const root = rootRef.current
-    const canvas = canvasRef.current
-    if (!root || !canvas) return undefined
-    const fit = () => {
-      const dpr = Math.min(3, window.devicePixelRatio || 1)
-      const cw = root.offsetWidth + OVER * 2
-      const ch = cfg.current.fallHeight
-      if (cw === s.cw && ch === s.ch && dpr === s.dpr) return
-      if (s.cw) s.tops = new Map()
-      s.cw = cw
-      s.ch = ch
-      s.dpr = dpr
-      canvas.width = Math.ceil(cw * dpr)
-      canvas.height = Math.ceil(ch * dpr)
-    }
-    const ro = new ResizeObserver(fit)
-    ro.observe(root)
-    fit()
-    return () => ro.disconnect()
-  }, [fallHeight])
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      itemEls.current.forEach(el => {
-        el.querySelectorAll('img').forEach(img => {
-          dataUrl(img.currentSrc || img.src).catch(() => {})
-        })
-      })
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [items])
-
-  useEffect(() => {
-    if (!autoAnimate) return undefined
-    const s = sim.current
-    let alive = true
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const wait = (ms: number) =>
-      new Promise(resolve => {
-        timer = setTimeout(resolve, ms)
-      })
-    const idle = () => !s.drag && s.feeds.length === 0 && s.strips.length === 0 && s.shifts.size === 0
-    const pickNext = () => {
-      const list = cfg.current.items
-      for (let i = list.length - 1; i >= 0; i -= 1) {
-        const candidate = list[i]
-        if (candidate && isLive(candidate.id)) return candidate
-      }
-      return null
-    }
-    const play = async () => {
-      await wait(autoDelay)
-      while (alive) {
-        while (alive && !idle()) await wait(120)
-        if (!alive) break
-        const item = pickNext()
-        if (!item) {
-          await wait(1100)
-          if (!alive) break
-          revive(goneKeys())
-          await wait(1200)
-          continue
-        }
-        if (!cfg.current.disabled) begin(item, 'carry', null)
-        await wait(700)
-      }
-    }
-    play()
-    return () => {
-      alive = false
-      clearTimeout(timer)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoAnimate])
-
-  useEffect(() => {
+  const attachRoot = useCallback((root: HTMLDivElement | null) => {
+    rootRef.current = root
+    if (!root) return
     const s = sim.current
     return () => {
       cancelAnimationFrame(s.raf)
@@ -1161,6 +1085,92 @@ const Shredder = <T extends ShredderItem>({
       s.timers.clear()
     }
   }, [])
+
+  useGSAP(
+    () => {
+      settle(null, null)
+      gsap.delayedCall(0.3, () => {
+        itemEls.current.forEach(el => {
+          el.querySelectorAll('img').forEach(img => {
+            dataUrl(img.currentSrc || img.src).catch(() => {})
+          })
+        })
+      })
+    },
+    {dependencies: [items]},
+  )
+
+  const attachCanvas = useCallback(
+    (canvas: HTMLCanvasElement | null) => {
+      canvasRef.current = canvas
+      const tray = canvas?.parentElement
+      if (!canvas || !tray) return
+      const s = sim.current
+      const fit = () => {
+        const dpr = Math.min(3, window.devicePixelRatio || 1)
+        const cw = tray.offsetWidth + OVER * 2
+        const ch = cfg.current.fallHeight
+        if (cw === s.cw && ch === s.ch && dpr === s.dpr) return
+        if (s.cw) s.tops = new Map()
+        s.cw = cw
+        s.ch = ch
+        s.dpr = dpr
+        canvas.width = Math.ceil(cw * dpr)
+        canvas.height = Math.ceil(ch * dpr)
+      }
+      const ro = new ResizeObserver(fit)
+      ro.observe(tray)
+      fit()
+      return () => ro.disconnect()
+    },
+    [fallHeight],
+  )
+
+  const attachSlit = useCallback(
+    (slit: HTMLDivElement | null) => {
+      slitRef.current = slit
+      if (!slit || !autoAnimate) return
+      const s = sim.current
+      let alive = true
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const wait = (ms: number) =>
+        new Promise(resolve => {
+          timer = setTimeout(resolve, ms)
+        })
+      const idle = () => !s.drag && s.feeds.length === 0 && s.strips.length === 0 && s.shifts.size === 0
+      const pickNext = () => {
+        const list = cfg.current.items
+        for (let i = list.length - 1; i >= 0; i -= 1) {
+          const candidate = list[i]
+          if (candidate && isLive(candidate.id)) return candidate
+        }
+        return null
+      }
+      const play = async () => {
+        await wait(autoDelay)
+        while (alive) {
+          while (alive && !idle()) await wait(120)
+          if (!alive) break
+          const item = pickNext()
+          if (!item) {
+            await wait(1100)
+            if (!alive) break
+            revive(goneKeys())
+            await wait(1200)
+            continue
+          }
+          if (!cfg.current.disabled) begin(item, 'carry', null)
+          await wait(700)
+        }
+      }
+      play()
+      return () => {
+        alive = false
+        clearTimeout(timer)
+      }
+    },
+    [autoAnimate],
+  )
 
   const keep =
     <E extends HTMLElement>(map: {current: Map<string | number, E>}, key: string | number) =>
@@ -1171,7 +1181,7 @@ const Shredder = <T extends ShredderItem>({
 
   return (
     <div
-      ref={rootRef}
+      ref={attachRoot}
       className={`group relative [width:min(var(--sh-w),100%)] [height:var(--sh-h)] [color:var(--sh-ink)] [-webkit-tap-highlight-color:transparent] [-webkit-touch-callout:none] data-[disabled]:opacity-60${className ? ` ${className}` : ''}`}
       data-disabled={disabled ? '' : undefined}
       style={
@@ -1215,12 +1225,12 @@ const Shredder = <T extends ShredderItem>({
         ))}
       </ul>
       <div
-        ref={slitRef}
+        ref={attachSlit}
         className="absolute z-[3] rounded-full will-change-transform [right:var(--sh-slit-inset)] [bottom:var(--sh-fall)] [left:var(--sh-slit-inset)] [height:var(--sh-slit-h)] [background:var(--sh-slit)]"
         aria-hidden="true"
       />
       <div className="pointer-events-none absolute right-0 bottom-0 left-0 z-[2] [height:var(--sh-fall)]" aria-hidden="true">
-        <canvas ref={canvasRef} className="absolute top-0 block h-full [left:calc(-1*var(--sh-over))] [width:calc(100%+var(--sh-over)*2)]" />
+        <canvas ref={attachCanvas} className="absolute top-0 block h-full [left:calc(-1*var(--sh-over))] [width:calc(100%+var(--sh-over)*2)]" />
       </div>
     </div>
   )

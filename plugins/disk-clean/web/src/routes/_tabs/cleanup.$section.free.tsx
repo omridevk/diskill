@@ -30,7 +30,7 @@ function Free() {
       progress={progress}
       open={exit.open && offer === 'offered'}
       onOpenChange={open => open || exit.leave(() => back({to: '/cleanup/$section', params: {section}, search: true}))}
-      onClosed={() => (exit.then ?? toSection)()}
+      onClosed={() => (exit.after ?? toSection)()}
       onFree={free}
     />
   )
