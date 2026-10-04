@@ -2,7 +2,7 @@ import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
 import {useDebouncer} from '@tanstack/react-pacer/debouncer'
 import {Link, useNavigate} from '@tanstack/react-router'
 import type {RowSelectionState, Updater} from '@tanstack/react-table'
-import {LayoutGrid, List, Search, TriangleAlert} from 'lucide-react'
+import {LayoutGrid, List, Search} from 'lucide-react'
 import {createContext, use, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {Button, buttonVariants} from '@/components/ui/button'
@@ -11,7 +11,7 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {counted, formatBytes, isPickable, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
+import {counted, formatBytes, isPickable, RISK_LABEL, type Risk} from '@/lib/data'
 import {useDb, type Db} from '@/lib/db'
 import type {CleanupProgress, Removal} from '@/lib/progress'
 import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
@@ -403,48 +403,6 @@ function Toolbar({list, onList, onSearch, searchRef}: {list: CleanupSearch; onLi
   )
 }
 
-function Warning({children}: {children: ReactNode}) {
-  return (
-    <div className="flex items-center gap-2">
-      <TriangleAlert className="size-3.5" />
-      {children}
-    </div>
-  )
-}
-
-function WarningLines({hidden, risky}: {hidden: Item[]; risky: number}) {
-  return (
-    <div className="flex flex-col gap-1 border-b bg-amber-500/5 px-7 py-2 text-xs text-amber-200">
-      {hidden.length > 0 && (
-        <Warning>
-          {plural(hidden.length, 'selected item is', 'selected items are')} hidden by the filters ({formatBytes(sumBytes(outermost(hidden)))}). They will still be deleted.
-        </Warning>
-      )}
-      {risky > 0 && <Warning>{plural(risky, 'item', 'items')} marked review selected: slow or costly to rebuild.</Warning>}
-    </div>
-  )
-}
-
-function useHeld<T>(value: T, keep: boolean) {
-  const held = useRef(value)
-  if (keep) held.current = value
-  return held.current
-}
-
-function Warnings({hidden, risky}: {hidden: Item[]; risky: number}) {
-  const open = hidden.length > 0 || risky > 0
-  const shown = useHeld({hidden, risky}, open)
-  return (
-    <div className="t-acc" data-open={String(open)} inert={!open}>
-      <div className="t-acc-panel">
-        <div className="t-acc-panel-inner">
-          <WarningLines hidden={shown.hidden} risky={shown.risky} />
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function chosen(db: Db, section: string | null, keep: Keep, wanted: Keep, old: RowSelectionState) {
   const next = {...old}
   const groups = section === null ? [...db.scan.bySection.values()] : [db.scan.bySection.get(section)]
@@ -515,6 +473,9 @@ interface ListState {
   groups: Group[]
   progressed: Progressed | null
   list: CleanupSearch
+  onList: ChangeList
+  listed: ReadonlySet<string>
+  selected: number
   on: RowSelectionState
   setRowSelection: (update: Updater<RowSelectionState>) => void
   choose: Choose
@@ -532,8 +493,8 @@ function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep
   const nests = db.scan.nests.version()
   const shadow = useMemo(() => shadowOf(db, keep), [db, keep, items, nests])
   const picked = useMemo(() => pickedOf(selection, keep, filtering), [selection, keep, filtering])
-  const hidden = useMemo(() => (filtering ? selection.selected.filter(entry => !keep(entry)) : []), [filtering, selection.selected, keep])
-  return {groups: groupsOf(sections, {totals, shadow, picked}), hidden}
+  const listed = useMemo(() => new Set(sections.filter(section => section.count > 0).map(section => section.id)), [sections])
+  return {groups: groupsOf(sections, {totals, shadow, picked}), listed}
 }
 
 const LAYER = '[role="dialog"], [role="listbox"], [role="menu"]'
@@ -557,20 +518,8 @@ function useShortcuts(actions: [Hotkey, () => void, boolean][]) {
   )
 }
 
-function Body({groups, list, onList, progressed, choose, children}: {groups: Group[]; list: CleanupSearch; onList: ChangeList; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
-  if (groups.length === 0) {
-    return (
-      <div className="flex grow flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-        {isFiltering(list) ? 'Nothing matches these filters.' : 'Nothing to clean up.'}
-        {isFiltering(list) && (
-          <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
-            Clear filters
-          </Button>
-        )}
-        {children}
-      </div>
-    )
-  }
+function Body({groups, list, progressed, choose, children}: {groups: Group[]; list: CleanupSearch; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
+  if (groups.length === 0) return <div className="flex min-h-0 grow flex-col">{children}</div>
   if (list.view === 'list') {
     return (
       <ListView groups={groups} progressed={progressed} choose={choose}>
@@ -594,7 +543,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   const replay = useReveal(list.view)
   const on = selection.rowSelection
   const keep = useMemo(() => predicateOf(list, on), [list, on])
-  const {groups, hidden} = useGroups(db, list, selection, keep)
+  const {groups, listed} = useGroups(db, list, selection, keep)
   const progressed = progress && {progress, removals: progress.removals}
   const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
   const open = !progress
@@ -608,7 +557,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   ])
 
   return (
-    <ListContext value={{groups, progressed, list, on, setRowSelection: selection.setRowSelection, choose}}>
+    <ListContext value={{groups, progressed, list, onList, listed, selected: selection.selected.length, on, setRowSelection: selection.setRowSelection, choose}}>
       <div className="flex min-h-0 grow flex-col">
         <Toolbar
           list={list}
@@ -616,9 +565,8 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
           onSearch={q => onList({q}, {replace: true})}
           searchRef={search}
         />
-        <Warnings hidden={hidden} risky={selection.risky} />
         <div key={list.view} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
-          <Body groups={groups} list={list} onList={onList} progressed={progressed} choose={choose}>
+          <Body groups={groups} list={list} progressed={progressed} choose={choose}>
             {children}
           </Body>
         </div>
@@ -627,12 +575,51 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   )
 }
 
-function Unlisted({section}: {section: string}) {
+type Empty = 'scanning' | 'unselected' | 'filtered' | 'nothing'
+
+function emptyOf(view: ListState, section: string, scanning: boolean): Empty {
+  if (scanning && !view.listed.has(section)) return 'scanning'
+  if (view.list.only && view.selected === 0) return 'unselected'
+  if (isFiltering(view.list)) return 'filtered'
+  return 'nothing'
+}
+
+const SCANNING = "Scanning… items appear here as they're found."
+
+const EMPTY_TEXT: Record<Exclude<Empty, 'scanning'>, string> = {
+  unselected: 'Nothing is selected.',
+  filtered: 'Nothing matches these filters.',
+  nothing: 'Nothing to clean up.',
+}
+
+const EMPTY_ACTION: Partial<Record<Empty, {label: string; patch: Partial<CleanupSearch>}>> = {
+  unselected: {label: 'Show all items', patch: {only: false}},
+  filtered: {label: 'Clear filters', patch: NO_FILTERS},
+}
+
+function EmptyText({cause, inSection}: {cause: Empty; inSection: boolean}) {
+  if (cause === 'scanning') {
+    return (
+      <p className="t-shimmer" data-text={SCANNING}>
+        {SCANNING}
+      </p>
+    )
+  }
+  return <p>{cause === 'filtered' && inSection ? 'Nothing in this section matches these filters.' : EMPTY_TEXT[cause]}</p>
+}
+
+function EmptyState({view, section}: {view: ListState; section: string}) {
   const scan = useScanState(useDb())
-  const scanning = !scan.done && scan.error === '' && !scan.stopped
+  const cause = emptyOf(view, section, !scan.done && scan.error === '' && !scan.stopped)
+  const action = EMPTY_ACTION[cause]
   return (
-    <div className="flex grow items-center justify-center p-10 text-center text-sm text-muted-foreground">
-      {scanning ? `Nothing is listed in “${section}” yet; the scan is still running.` : `Nothing in “${section}” matches these filters.`}
+    <div className="flex grow flex-col items-center justify-center gap-3 p-10 text-center text-sm text-muted-foreground">
+      <EmptyText cause={cause} inSection={view.groups.length > 0} />
+      {action && (
+        <Button variant="outline" size="sm" onClick={() => view.onList(action.patch)}>
+          {action.label}
+        </Button>
+      )}
     </div>
   )
 }
@@ -641,6 +628,7 @@ export function SectionDetail({section, framed}: {section: string; framed: boole
   const view = use(ListContext)
   const group = view?.groups.find(g => g.category.id === section)
   if (!view) return null
-  const panel = group ? <SectionPanel group={group} view={view} /> : section && <Unlisted section={section} />
+  if (!group) return <EmptyState view={view} section={section} />
+  const panel = <SectionPanel group={group} view={view} />
   return framed ? <div className="flex h-[32rem] shrink-0 flex-col overflow-hidden rounded-xl border bg-card">{panel}</div> : panel
 }

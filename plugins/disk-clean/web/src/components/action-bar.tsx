@@ -9,6 +9,7 @@ import type {ScanState} from '@/lib/scan-feed'
 import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
 import FuseButton from './react-bits/fuse-button'
+import {useSelectionWarnings, WarningChip} from './selection-warnings'
 
 function UndoCountdown({ms}: {ms: number}) {
   const steps = Math.ceil(ms / 1000)
@@ -104,6 +105,7 @@ export function ActionBar({
   onCancel: () => void
   onDelete: () => void
 }) {
+  const warnings = useSelectionWarnings(selection)
   if (progress) return <ProgressFooter progress={progress} held={held} />
   const count = selection.selected.length
   const action = deleteState(selection, scan)
@@ -120,6 +122,7 @@ export function ActionBar({
           </div>
           <SelectionButton label="Clear selection" reason={count === 0 ? 'nothing is selected' : ''} onClick={selection.clear} />
           <SelectionButton label="Reset to recommended" reason={selection.recommended ? 'already the recommended selection' : ''} onClick={selection.reset} />
+          <WarningChip warnings={warnings} />
         </div>
         <div className="text-xs text-muted-foreground">
           Delete moves files to a holding folder first, so you can undo or free the space afterwards · worktrees and commands can't be undone

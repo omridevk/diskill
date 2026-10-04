@@ -17,7 +17,7 @@ const FILM = ['src/film.test.tsx']
 const ROUTER = ['src/router.test.tsx']
 const HOLD = ['src/hold.test.tsx']
 const SCANNING = ['src/scanning.test.tsx']
-const WORDS = ['src/words.test.tsx', 'src/selection.test.tsx']
+const WORDS = ['src/words.test.tsx', 'src/selection.test.tsx', 'src/empty.test.tsx']
 
 interface Instance {
   browser: 'chromium' | 'firefox'

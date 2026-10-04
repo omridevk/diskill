@@ -80,6 +80,7 @@ describe('cleanup', () => {
   test('filtering hides selected items and warns about them', async () => {
     const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('textbox', {name: 'Filter paths'}).fill('app-a')
+    await screen.getByRole('contentinfo').getByRole('button', {name: '3 hidden'}).click()
     await expect.element(screen.getByText(/3 selected items are hidden by the filters/)).toBeVisible()
     await expect.element(screen.getByText('~/Library/Caches/app-b')).not.toBeInTheDocument()
   })
