@@ -46,6 +46,35 @@ off the interaction path (incremental live-query updates, smaller commits, `star
 real-browser frame tests (rAF gaps on the built page in Firefox and Chromium) for exactly these
 interactions; the existing React-work tests stay.
 
+### Outcome (measured 2026-10-04)
+
+Firefox profile (Gecko profiler on the built page, 12,000 rows): every new filter key, sort or
+only-selected value built a new TanStack DB live query whose first graph run hashed every row
+(`hashObject` / `writeByte` / `isBinaryValue` in db-ivm), 140 to 340 ms per query, synchronously on
+the interaction; while streaming, each typed key added another live query that every later batch
+flowed through (4.2 s of graph runs in a 10 s window). The open section and per-section totals now
+come from an incremental index (db.md, "QA round 2"), and at most 300 streamed events are applied
+per frame.
+
+Largest frame (ms), real binary, 12,000-row node_modules section, headless, before (858b272) /
+after:
+
+| interaction | Firefox | Chromium |
+|---|---|---|
+| open the section | 99 / 34 | 33 / 17 |
+| filter, first keystrokes | 891 / 33 | 50 / 33 |
+| only selected | 41 / 10 | 17 / 17 |
+| risk toggle | 500 / 25 | 167 / 17 |
+| sort by name | 358 / 33 | 133 / 17 |
+| sort by size | 142 / 34 | 17 / 17 |
+| rescan streaming 12k items | 41 / 42 | 17 / 17 |
+| typing and toggling while it streams | 3,117 / 18 | 200 / 17 |
+| end of the rescan (settled rows re-sent) | 10 / 68 | 17 / 33 |
+
+The end-of-rescan phase in Firefox still has 3 of 830 frames over 50 ms (per-batch React render of
+the chrome, about 30 ms, is the floor). The `frames` test project asserts these budgets in
+Chromium and Firefox, with and without reduced motion, idle and during a real walk (section H).
+
 ## D. Never silent about the connection
 
 After approval (waiting, cleaning, done, held, restored) a dropped stream must show
@@ -109,3 +138,61 @@ report: the page janks while scanning, "could be that the scan itself is using a
   numbers here.
 - The real-browser frame tests from C include a run while a real walk is going (a large sandbox
   tree), in Firefox and Chromium.
+
+### Measurements (2026-10-04, 12-core Mac: 6 performance + 6 efficiency, ~6.9M files)
+
+Method: release `disk-clean scan "$RUN"` (read-only, temp run dir) under `/usr/bin/time -l`. 9 s
+after start (past the fixed-location sizing, inside the walk), headless Firefox then headless
+Chromium (Playwright 1.63) each sample 18 s on a page that runs a CSS animation and a fixed amount
+of DOM work per frame (create, measure and drop rows, calibrated to ~5 ms per frame when idle).
+The gap is measured with `performance.now()` between rAF callbacks. Settings ran interleaved in
+three rounds. Other sessions were running browser test suites on the same machine throughout
+(1-minute load average 12 to 65), so single runs are noisy; read the rows together.
+
+Frame gaps in ms (p50 / p95 / max, and frames over 50 ms), walk wall time, max RSS:
+
+| Setting | Load | Walk | RSS | Firefox p50/p95/max | FF >50 ms | Chromium p50/p95/max | CR >50 ms |
+|---|---|---|---|---|---|---|---|
+| idle, no scan | n/a | | | 11 / 24 / 178 | 12 | 16.7 / 17.3 / 18.1 | 0 |
+| idle, no scan | n/a | | | 8 / 13 / 125 | 1 | 16.7 / 18.1 / 18.6 | 0 |
+| baseline: 24 threads, default QoS | n/a | 94 s | 106 MB | 27 / 259 / 906 | 76 | 16.7 / 17.5 / 121.8 | 1 |
+| baseline: 24 threads, default QoS | 32 | 54 s | 148 MB | 11 / 104 / 512 | 105 | 16.7 / 18.3 / 18.7 | 0 |
+| baseline: 24 threads, default QoS | 31 | 62 s | 149 MB | 13 / 83 / 363 | 86 | 16.7 / 17.0 / 18.5 | 0 |
+| utility, 24 threads (2x) | n/a | 122 s | 151 MB | 24 / 51 / 343 | 34 | 16.7 / 17.5 / 31.4 | 0 |
+| utility, 24 threads (2x) | 38 | 75 s | 154 MB | 18 / 36 / 195 | 21 | 16.7 / 18.0 / 18.6 | 0 |
+| utility, 24 threads (2x) | 39 | 155 s | 120 MB | 23 / 71 / 209 | 64 | 16.7 / 17.9 / 18.7 | 0 |
+| utility, 12 threads (1x) | n/a | 111 s | 127 MB | 17 / 39 / 224 | 28 | 16.7 / 17.5 / 17.7 | 0 |
+| utility, 12 threads (1x) | 35 | 110 s | 146 MB | 28 / 106 / 358 | 88 | 16.7 / 17.2 / 17.8 | 0 |
+| utility, 12 threads (1x) | 66 | 145 s | 132 MB | 34 / 170 / 399 | 119 | 16.7 / 18.2 / 30.1 | 0 |
+| utility, 6 threads (E cores) | n/a | 185 s | 108 MB | 15 / 38 / 275 | 30 | 16.7 / 17.4 / 17.7 | 0 |
+| utility, 6 threads (E cores) | 12 | 158 s | 130 MB | 13 / 38 / 137 | 32 | 16.7 / 17.2 / 49.7 | 0 |
+| utility, 6 threads (E cores) | 41 | 84 s | 117 MB | 10 / 24 / 212 | 19 | 16.7 / 17.2 / 18.4 | 0 |
+| shipped: utility, E-core count (6) | 18 | 94 s | 139 MB | 10 / 45 / 1280 | 46 | 16.7 / 18.1 / 18.7 | 0 |
+
+Walk alone (no browser open), run back to back:
+
+| Setting | Load | Walk | user + sys CPU | RSS |
+|---|---|---|---|---|
+| baseline: 24 threads, default QoS | 19 | 56 s | 33 + 357 s | 157 MB |
+| utility, 24 threads | 11 | 80 s | 31 + 322 s | 147 MB |
+| utility, 12 threads | 19 | 77 s | 30 + 308 s | 147 MB |
+| utility, 6 threads | 22 | 79 s | 28 + 228 s | 132 MB |
+
+Reading:
+- Firefox suffers from the default-QoS scan: 76 to 105 frames over 50 ms in 18 s and p95 of 83 to
+  259 ms. At utility QoS the 6-thread setting was the steadiest in all three rounds (19 to 32
+  frames over 50 ms, p95 24 to 38 ms). 24 threads ranged from 21 to 64, and 12 threads from 28 to
+  119.
+- Headless Chromium kept its frame rate in every setting, the baseline included (one 122 ms
+  stall).
+- At utility QoS the thread count barely changes walk time (77 to 80 s with no browser open),
+  because macOS keeps utility work mostly on the efficiency cores. Fewer threads burn less kernel
+  time: 228 s of sys CPU at 6 threads against 308 to 357 s at 12 or 24.
+- Utility QoS costs walk time when the machine is busy: 56 to 62 s at baseline against 77 to 94 s
+  at utility with similar background load. That is the intended trade: the scan yields to
+  interactive work instead of competing with it.
+
+Decision: every scan thread runs at `QOS_CLASS_UTILITY`, and the walk uses one read-ahead thread
+per efficiency core (`hw.perflevel1.logicalcpu`, 6 here). On Macs without that sysctl it falls
+back to half the logical cores, at least 2. That setting gave the best frame times, the same walk
+time as 12 or 24 utility threads, and the least CPU.

@@ -322,6 +322,7 @@ fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
     Plan {
         home: PathBuf::from(home),
         map_depth: (!cfg.skip_map).then_some(cfg.map_depth),
+        map_min_kb: cfg.map_min_bytes / 1024,
         nm_depth: cfg.nm_depth,
         dev_depth: 7,
         big_depth: 6,
@@ -413,6 +414,7 @@ struct Published {
     settled: HashSet<String>,
     checking: HashSet<String>,
     record: fs::File,
+    lines: usize,
     cancel: Arc<AtomicBool>,
     started: Instant,
 }
@@ -428,7 +430,7 @@ fn show(out: &mut Published, row: &Row, sink: &dyn Sink) {
     out.shown.insert(row[8].clone(), row.clone());
     out.checking.remove(&row[8]);
     let fields: Vec<&str> = row.iter().map(String::as_str).collect();
-    let Some((category, item)) = review::parse_row(&fields) else {
+    let Some((category, mut item)) = review::parse_row(&fields) else {
         return;
     };
     if let Err(e) = out
@@ -438,6 +440,8 @@ fn show(out: &mut Published, row: &Row, sink: &dyn Sink) {
         eprintln!("  could not record {} in scan.tsv: {e}", row[8]);
         return;
     }
+    out.lines += 1;
+    item.line = Some(out.lines);
     emit(
         sink,
         out.started,
@@ -522,6 +526,10 @@ fn interrupted() -> io::Error {
 }
 
 pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Result<()> {
+    util::utility_qos();
+    let _ = rayon::ThreadPoolBuilder::new()
+        .start_handler(|_| util::utility_qos())
+        .build_global();
     let cfg = Config::from_env();
     let home = util::home();
     let now = util::now();
@@ -555,6 +563,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         settled: HashSet::new(),
         checking: HashSet::new(),
         record: fs::File::create(run_dir.join("scan.tsv"))?,
+        lines: 0,
         cancel: Arc::clone(&cancel),
         started,
     });
@@ -598,6 +607,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     std::thread::scope(|s| {
         let (out, cfg, home) = (&out, &cfg, &home);
         let docker = s.spawn(move || {
+            util::utility_qos();
             if util::which("docker") {
                 pend(&[docker_row(0)], out, sink);
             }
@@ -609,6 +619,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             bytes
         });
         let sims = s.spawn(move || {
+            util::utility_qos();
             if has_sims(home) {
                 pend(&[sims_row("xcrun simctl delete unavailable", 0)], out, sink);
             }
@@ -620,8 +631,10 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             sims
         });
         let (on_listed, on_checked) = (&on_listed, &on_checked);
-        let checks =
-            s.spawn(move || worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked));
+        let checks = s.spawn(move || {
+            util::utility_qos();
+            worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked)
+        });
 
         let brew_cache = probe_brew();
         let fixed = early(home, now, true);

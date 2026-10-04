@@ -101,15 +101,18 @@ const STYLE = `
 @keyframes lattice-on-45 { 0%, 100% { opacity: var(--ll-idle); } 13%, 31% { opacity: var(--ll-peak); } 45% { opacity: var(--ll-idle); } }
 @keyframes lattice-on-35 { 0%, 100% { opacity: var(--ll-idle); } 10%, 24% { opacity: var(--ll-peak); } 35% { opacity: var(--ll-idle); } }
 @keyframes lattice-on-25 { 0%, 100% { opacity: var(--ll-idle); } 7%, 17% { opacity: var(--ll-peak); } 25% { opacity: var(--ll-idle); } }
+@keyframes ll-text-in { from { opacity: 0; filter: blur(2px); } }
+.ll-text-in { animation: ll-text-in 200ms ease; }
 @media (prefers-reduced-motion: reduce) {
   .ll-run { --ll-peak: 0.7; }
   .ll-run > span { animation-delay: 0ms !important; animation-duration: 1400ms !important; }
   .ll-mark { transform: none !important; }
-  .ll-text { filter: none !important; }
+  .ll-text { filter: none !important; animation: none !important; }
 }
 `
 const fmt = (ds: number) => (ds < 600 ? `${(ds / 10).toFixed(1)}s` : `${Math.floor(ds / 600)}m ${((ds % 600) / 10).toFixed(1)}s`)
-const spoken = (ds: number) => (ds < 600 ? `${(ds / 10).toFixed(1)} seconds` : `${Math.floor(ds / 600)} minutes ${((ds % 600) / 10).toFixed(1)} seconds`)
+const minutes = (n: number) => `${n} ${n === 1 ? 'minute' : 'minutes'}`
+const spoken = (ds: number) => (ds < 600 ? `${(ds / 10).toFixed(1)} seconds` : `${minutes(Math.floor(ds / 600))} ${((ds % 600) / 10).toFixed(1)} seconds`)
 
 const LatticeLoader: React.FC<LatticeLoaderProps> = ({
   label = 'Thinking',
@@ -205,23 +208,8 @@ const LatticeLoader: React.FC<LatticeLoaderProps> = ({
         </span>
       </span>
       <span className="relative inline-block font-medium" aria-hidden="true">
-        <span
-          className="ll-text absolute top-0 left-0 whitespace-nowrap opacity-0 [filter:blur(2px)] [transition:opacity_200ms_ease,filter_200ms_ease] data-[active]:static data-[active]:opacity-100 data-[active]:[filter:blur(0)]"
-          data-active={status === 'working' ? '' : undefined}
-        >
-          {label}
-        </span>
-        <span
-          className="ll-text absolute top-0 left-0 whitespace-nowrap opacity-0 [filter:blur(2px)] [transition:opacity_200ms_ease,filter_200ms_ease] data-[active]:static data-[active]:opacity-100 data-[active]:[filter:blur(0)]"
-          data-active={status === 'done' ? '' : undefined}
-        >
-          {doneLabel}
-        </span>
-        <span
-          className="ll-text absolute top-0 left-0 whitespace-nowrap opacity-0 [filter:blur(2px)] [transition:opacity_200ms_ease,filter_200ms_ease] data-[active]:static data-[active]:opacity-100 data-[active]:[filter:blur(0)]"
-          data-active={status === 'error' ? '' : undefined}
-        >
-          {errorLabel}
+        <span key={status} className="ll-text ll-text-in whitespace-nowrap">
+          {{working: label, done: doneLabel, error: errorLabel}[status]}
         </span>
       </span>
       {showTimer ? (

@@ -102,3 +102,137 @@ fn map_dirs_carry_file_count_and_newest_mtime() {
     assert_eq!(stat(&root.join("a")), (3, 3_000));
     assert_eq!(stat(&root), (3, 3_000));
 }
+
+fn fixture(root: &Path) {
+    for p in 0..24 {
+        let project = root.join(format!("p{p}"));
+        for d in ["src/a/b", "node_modules/dep/lib", "target/debug", "cache/c"] {
+            fs::create_dir_all(project.join(d)).unwrap();
+        }
+        fs::create_dir_all(project.join(".git/objects")).unwrap();
+        for (i, d) in [
+            "",
+            "src",
+            "src/a/b",
+            "node_modules/dep/lib",
+            "target/debug",
+            "cache/c",
+        ]
+        .iter()
+        .enumerate()
+        {
+            for f in 0..6 {
+                let bytes = vec![b'x'; 1 + (p * 7919 + i * 131 + f * 4099) % 20_000];
+                fs::write(project.join(d).join(format!("f{f}.rs")), bytes).unwrap();
+            }
+        }
+        fs::write(project.join("Cargo.toml"), b"[package]").unwrap();
+        fs::hard_link(project.join("f0.rs"), project.join("src/linked.rs")).unwrap();
+    }
+}
+
+fn fixture_plan(root: &Path, now: i64, map_min_kb: u64) -> walk::Plan {
+    walk::Plan {
+        home: root.to_path_buf(),
+        map_depth: Some(3),
+        map_min_kb,
+        nm_depth: 9,
+        dev_depth: 7,
+        big_depth: 6,
+        repo_depth: 6,
+        stale_days: -1,
+        now,
+        big_bytes: 16_000,
+        exact: [root.join("p3/src")].into_iter().collect(),
+        parents: [root.join("p5/cache")].into_iter().collect(),
+        days: disk_clean::insights::midnights(now),
+        ..walk::Plan::default()
+    }
+}
+
+fn walked(root: &Path, plan: walk::Plan, parallel: bool) -> (walk::Walk, Option<u64>, Vec<String>) {
+    let (repo_tx, repo_rx) = std::sync::mpsc::channel();
+    let plan = walk::Plan {
+        repo_tx: Some(repo_tx),
+        ..plan
+    };
+    let mut out = walk::Walk::default();
+    let total = walk::walk(
+        root,
+        root,
+        &plan,
+        parallel,
+        &mut HashSet::new(),
+        &mut out,
+        &|_, _| {},
+    );
+    drop(plan);
+    let mut repos: Vec<String> = repo_rx
+        .into_iter()
+        .map(|p| p.display().to_string())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    repos.sort();
+    (out, total, repos)
+}
+
+#[test]
+fn bounded_parallel_walk_matches_the_serial_walk() {
+    let t = common::temp_dir("walk-agree");
+    let root = t.0.join("tree");
+    fixture(&root);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let (serial, serial_total, serial_repos) = walked(&root, fixture_plan(&root, now, 0), false);
+    let (parallel, parallel_total, parallel_repos) =
+        walked(&root, fixture_plan(&root, now, 0), true);
+    assert_eq!(parallel_total, serial_total);
+    assert_eq!(parallel.files, serial.files);
+    assert_eq!(parallel.bytes, serial.bytes);
+    assert_eq!(parallel.map, serial.map);
+    assert_eq!(parallel.sizes, serial.sizes);
+    assert_eq!(parallel.children, serial.children);
+    assert_eq!(parallel.node_modules, serial.node_modules);
+    assert_eq!(parallel.artifacts, serial.artifacts);
+    assert_eq!(parallel.big_files, serial.big_files);
+    assert_eq!(parallel_repos, serial_repos);
+    assert_eq!(parallel_repos.len(), 24);
+    assert_eq!(serial.node_modules.len(), 24);
+    assert_eq!(serial.artifacts.len(), 24);
+    let home = root.display().to_string();
+    let days = disk_clean::insights::midnights(now);
+    assert_eq!(
+        disk_clean::insights::to_json(parallel.insights, &days, now, &home),
+        disk_clean::insights::to_json(serial.insights, &days, now, &home)
+    );
+}
+
+#[test]
+fn map_keeps_only_directories_at_or_above_the_threshold() {
+    let t = common::temp_dir("map-threshold");
+    let root = t.0.join("tree");
+    fixture(&root);
+    fs::write(root.join("p7/src/a/big.bin"), vec![b'y'; 1200 * 1024]).unwrap();
+    let (all, ..) = walked(&root, fixture_plan(&root, 0, 0), true);
+    let (kept, ..) = walked(&root, fixture_plan(&root, 0, 1000), true);
+    let expected: Vec<_> = all
+        .map
+        .iter()
+        .filter(|(p, blocks, ..)| p == &root || blocks.div_ceil(2) >= 1000)
+        .cloned()
+        .collect();
+    assert_eq!(kept.map, expected);
+    let paths: Vec<_> = kept.map.iter().map(|(p, ..)| p.clone()).collect();
+    assert!(paths.contains(&root.join("p7/src")), "{paths:?}");
+    assert!(paths.contains(&root.join("p7")), "{paths:?}");
+    assert!(!paths.contains(&root.join("p6")), "{paths:?}");
+    assert!(
+        all.map.len() > 4 * kept.map.len(),
+        "{} vs {}",
+        all.map.len(),
+        kept.map.len()
+    );
+}

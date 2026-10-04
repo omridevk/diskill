@@ -4,6 +4,7 @@ pub mod http;
 pub mod insights;
 pub mod review;
 pub mod scan;
+pub mod selection;
 pub mod util;
 pub mod walk;
 pub mod watch;

@@ -3,6 +3,7 @@ import {afterEach, describe, expect, test, vi} from 'vitest'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {NO_DATA, type Item, type Loaded} from './lib/data'
+import {fingerprint} from './lib/selection'
 import type {CategoryHead, ScanEvent} from './lib/scan-feed'
 import {at, fixture, item} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN} from './test/page'
@@ -16,9 +17,9 @@ const CACHES: CategoryHead = {id: 'caches', title: 'Application caches', desc: '
 const WORKTREES: CategoryHead = {id: 'worktrees', title: 'Git worktrees with no leftover work', desc: 'worktrees', risk: 'safe'}
 const DOCKER: CategoryHead = {id: 'docker', title: 'Docker', desc: 'docker', risk: 'review'}
 
-const cacheA = item('/Users/you/Library/Caches/app-a', 2 * GB)
-const cacheB = item('/Users/you/Library/Caches/app-b', GB, {preselect: false})
-const cacheC = item('/Users/you/Library/Caches/app-c', GB)
+const cacheA = item('/Users/you/Library/Caches/app-a', 2 * GB, {line: 1})
+const cacheB = item('/Users/you/Library/Caches/app-b', GB, {preselect: false, line: 1})
+const cacheC = item('/Users/you/Library/Caches/app-c', GB, {line: 2})
 const worktree = item('/Users/you/code/wt', 0, {action: 'worktree', label: '~/code/wt', preselect: false, checking: true})
 const docker = item('cmd:docker-prune', 0, {action: 'cmd', cmd_id: 'docker-prune', label: 'docker system prune -f', accuracy: 'vm', preselect: false, age: null, checking: true})
 
@@ -59,7 +60,7 @@ describe('delete while the scan is running', () => {
     await expect.element(screen.getByText('2 items selected · 3.0 GB')).toBeInTheDocument()
     await dialog.getByRole('button', {name: /^Move 1 item to hold/}).click()
     await expect.poll(decided).not.toBeNull()
-    expect(decided().items).toEqual([{path: cacheA.path}])
+    expect(decided()).toMatchObject({decision: 'approve', add: '', drop: '', listed: 1, fingerprint: fingerprint([cacheA.path])})
     await expect.element(screen.getByText('Scan stopped at approval')).toBeVisible()
   })
 

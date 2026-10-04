@@ -1,6 +1,5 @@
 import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
 import {useDebouncer} from '@tanstack/react-pacer/debouncer'
-import {useLiveQuery} from '@tanstack/react-db'
 import {Link, useNavigate} from '@tanstack/react-router'
 import type {RowSelectionState, Updater} from '@tanstack/react-table'
 import {LayoutGrid, List, Search, TriangleAlert} from 'lucide-react'
@@ -12,15 +11,15 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatBytes, isPickable, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
+import {counted, formatBytes, isPickable, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
 import {useDb, type Db} from '@/lib/db'
 import type {CleanupProgress, Removal} from '@/lib/progress'
 import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
-import {isFiltering, predicateOf, prepare, useSectionWindow, useShapedTotals, type SectionTotal} from '@/lib/shaping'
-import {useSections} from '@/lib/views'
+import {isFiltering, predicateOf, useSectionRows, useTotals, type SectionTotal} from '@/lib/shaping'
+import {useScanState, useSections} from '@/lib/views'
 import {DataTable} from './data-table'
 
 const GROUPS: [string, Risk][] = [
@@ -88,12 +87,12 @@ function planned(section: string, progressed: Progressed) {
 }
 
 function pickedLabel({category, shown}: Group, progressed: Progressed | null) {
-  if (category.risk === 'report') return `${shown.count} listed`
+  if (category.risk === 'report') return `${counted(shown.count)} listed`
   if (progressed) {
     const plan = planned(category.id, progressed)
     return plan ? sectionProgress(progressed.removals.get(category.id), plan.count) : 'not approved'
   }
-  return `${shown.picked}/${shown.selectable}`
+  return `${counted(shown.picked)}/${counted(shown.selectable)}`
 }
 
 function SectionCheckbox({group, locked, choose}: {group: Group; locked: boolean; choose: Choose}) {
@@ -150,7 +149,7 @@ function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
     <div className="flex items-center gap-1 text-xs text-muted-foreground">
       <span className="pr-1">Select:</span>
       <Button size="xs" variant="ghost" onClick={() => choose(category.id, () => true)}>
-        all {shown.selectable}
+        all {counted(shown.selectable)}
       </Button>
       {shown.aged > 0 && (
         <Button size="xs" variant="ghost" onClick={idle(90)}>
@@ -172,7 +171,7 @@ function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
 type ChangeList = (patch: Partial<CleanupSearch>, how?: {replace: boolean}) => void
 
 function SectionLink({section, ...props}: {section: string; className?: string; children?: ReactNode}) {
-  return <Link to="/cleanup/$section" params={{section}} search={prev => ({...prev, view: 'list'})} activeOptions={{includeSearch: false}} {...props} />
+  return <Link to="/cleanup/$section" params={{section}} search activeOptions={{includeSearch: false}} {...props} />
 }
 
 const OPEN_SECTION = 'has-[a[data-status=active]]:border-zinc-700 has-[a[data-status=active]]:bg-zinc-900'
@@ -226,7 +225,7 @@ function SectionPanel({group, view}: {group: Group; view: ListState}) {
   const {category, shown} = group
   const db = useDb()
   const replay = useReveal(category.id)
-  const slice = useSectionWindow(db, category.id, view.list, view.on)
+  const rows = useSectionRows(db, category, view.list, view.on)
   return (
     <main key={category.id} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
       <div className="flex flex-col gap-2.5 border-b px-6 pt-4 pb-3">
@@ -235,7 +234,7 @@ function SectionPanel({group, view}: {group: Group; view: ListState}) {
           <Badge className={RISK_BADGE[category.risk]}>{RISK_LABEL[category.risk]}</Badge>
           <span className="grow" />
           <span className="text-[13px] text-muted-foreground tabular-nums">
-            {formatBytes(shown.bytes)} · {shown.count} of {category.count} shown
+            {formatBytes(shown.bytes)} · {counted(shown.count)} of {counted(category.count)} shown
           </span>
         </div>
         <p className="text-[13px] text-muted-foreground">{category.desc}</p>
@@ -243,8 +242,7 @@ function SectionPanel({group, view}: {group: Group; view: ListState}) {
       </div>
       <DataTable
         key={category.id}
-        slice={slice}
-        count={shown.count}
+        rows={rows}
         label={category.title}
         progress={view.progressed?.progress ?? null}
         rowSelection={view.on}
@@ -269,7 +267,7 @@ function SectionCard({group, progressed, choose}: {group: Group; progressed: Pro
   const {category, shown} = group
   const lit = !progressed && shown.picked > 0
   return (
-    <div className={`flex flex-col gap-3 rounded-xl border p-4 ${STATE_MOTION} ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'}`}>
+    <div className={`flex flex-col gap-3 rounded-xl border p-4 ${STATE_MOTION} ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'} has-[a[data-status=active]]:ring-2 has-[a[data-status=active]]:ring-blue-400/60`}>
       <div className="flex items-center gap-2.5">
         <SectionCheckbox group={group} locked={progressed !== null} choose={choose} />
         <span className="grow text-sm font-medium">{category.title}</span>
@@ -280,14 +278,15 @@ function SectionCard({group, progressed, choose}: {group: Group; progressed: Pro
         <span className="text-xs text-muted-foreground">{pickedLabel(group, progressed)}</span>
       </div>
       <p className="grow text-xs leading-relaxed text-muted-foreground">{category.desc}</p>
-      <SectionLink section={category.id} className={buttonVariants({variant: 'link', size: 'xs', className: 't-learn self-start px-0'})}>
-        Show items <LearnChevron />
+      <SectionLink section={category.id} className={buttonVariants({variant: 'link', size: 'xs', className: 't-learn self-start px-0 data-[status=active]:no-underline'})}>
+        <span className="in-data-[status=active]:hidden">Show items</span>
+        <span className="hidden in-data-[status=active]:inline">Items shown below</span> <LearnChevron />
       </SectionLink>
     </div>
   )
 }
 
-function CardsView({groups, progressed, choose}: {groups: Group[]; progressed: Progressed | null; choose: Choose}) {
+function CardsView({groups, progressed, choose, children}: {groups: Group[]; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
   return (
     <div className="flex min-h-0 grow flex-col gap-5 overflow-auto px-7 py-5">
       {GROUPS.map(([label, risk]) => {
@@ -304,6 +303,7 @@ function CardsView({groups, progressed, choose}: {groups: Group[]; progressed: P
           </section>
         )
       })}
+      {children}
     </div>
   )
 }
@@ -522,16 +522,11 @@ interface ListState {
 
 const ListContext = createContext<ListState | null>(null)
 
-function useSectionList(db: Db) {
-  const heads = useSections(db)
-  const {data: totals} = useLiveQuery(db.queries.sectionTotals)
-  return useMemo(() => sectionsOf(heads, totals), [heads, totals])
-}
-
 function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep) {
   const on = selection.rowSelection
-  const sections = useSectionList(db)
-  const totals = useShapedTotals(db, list, on)
+  const heads = useSections(db)
+  const {all, shown: totals} = useTotals(db, list, on)
+  const sections = useMemo(() => sectionsOf(heads, all), [heads, all])
   const filtering = isFiltering(list)
   const items = db.scan.items.version()
   const nests = db.scan.nests.version()
@@ -541,7 +536,11 @@ function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep
   return {groups: groupsOf(sections, {totals, shadow, picked}), hidden}
 }
 
-const inOverlay = (event: KeyboardEvent) => event.target instanceof Element && event.target.closest('[role="dialog"], [role="listbox"]') !== null
+const LAYER = '[role="dialog"], [role="listbox"], [role="menu"]'
+
+const layerOpen = () => document.querySelector('[aria-expanded="true"]') !== null || [...document.querySelectorAll(LAYER)].some(layer => layer.checkVisibility())
+
+const inOverlay = (event: KeyboardEvent) => layerOpen() || (event.target instanceof Element && event.target.closest(LAYER) !== null)
 
 function useShortcuts(actions: [Hotkey, () => void, boolean][]) {
   useHotkeys(
@@ -562,10 +561,12 @@ function Body({groups, list, onList, progressed, choose, children}: {groups: Gro
   if (groups.length === 0) {
     return (
       <div className="flex grow flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-        Nothing matches these filters.
-        <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
-          Clear filters
-        </Button>
+        {isFiltering(list) ? 'Nothing matches these filters.' : 'Nothing to clean up.'}
+        {isFiltering(list) && (
+          <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
+            Clear filters
+          </Button>
+        )}
         {children}
       </div>
     )
@@ -578,10 +579,9 @@ function Body({groups, list, onList, progressed, choose, children}: {groups: Gro
     )
   }
   return (
-    <>
-      <CardsView groups={groups} progressed={progressed} choose={choose} />
+    <CardsView groups={groups} progressed={progressed} choose={choose}>
       {children}
-    </>
+    </CardsView>
   )
 }
 
@@ -613,10 +613,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
         <Toolbar
           list={list}
           onList={onList}
-          onSearch={q => {
-            prepare(db, list, {...list, q}, on)
-            onList({q}, {replace: true})
-          }}
+          onSearch={q => onList({q}, {replace: true})}
           searchRef={search}
         />
         <Warnings hidden={hidden} risky={selection.risky} />
@@ -630,8 +627,20 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   )
 }
 
-export function SectionDetail({section}: {section: string}) {
+function Unlisted({section}: {section: string}) {
+  const scan = useScanState(useDb())
+  const scanning = !scan.done && scan.error === '' && !scan.stopped
+  return (
+    <div className="flex grow items-center justify-center p-10 text-center text-sm text-muted-foreground">
+      {scanning ? `Nothing is listed in “${section}” yet; the scan is still running.` : `Nothing in “${section}” matches these filters.`}
+    </div>
+  )
+}
+
+export function SectionDetail({section, framed}: {section: string; framed: boolean}) {
   const view = use(ListContext)
-  const group = view && (view.groups.find(g => g.category.id === section) ?? view.groups[0])
-  return view && group ? <SectionPanel group={group} view={view} /> : null
+  const group = view?.groups.find(g => g.category.id === section)
+  if (!view) return null
+  const panel = group ? <SectionPanel group={group} view={view} /> : section && <Unlisted section={section} />
+  return framed ? <div className="flex h-[32rem] shrink-0 flex-col overflow-hidden rounded-xl border bg-card">{panel}</div> : panel
 }

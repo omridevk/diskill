@@ -1,6 +1,6 @@
 import {createOptimisticAction} from '@tanstack/db'
-import {decide, heldAction, messageOf, rescan as requestRescan} from './api'
-import {openCleanup, openScan, writeSession, type Action, type Db, type Planned} from './db'
+import {decide, heldAction, messageOf, rescan as requestRescan, httpStatusOf, type Selected} from './api'
+import {openCleanup, openScan, writeSession, type Action, type Db, type Planned, type Request} from './db'
 import {RESTART, type Entry} from './scan-feed'
 
 const plannedOf = ({path, label, bytes, section, exact}: Entry): Planned => ({path, label, bytes, section, exact})
@@ -14,7 +14,15 @@ function markPending(db: Db, action: Action) {
     })
     return
   }
-  requests.insert({id: action, status: 'pending', message: ''})
+  requests.insert({id: action, status: 'pending', message: '', retry: false})
+}
+
+const BUSY = 'Another undo or cleanup is running; this will be possible when it finishes'
+const BUSY_ACTIONS = new Set<Action>(['undo', 'free'])
+
+function failureOf(action: Action, e: unknown): Request {
+  if (BUSY_ACTIONS.has(action) && httpStatusOf(e) === 409) return {id: action, status: 'failed', message: BUSY, retry: false}
+  return {id: action, status: 'failed', message: messageOf(e), retry: true}
 }
 
 function tracked(db: Db, action: Action, apply: () => void, send: () => Promise<void>) {
@@ -32,7 +40,7 @@ function tracked(db: Db, action: Action, apply: () => void, send: () => Promise<
     .when('settled')
     .then(
       () => undefined,
-      (e: unknown) => db.requests.write(writes => writes.put({id: action, status: 'failed', message: messageOf(e)})),
+      (e: unknown) => db.requests.write(writes => writes.put(failureOf(action, e))),
     )
 }
 
@@ -47,7 +55,13 @@ function stopScan(db: Db) {
   return true
 }
 
-export function approve(db: Db, items: readonly Entry[], approvedBytes: number) {
+interface Approval {
+  items: readonly Entry[]
+  bytes: number
+  selected: Selected
+}
+
+export function approve(db: Db, {items, bytes: approvedBytes, selected}: Approval) {
   const rows = items.map(plannedOf)
   const stopped = {scan: false}
   const apply = () => {
@@ -60,7 +74,7 @@ export function approve(db: Db, items: readonly Entry[], approvedBytes: number) 
   }
   return tracked(db, 'approve', apply, async () => {
     try {
-      await decide(db.loaded.token, 'approve', items)
+      await decide(db.loaded.token, 'approve', selected)
     } catch (e) {
       if (stopped.scan) openScan(db)
       throw e
@@ -79,7 +93,7 @@ export function cancel(db: Db) {
     'cancel',
     () => {},
     async () => {
-      await decide(db.loaded.token, 'cancel', [])
+      await decide(db.loaded.token, 'cancel')
       writeSession(db, {cancelled: true})
     },
   )

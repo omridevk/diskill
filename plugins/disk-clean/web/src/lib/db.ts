@@ -25,9 +25,10 @@ export interface Request {
   id: Action
   status: 'pending' | 'failed'
   message: string
+  retry: boolean
 }
 
-const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan', 'unlisted']
+const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan', 'unlisted', 'replayed']
 const FINAL = new Set<string>(['done', 'error'])
 const CLOSED = 2
 

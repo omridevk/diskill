@@ -12,7 +12,7 @@ import {ChartBoundary} from './chart-boundary'
 import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './chart-card'
 import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {counted, formatBytes, plural, tilde, type TreeNode} from '@/lib/data'
+import {formatBytes, plural, tilde, type TreeNode} from '@/lib/data'
 import {useDb} from '@/lib/db'
 import type {Shape} from '@/lib/search'
 import {useHome, useSelection} from '@/lib/page-data'
@@ -101,7 +101,7 @@ function FolderCard({node, parents, total, home}: {node: TreeNode | null; parent
 }
 
 function Activity({node}: {node: TreeNode}) {
-  const parts = [node.files > 0 && plural(node.files, 'file', 'files', counted), node.mtime > 0 && `changed ${changedAgo(node.mtime)}`].filter(Boolean)
+  const parts = [node.files > 0 && plural(node.files, 'file', 'files'), node.mtime > 0 && `changed ${changedAgo(node.mtime)}`].filter(Boolean)
   if (parts.length === 0) return null
   return <div className="text-muted-foreground">{parts.join(' · ')}</div>
 }

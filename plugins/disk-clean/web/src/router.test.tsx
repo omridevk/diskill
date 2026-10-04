@@ -4,7 +4,7 @@ import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest'
 import {userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
-import type {Loaded} from './lib/data'
+import {NO_DATA, type Loaded} from './lib/data'
 import {NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
 import {at, cleanupEvents, fixture, heldEvents} from './test/fixture'
 import {PLAN} from './test/page'
@@ -480,3 +480,107 @@ describe('dialogs and tabs keep your place', () => {
   })
 })
 
+
+describe('route guards wait for the scan to catch up', () => {
+  const GB = 1024 ** 3
+  const LIVE: Loaded = {data: NO_DATA, token: 'test-token', home: '/Users/you', live: true}
+  const CACHES = {id: 'caches', title: 'Application caches', desc: 'caches', risk: 'safe' as const}
+  const listing = fixture.data.categories[0]?.items ?? []
+  const backlog = [
+    {type: 'disk', data: {total: 500 * GB, used: 400 * GB, free: 50 * GB, snapshots: 0, elapsed_ms: 1}},
+    ...listing.map((entry, i) => ({type: 'item', data: {category: CACHES, item: {...entry, line: i + 1}, elapsed_ms: 2 + i}})),
+  ]
+  const where = (history: RouterHistory) => history.location.pathname
+
+  afterEach(() => vi.restoreAllMocks())
+
+  async function cold(url: string) {
+    const {source, catchUp} = fakeEventSource({caughtUp: false})
+    const history = at(url)
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} history={history} />)
+    return {source, catchUp, history, screen}
+  }
+
+  test('a reload of the open confirm dialog reopens it once the replay has caught up', async () => {
+    mockServer()
+    const {source, catchUp, history, screen} = await cold('/cleanup/caches/confirm')
+    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    await expect.element(screen.getByText('Loading the scan…')).toBeVisible()
+    await sendAll(source, backlog)
+    await expect.element(screen.getByText('Loading the scan…')).toBeVisible()
+    expect(where(history)).toBe('/cleanup/caches/confirm')
+    catchUp()
+    await expect.element(dialog.getByText('6 items in total')).toBeVisible()
+    expect(where(history)).toBe('/cleanup/caches/confirm')
+  })
+
+  test('/cleanup waits for the first section, then the URL names it', async () => {
+    const {source, catchUp, history} = await cold('/cleanup')
+    catchUp()
+    await new Promise(requestAnimationFrame)
+    expect(where(history)).toBe('/cleanup')
+    await sendAll(source, backlog)
+    await expect.poll(() => where(history)).toBe('/cleanup/caches')
+  })
+
+  test('an unknown section waits while scanning and is not found once the scan is done', async () => {
+    const {source, catchUp, history, screen} = await cold('/cleanup/nope')
+    await sendAll(source, backlog)
+    catchUp()
+    await expect.element(screen.getByText('Nothing is listed in “nope” yet; the scan is still running.')).toBeVisible()
+    await expect.element(screen.getByRole('heading', {name: 'Application caches'})).not.toBeInTheDocument()
+    await sendAll(source, [{type: 'done', data: {reclaimable: GB, elapsed_ms: 50}}])
+    await expect.element(screen.getByText('There is no section called “nope” in this scan.')).toBeVisible()
+    expect(where(history)).toBe('/cleanup/nope')
+  })
+
+  test('a junk child under a real section, and a wrongly cased path, are the plain not-found page', async () => {
+    for (const url of ['/cleanup/caches/bogus', '/CLEANUP']) {
+      const history = at(url)
+      const screen = await render(<App loaded={fixture} history={history} />)
+      await expect.element(screen.getByText('There is no page at this address.')).toBeVisible()
+      await expect.element(screen.getByText(/There is no section called/)).not.toBeInTheDocument()
+      await screen.unmount()
+    }
+  })
+
+  test('a storage zoom path that does not exist moves to its nearest existing folder', async () => {
+    const cases: [string, string][] = [
+      ['/storage/Users/you/Library/nope/deeper', '/storage/Users/you/Library'],
+      ['/storage/Users/you/nowhere', '/storage'],
+      ['/storage/elsewhere', '/storage'],
+    ]
+    for (const [url, landed] of cases) {
+      const history = at(url)
+      const screen = await render(<App loaded={fixture} history={history} />)
+      await expect.poll(() => where(history)).toBe(landed)
+      await screen.unmount()
+    }
+  })
+})
+
+describe('URL hygiene', () => {
+  const categories = fixture.data.categories
+  const tokenOfApp = () => {
+    const {'/Users/you/Library/Caches/app-a': _dropped, ...rest} = rowSelectionOf(categories, NO_PICKS)
+    return picksOf(categories, rest).drop
+  }
+
+  test('invalid values of every param are stripped from the address', async () => {
+    const unknownToken = 'zz9zz9zz'
+    const drop = `${tokenOfApp()}.${unknownToken}`
+    const history = at(`/cleanup/caches?overlay=zzz&view%5B%5D=cards&q=%20%20&drop=${drop}&add=_nope`)
+    const screen = await render(<App loaded={fixture} history={history} />)
+    await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
+    await expect.poll(() => history.location.search).toBe(`?drop=${tokenOfApp()}`)
+  })
+
+  test('tab links carry no empty selection params', async () => {
+    const history = at('/cleanup/node')
+    const screen = await render(<App loaded={fixture} history={history} />)
+    await screen.getByRole('tab', {name: 'Storage'}).click()
+    await expect.element(screen.getByLabelText('Storage sunburst of /Users/you')).toBeVisible()
+    const hrefs = [...document.querySelectorAll('[role="tab"]')].map(tab => tab.getAttribute('href') ?? '')
+    expect(hrefs).toEqual(['/cleanup/node', '/storage', '/insights'])
+  })
+})

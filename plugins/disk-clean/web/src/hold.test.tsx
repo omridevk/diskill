@@ -5,6 +5,7 @@ import {userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {formatBytes} from './lib/data'
+import {fingerprint} from './lib/selection'
 import {at, fixture, freeEvents, heldEvents, undoEvents} from './test/fixture'
 import type {Loaded} from './lib/data'
 import {fakeEventSource, mockServer, PLAN, sendAll, sendRaw} from './test/page'
@@ -77,8 +78,8 @@ describe('Delete asks in a modal', () => {
     await dialog.getByRole('button', {name: "Move 4 items to hold + 2 that can't be undone"}).click()
     await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
     const [[, init]] = posted('/decide') as [[string, RequestInit]]
-    expect(JSON.parse(String(init.body))).toMatchObject({decision: 'approve', token: 'test-token'})
-    expect(JSON.parse(String(init.body)).items).toHaveLength(4)
+    const caches = ['app-a', 'app-b', 'app-c', 'app-d'].map(name => `/Users/you/Library/Caches/${name}`)
+    expect(JSON.parse(String(init.body))).toEqual({decision: 'approve', token: 'test-token', add: '', drop: '', listed: null, fingerprint: fingerprint(caches)})
     await expect.element(screen.getByRole('button', {name: 'Undo'})).not.toBeInTheDocument()
     await expect.element(screen.getByRole('button', {name: DELETE})).not.toBeInTheDocument()
   })
@@ -247,6 +248,23 @@ describe('a request the server refuses rolls back and says so where it was made'
     source.readyState = 1
     source.dispatchEvent(new Event('open'))
     await expect.element(screen.getByText('Reconnecting to disk-clean…')).not.toBeInTheDocument()
+  })
+
+  test('while held, a dropped stream shows in the header and Undo and Free wait for it with a reason', async () => {
+    const {screen, source} = await heldApp()
+    source.readyState = 0
+    source.dispatchEvent(new Event('error'))
+    await barSays(screen, 'Reconnecting to disk-clean…')
+    await expect.element(footer(screen).getByRole('button', {name: 'Undo'})).toBeDisabled()
+    await expect.element(footer(screen).getByRole('button', {name: 'Free the space now'})).toBeDisabled()
+    await expect.element(footer(screen).getByText('Undo and Free wait until disk-clean is reachable again')).toBeVisible()
+    source.readyState = 2
+    source.dispatchEvent(new Event('error'))
+    await barSays(screen, 'Lost contact with disk-clean: the cleanup keeps running; reload to reconnect')
+    source.readyState = 1
+    source.dispatchEvent(new Event('open'))
+    await barSays(screen, `Held ${formatBytes(3.75 * GB)} · not freed yet`)
+    await expect.element(footer(screen).getByRole('button', {name: 'Undo'})).toBeEnabled()
   })
 
   test('a cleanup stream that closes for good says contact is lost, not that the cleanup stopped', async () => {

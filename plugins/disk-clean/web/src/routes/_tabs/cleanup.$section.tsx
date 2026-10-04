@@ -1,13 +1,19 @@
-import {createFileRoute, Link, notFound, Outlet} from '@tanstack/react-router'
-import {hasSection} from '@/lib/page-data'
+import {createFileRoute, Link, notFound, Outlet, type NotFoundRouteProps} from '@tanstack/react-router'
+import {NotFound} from '@/components/not-found'
+import {hasSection, scanReady, scanSettled} from '@/lib/page-data'
 import {OpenSection} from './-open-section'
 
+const MISSING = 'missing-section'
+
 export const Route = createFileRoute('/_tabs/cleanup/$section')({
-  beforeLoad: ({context, params}) => {
-    if (!hasSection(context.db, params.section)) throw notFound()
+  loader: async ({context, params}) => {
+    await scanReady(context.db)
+    if (!hasSection(context.db, params.section) && scanSettled(context.db)) throw notFound({data: MISSING})
   },
+  pendingMs: 150,
+  pendingComponent: Waiting,
   component: Section,
-  notFoundComponent: MissingSection,
+  notFoundComponent: Missing,
 })
 
 function Section() {
@@ -20,8 +26,13 @@ function Section() {
   )
 }
 
-function MissingSection() {
+function Waiting() {
+  return <div className="flex grow items-center justify-center p-10 text-sm text-muted-foreground">Loading the scan…</div>
+}
+
+function Missing({data}: NotFoundRouteProps) {
   const {section} = Route.useParams()
+  if (data !== MISSING) return <NotFound />
   return (
     <div className="flex grow flex-col items-center justify-center gap-2 p-10 text-center text-sm text-muted-foreground">
       <p>There is no section called “{section}” in this scan.</p>

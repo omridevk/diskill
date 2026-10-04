@@ -4,7 +4,7 @@ import {getRouteApi, useNavigate} from '@tanstack/react-router'
 import {functionalUpdate, type RowSelectionState, type Updater} from '@tanstack/react-table'
 import {useCallback, useDeferredValue, useMemo} from 'react'
 import {approve as approveItems, askHeld, cancel as cancelRun, restartScan} from './actions'
-import {preview, type Plan} from './api'
+import {preview, type Plan, type Selected} from './api'
 import {firstSection, isPickable, sumBytes} from './data'
 import {useDb, type Db} from './db'
 import {useCleanupProgress} from './progress'
@@ -190,7 +190,33 @@ export function canConfirm(db: Db, picks: Picks) {
 }
 
 export function hasSection(db: Db, section: string) {
-  return !scanNow(db)?.done || db.scan.sections.synced.has(section)
+  return db.scan.sections.synced.has(section)
+}
+
+export function scanSettled(db: Db) {
+  const scan = scanNow(db)
+  return scan === undefined || scan.done || scan.error !== '' || scan.stopped
+}
+
+export function knownPicks(db: Db, picks: Picks): Picks {
+  if (!scanSettled(db) || db.loaded.approved) return picks
+  const selector = selectorOf(db)
+  selector.sync(categoriesNow(db))
+  const known = (value: string) =>
+    value
+      .split('.')
+      .filter(token => token !== '' && selector.knows(token))
+      .join('.')
+  return {add: known(picks.add), drop: known(picks.drop)}
+}
+
+export function scanReady(db: Db) {
+  const {collection} = db.scan.scan
+  return collection.isReady() ? Promise.resolve() : new Promise<void>(resolve => collection.onFirstReady(resolve))
+}
+
+export function treeNow(db: Db) {
+  return scanNow(db)?.tree ?? null
 }
 
 export function isApproved(db: Db) {
@@ -201,11 +227,11 @@ interface PreviewRow extends Plan {
   id: 'plan'
 }
 
-function previewCollection(db: Db, key: string, items: readonly Entry[]) {
+function previewCollection(db: Db, key: string, selected: Selected) {
   return createCollection(
     queryCollectionOptions({
       queryKey: ['preview', key],
-      queryFn: async (): Promise<PreviewRow[]> => [{...(await preview(db.loaded.token, items)), id: 'plan'}],
+      queryFn: async (): Promise<PreviewRow[]> => [{...(await preview(db.loaded.token, selected)), id: 'plan'}],
       queryClient: db.queryClient,
       getKey: row => row.id,
       startSync: false,
@@ -217,20 +243,29 @@ interface Preview {
   collection: ReturnType<typeof previewCollection>
   items: readonly Entry[]
   bytes: number
+  selected: Selected
 }
 
 const previews = new WeakMap<Db, Map<string, Preview>>()
 
+const NO_SCAN_YET = {done: false, rescans: 0, listed: 0}
+
+function requestOf(db: Db, picks: Picks, selected: readonly Entry[]) {
+  const {done, rescans, listed} = scanNow(db) ?? NO_SCAN_YET
+  const print = fingerprint(selected.map(e => e.path))
+  const streaming = db.loaded.live === true && !done
+  const request: Selected = {...picks, listed: streaming ? listed : null, fingerprint: print}
+  return {key: `${rescans}|${done ? 'done' : 'scanning'}|${print}`, request}
+}
+
 function previewOf(db: Db, picks: Picks): [string, Preview] {
   const {selected, exactBytes} = derivedOf(db, decodedNow(db, picks))
-  const scan = scanNow(db)
-  const scanning = scan?.done !== true
-  const key = `${scan?.rescans ?? 0}|${scanning ? 'scanning' : 'done'}|${fingerprint(selected.map(e => e.path))}`
+  const {key, request} = requestOf(db, picks, selected)
   const mine = previews.get(db) ?? new Map<string, Preview>()
   previews.set(db, mine)
   const known = mine.get(key)
   if (known) return [key, known]
-  const made = {collection: previewCollection(db, key, selected), items: selected, bytes: exactBytes}
+  const made = {collection: previewCollection(db, key, request), items: selected, bytes: exactBytes, selected: request}
   mine.set(key, made)
   return [key, made]
 }
@@ -327,7 +362,7 @@ export function useDecisions() {
   const approve = (preview: Preview) => {
     if (preview.items.length === 0) return
     attempts.set(db, preview)
-    void approveItems(db, preview.items, preview.bytes)
+    void approveItems(db, preview)
   }
   const retry = () => {
     const last = attempts.get(db)

@@ -1,10 +1,9 @@
 import {useTable, type ReactTable, type RowSelectionState, type Updater} from '@tanstack/react-table'
 import {useVirtualizer} from '@tanstack/react-virtual'
-import {memo, useRef, type MouseEvent} from 'react'
+import {memo, useMemo, useRef, type MouseEvent} from 'react'
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table'
 import type {CleanupProgress, Outcome} from '@/lib/progress'
 import {STATE_MOTION} from '@/lib/motion'
-import {moveWindow, type SectionWindow} from '@/lib/shaping'
 import {columns, enableRowSelection, toggleRow, type Entry, type EntryRow, features} from './cleanup-columns'
 
 type CleanupTable = ReactTable<typeof features, Entry, null>
@@ -14,9 +13,9 @@ const OVERSCAN = 6
 const LINE = 18
 const PADDING = 18
 
-function heightOf(row: EntryRow | undefined, planned: boolean) {
-  if (!row) return LINE + PADDING
-  return PADDING + LINE * (1 + Number(row.original.note !== '' || row.original.checking === true) + Number(planned))
+function heightOf(entry: Entry | undefined, planned: boolean) {
+  if (!entry) return LINE + PADDING
+  return PADDING + LINE * (1 + Number(entry.note !== '' || entry.checking === true) + Number(planned))
 }
 
 function rowTone(planned: boolean, outcome: Outcome | undefined, locked: boolean) {
@@ -67,20 +66,19 @@ const VirtualRow = memo(function VirtualRow({table, row, index, start, locked, p
 })
 
 interface DataTableProps {
-  slice: SectionWindow
-  count: number
+  rows: readonly Entry[]
   label: string
   progress: CleanupProgress | null
   rowSelection: RowSelectionState
   onRowSelectionChange: (update: Updater<RowSelectionState>) => void
 }
 
-function useCleanupTable({slice, progress, rowSelection, onRowSelectionChange}: DataTableProps) {
+function useCleanupTable(data: Entry[], {progress, rowSelection, onRowSelectionChange}: DataTableProps) {
   return useTable(
     {
       features,
       columns,
-      data: slice.rows,
+      data,
       getRowId: row => row.path,
       enableRowSelection,
       state: {rowSelection},
@@ -92,26 +90,27 @@ function useCleanupTable({slice, progress, rowSelection, onRowSelectionChange}: 
 }
 
 export function DataTable(props: DataTableProps) {
-  const {slice, count, label, progress} = props
+  const {rows: entries, label, progress} = props
   const scroller = useRef<HTMLDivElement>(null)
-  const table = useCleanupTable(props)
-  const rows = table.getRowModel().rows
-  const rowAt = (index: number) => rows[index - slice.offset]
   const plan = progress?.plan.items
+  const count = entries.length
   const virtualizer = useVirtualizer({
     count,
     getScrollElement: () => scroller.current,
     estimateSize: index => {
-      const row = rowAt(index)
-      return heightOf(row, row ? (plan?.has(row.id) ?? false) : false)
+      const entry = entries[index]
+      return heightOf(entry, entry ? (plan?.has(entry.path) ?? false) : false)
     },
-    getItemKey: index => rowAt(index)?.id ?? index,
+    getItemKey: index => entries[index]?.path ?? index,
     overscan: OVERSCAN,
-    onChange: instance => {
-      const range = instance.range
-      if (range) moveWindow(slice, range.startIndex, range.endIndex + 1)
-    },
   })
+  const virtualItems = virtualizer.getVirtualItems()
+  const first = virtualItems[0]?.index ?? 0
+  const end = (virtualItems.at(-1)?.index ?? -1) + 1
+  const data = useMemo(() => entries.slice(first, end), [entries, first, end])
+  const table = useCleanupTable(data, props)
+  const rows = table.getRowModel().rows
+  const rowAt = (index: number) => rows[index - first]
   return (
     <div ref={scroller} className="min-h-0 grow overflow-auto px-3 py-1">
       <Table aria-label={label} aria-rowcount={count + 1} role="table" className="grid">
@@ -127,7 +126,7 @@ export function DataTable(props: DataTableProps) {
           ))}
         </TableHeader>
         <TableBody role="rowgroup" className="relative grid" style={{height: virtualizer.getTotalSize()}}>
-          {virtualizer.getVirtualItems().map(virtual => {
+          {virtualItems.map(virtual => {
             const row = rowAt(virtual.index)
             if (!row) return null
             return (

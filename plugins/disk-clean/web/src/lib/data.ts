@@ -12,6 +12,7 @@ export interface Item {
   preselect: boolean
   report: boolean
   checking?: boolean
+  line?: number
 }
 
 export interface Category {
@@ -120,11 +121,16 @@ export function formatBytes(n: number): string {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${UNITS[unit]}`
 }
 
-export function plural(n: number, one: string, many: string, format: (n: number) => string = String) {
-  return `${format(n)} ${n === 1 ? one : many}`
+export const counted = (n: number) => n.toLocaleString()
+
+export function plural(n: number, one: string, many: string) {
+  return `${counted(n)} ${n === 1 ? one : many}`
 }
 
-export const counted = (n: number) => n.toLocaleString()
+export function sizeOf(exact: number, apparent: number) {
+  if (apparent === 0) return formatBytes(exact)
+  return exact === 0 ? `≈${formatBytes(apparent)}` : `${formatBytes(exact)} + ≈${formatBytes(apparent)}`
+}
 
 export const isExact = (item: Item) => item.accuracy === 'exact'
 
@@ -150,3 +156,14 @@ export function outermost<T extends {path: string}>(items: readonly T[]): T[] {
 }
 
 export const sumBytes = (items: readonly {bytes: number}[]) => items.reduce((sum, i) => sum + i.bytes, 0)
+
+const isInside = (path: string, folder: string) => path === folder || path.startsWith(folder === '/' ? '/' : `${folder}/`)
+
+export function nearestFolder(tree: TreeNode, path: string): string {
+  let node = tree
+  for (;;) {
+    const child = node.children.find(c => !c.rest && isInside(path, c.path))
+    if (!child) return node.path
+    node = child
+  }
+}

@@ -5,7 +5,7 @@ import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
 import type {Plan} from '@/lib/api'
 import {formatUntil} from '@/lib/progress'
-import {formatBytes, plural, tilde, tildeWords} from '@/lib/data'
+import {counted, formatBytes, plural, tilde, tildeWords} from '@/lib/data'
 
 const ROW = 28
 
@@ -97,9 +97,9 @@ function confirmLabel(plan: Plan) {
 function Totals({plan}: {plan: Plan}) {
   const figures = [
     {n: formatBytes(plan.bytes), label: `${plural(plan.count, 'item', 'items')} in total`},
-    {n: formatBytes(plan.hold_bytes), label: `${plan.hold.length} moved to hold`},
-    {n: String(plan.final_count), label: "can't be undone"},
-    {n: String(plan.rejected.length), label: 'rejected'},
+    {n: formatBytes(plan.hold_bytes), label: `${counted(plan.hold.length)} moved to hold`},
+    {n: counted(plan.final_count), label: "can't be undone"},
+    {n: counted(plan.rejected.length), label: 'rejected'},
   ]
   return (
     <div className="grid grid-cols-4 gap-2">
@@ -113,10 +113,20 @@ function Totals({plan}: {plan: Plan}) {
   )
 }
 
-function Body({plan, home}: {plan: Plan; home: string}) {
+function Difference({plan, selected}: {plan: Plan; selected: number}) {
+  if (plan.rejected.length === 0 || selected === plan.count) return null
+  return (
+    <p className="text-sm text-muted-foreground">
+      You selected {plural(selected, 'item', 'items')}; {counted(plan.rejected.length)} rejected by the safety checks, see below, so {plural(plan.count, 'item runs', 'items run')}.
+    </p>
+  )
+}
+
+function Body({plan, home, selected}: {plan: Plan; home: string; selected: number}) {
   return (
     <>
       <Totals plan={plan} />
+      <Difference plan={plan} selected={selected} />
       {plan.hold.length > 0 && (
         <Group title="Moved to hold (undo available)" note={`until ${formatUntil(plan.hold_until)}, space comes back when you free them`} tone="text-foreground">
           <HeldPaths rows={plan.hold} home={home} />
@@ -144,10 +154,10 @@ function Checking() {
   )
 }
 
-function Decision({plan, home, onCancel, onConfirm}: {plan: Plan | null; home: string; onCancel: () => void; onConfirm: () => void}) {
+function Decision({plan, home, selected, onCancel, onConfirm}: {plan: Plan | null; home: string; selected: number; onCancel: () => void; onConfirm: () => void}) {
   return (
     <>
-      {plan ? <Body plan={plan} home={home} /> : <Checking />}
+      {plan ? <Body plan={plan} home={home} selected={selected} /> : <Checking />}
       <DialogFooter className="items-center">
         <span className="grow text-xs text-muted-foreground">
           Same list in the terminal: <code className="font-mono text-zinc-300">disk-clean clean --dry-run</code>
@@ -171,7 +181,7 @@ interface Exit {
 
 const SCAN_RUNNING = 'The scan is still running; confirming stops it and uses what was found so far.'
 
-export function ConfirmDialog({plan, home, scanning = false, open, onClose, onClosed, onConfirm}: Exit & {plan: Plan | null; home: string; scanning?: boolean; onConfirm: () => void}) {
+export function ConfirmDialog({plan, home, selected = 0, scanning = false, open, onClose, onClosed, onConfirm}: Exit & {plan: Plan | null; home: string; selected?: number; scanning?: boolean; onConfirm: () => void}) {
   return (
     <Dialog open={open} onOpenChange={next => next || onClose()} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-3xl">
@@ -183,7 +193,7 @@ export function ConfirmDialog({plan, home, scanning = false, open, onClose, onCl
           </DialogDescription>
         </DialogHeader>
         {scanning && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{SCAN_RUNNING}</p>}
-        <Decision plan={plan} home={home} onCancel={onClose} onConfirm={onConfirm} />
+        <Decision plan={plan} home={home} selected={selected} onCancel={onClose} onConfirm={onConfirm} />
       </DialogContent>
     </Dialog>
   )

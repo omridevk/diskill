@@ -36,12 +36,12 @@ function cyrb53(text: string) {
 }
 
 export function fingerprint(paths: readonly string[]) {
-  return cyrb53(paths.join('\n')).toString(36)
+  return cyrb53(paths.toSorted().join('\n')).toString(36)
 }
 
 const hashes = new Map<string, string>()
 
-function hashOf(path: string) {
+export function fullToken(path: string) {
   const known = hashes.get(path)
   if (known) return known
   const hash = cyrb53(path).toString(36).padStart(FULL, '0')
@@ -62,7 +62,7 @@ function tokenSet(value: string) {
   return new Set(value ? value.split(SEPARATOR) : [])
 }
 
-const shortOf = (path: string) => hashOf(path).slice(0, SHORT)
+const shortOf = (path: string) => fullToken(path).slice(0, SHORT)
 
 interface Notes {
   marks: string[]
@@ -95,16 +95,16 @@ export function createSelector<T extends Item = Item>() {
 
   const tokenOf = (path: string) => {
     const short = shortOf(path)
-    return counts.get(short) === 1 ? short : hashOf(path)
+    return counts.get(short) === 1 ? short : fullToken(path)
   }
 
   const enter = (path: string, section: string) => {
     const short = shortOf(path)
     counts.set(short, (counts.get(short) ?? 0) + 1)
     owners.set(short, section)
-    owners.set(hashOf(path), section)
+    owners.set(fullToken(path), section)
     paths.set(short, path)
-    paths.set(hashOf(path), path)
+    paths.set(fullToken(path), path)
   }
 
   const leave = (path: string) => {
@@ -189,7 +189,9 @@ export function createSelector<T extends Item = Item>() {
     return last.decoded
   }
 
-  return {decode, tokenOf, sync}
+  const knows = (token: string) => (token.startsWith(SECTION) ? counted.has(token.slice(SECTION.length)) : pathOf(token) !== undefined)
+
+  return {decode, tokenOf, sync, knows}
 }
 
 function isOn(item: Item, notes: Notes | undefined, whole: boolean | null) {

@@ -20,6 +20,7 @@ export type ScanEvent =
   | {type: 'error'; data: Timed<{message: string}>}
   | {type: 'rescan'; data: Timed<object>}
   | {type: 'unlisted'; data: Timed<{path: string}>}
+  | {type: 'replayed'; data: Timed<object>}
 
 export interface Entry extends Item {
   section: string
@@ -28,6 +29,7 @@ export interface Entry extends Item {
   exact: boolean
   selectable: number
   scan: number
+  order: string
 }
 
 export interface Nest {
@@ -58,6 +60,8 @@ export interface ScanState {
   elapsed: number
   walkedAt: number
   rescans: number
+  listed: number
+  caughtUp: boolean
   home: number
   reclaimable: number
   tree: TreeNode | null
@@ -66,8 +70,13 @@ export interface ScanState {
 
 const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
 
+const DIGITS = /\d+/g
+const MARKS = /\p{M}/gu
+
+const orderOf = (label: string) => label.normalize('NFD').replace(MARKS, '').toLowerCase().replace(DIGITS, digits => digits.padStart(16, '0'))
+
 function entryOf(item: Item, head: CategoryHead, scan: number): Entry {
-  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), selectable: isPickable(item) ? 1 : 0, scan}
+  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), selectable: isPickable(item) ? 1 : 0, scan, order: orderOf(item.label)}
 }
 
 function startState(loaded: Loaded): ScanState {
@@ -83,6 +92,8 @@ function startState(loaded: Loaded): ScanState {
     elapsed: 0,
     walkedAt: 0,
     rescans: 0,
+    listed: 0,
+    caughtUp: finished,
     home: data.home,
     reclaimable: data.reclaimable,
     tree: data.tree,
@@ -113,10 +124,11 @@ export function createScanStore(loaded: Loaded) {
     nests: ownedCollection<Nest>(n => n.id, nestsOf(paths)),
     disk: ownedCollection<Disk>(d => d.id, [{id: 'disk', total: data.total, used: data.used, free: data.free, snapshots: data.snapshots}]),
     progress: ownedCollection<ScanProgress>(p => p.id, [NO_PROGRESS]),
-    scan: ownedCollection<ScanState>(s => s.id, [startState(loaded)]),
+    scan: ownedCollection<ScanState>(s => s.id, [startState(loaded)], !loaded.live),
     under: underOf(paths),
     bySection: bySectionOf(entries),
     restarts: new Set<() => void>(),
+    turns: new Set<() => void>(),
   }
 }
 
@@ -140,11 +152,12 @@ interface Batch {
 
 type Handlers = {[K in ScanEvent['type']]: (batch: Batch, data: Extract<ScanEvent, {type: K}>['data'], store: ScanStore) => void}
 
-export const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0}
+export const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0, listed: 0}
 
 function takeItem(batch: Batch, {category, item}: {category: CategoryHead; item: Item}) {
   batch.heads.set(category.id, category)
   batch.items.push(entryOf(item, category, batch.state.rescans))
+  if (item.line !== undefined && item.line > batch.state.listed) batch.state = {...batch.state, listed: item.line}
 }
 
 function stale(store: ScanStore, scan: number) {
@@ -175,13 +188,16 @@ const HANDLERS: Handlers = {
       batch.removed.push(...stale(store, batch.state.rescans).filter(path => !fresh.has(path)))
     }
     batch.removed.push(...stillChecking(store, batch))
-    batch.state = {...batch.state, reclaimable, done: true}
+    batch.state = {...batch.state, reclaimable, done: true, caughtUp: true}
   },
   unlisted: (batch, {path}) => {
     batch.removed.push(path)
   },
   error: (batch, {message}) => {
-    batch.state = {...batch.state, error: message}
+    batch.state = {...batch.state, error: message, caughtUp: true}
+  },
+  replayed: batch => {
+    batch.state = {...batch.state, caughtUp: true}
   },
   rescan: batch => {
     batch.state = {...batch.state, ...RESTART, rescans: batch.state.rescans + 1}
@@ -262,9 +278,16 @@ function writeItems(store: ScanStore, batch: Batch, removed: ReadonlySet<string>
   })
 }
 
+const settledOf = (state: ScanState) => state.done || state.error !== '' || state.stopped
+
+function turned(before: ScanState, after: ScanState, sectionsBefore: number, sectionsAfter: number) {
+  return (sectionsBefore === 0) !== (sectionsAfter === 0) || settledOf(before) !== settledOf(after) || before.walked !== after.walked
+}
+
 export function receiveScan(store: ScanStore, events: readonly ScanEvent[]) {
   const state = store.scan.synced.get('scan')
   if (!state) return
+  const sections = store.sections.synced.size
   const batch: Batch = {state, items: [], removed: [], heads: new Map(), disk: null, progress: null, restarted: false}
   for (const event of events) take(batch, event, store)
   const removed = new Set(batch.removed)
@@ -273,6 +296,8 @@ export function receiveScan(store: ScanStore, events: readonly ScanEvent[]) {
   if (disk) store.disk.write(writes => writes.put(disk))
   if (progress) store.progress.write(writes => writes.put(progress))
   store.scan.write(writes => writes.put(batch.state))
+  if (batch.state.caughtUp) store.scan.markReady()
+  if (store.scan.collection.isReady() && turned(state, batch.state, sections, store.sections.synced.size)) for (const turn of store.turns) turn()
   if (!batch.restarted) return
   for (const restarted of store.restarts) restarted()
   store.restarts.clear()

@@ -74,7 +74,7 @@ export function cleanupSearch(raw: Raw<CleanupSearch>): CleanupSearch {
   const risk: unknown = raw.risk
   return {
     view: oneOf(VIEWS, raw.view, CLEANUP_DEFAULTS.view),
-    q: textOf(raw.q),
+    q: textOf(raw.q).trim() === '' ? '' : textOf(raw.q),
     risk: Array.isArray(risk) ? RISKS.filter(r => risk.includes(r)) : [],
     minSize: oneOf(MIN_SIZES, raw.minSize, CLEANUP_DEFAULTS.minSize),
     minAge: oneOf(MIN_AGES, raw.minAge, CLEANUP_DEFAULTS.minAge),

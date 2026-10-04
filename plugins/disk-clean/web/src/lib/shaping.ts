@@ -1,10 +1,10 @@
-import {count, createLiveQueryCollection, eq, sum, type InitialQueryBuilder} from '@tanstack/react-db'
+import {and, eq, gte, useLiveQuery, type InitialQueryBuilder, type Ref} from '@tanstack/react-db'
 import type {RowSelectionState} from '@tanstack/react-table'
 import {useMemo} from 'react'
+import type {Risk} from './data'
 import type {Db} from './db'
 import type {Entry} from './scan-feed'
 import type {CleanupSearch, Sort} from './search'
-import {useVersion} from './views'
 
 type Shape = Pick<CleanupSearch, 'q' | 'risk' | 'minSize' | 'minAge' | 'sort' | 'only'>
 
@@ -21,86 +21,32 @@ export function predicateOf(shape: Shape, on: RowSelectionState) {
     (!shape.only || on[entry.path] === true)
 }
 
-const filterKey = (shape: Shape, on: RowSelectionState) => [shape.q, shape.risk.join(','), shape.minSize, shape.minAge, shape.only ? onKey(on) : ''].join('|')
-
-const onIds = new WeakMap<RowSelectionState, number>()
-let nextOn = 0
-
-function onKey(on: RowSelectionState) {
-  const known = onIds.get(on)
-  if (known !== undefined) return known
-  nextOn += 1
-  onIds.set(on, nextOn)
-  return nextOn
-}
-
-const naturally = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'})
-
 type Items = Db['scan']['items']['collection']
 
-function sectionOf(items: Items, section: string) {
-  return (q: InitialQueryBuilder) => q.from({i: items}).where(({i}) => eq(i.section, section))
+const shows = (shape: Shape, risk: Risk) => shape.risk.length === 0 || shape.risk.includes(risk)
+
+function narrowed(i: Ref<Entry>, shape: Shape, own: ReturnType<typeof eq>) {
+  return [
+    own,
+    ...(shape.minSize > 0 ? [gte(i.bytes, shape.minSize)] : []),
+    ...(shape.minAge >= 0 ? [gte(i.age, shape.minAge)] : []),
+  ].reduce((left, right) => and(left, right))
 }
 
-type Base = ReturnType<ReturnType<typeof sectionOf>>
-
-const ORDER: Record<Sort, (base: Base) => Base> = {
-  'size-desc': base => base.orderBy(({i}) => i.bytes, 'desc'),
-  'size-asc': base => base.orderBy(({i}) => i.bytes, 'asc'),
-  'name-asc': base => base.orderBy(({i}) => i.label, {stringSort: 'custom', compare: naturally.compare}),
-  'age-desc': base => base.orderBy(({i}) => i.age, {direction: 'desc', nulls: 'last'}),
-  'age-asc': base => base.orderBy(({i}) => i.age, {direction: 'asc', nulls: 'last'}),
+function riskRows(q: InitialQueryBuilder, items: Items, shape: Shape, risk: Risk) {
+  return shows(shape, risk) ? q.from({i: items}).where(({i}) => narrowed(i, shape, eq(i.risk, risk))) : undefined
 }
 
-const WINDOW = 120
-const KEEP = 6
+type From = ReturnType<typeof fromItems>
 
-function totalsQuery(items: Items, keep: (entry: Entry) => boolean) {
-  return createLiveQueryCollection({
-    query: q =>
-      q
-        .from({i: items})
-        .fn.where(({i}) => keep(i))
-        .groupBy(({i}) => i.section)
-        .select(({i}) => ({id: i.section, count: count(i.path), bytes: sum(i.bytes), selectable: sum(i.selectable), aged: count(i.age)})),
-    gcTime: 5000,
-    startSync: true,
-  })
-}
+const fromItems = (q: InitialQueryBuilder, items: Items) => q.from({i: items})
 
-function rowsQuery(items: Items, section: string, sort: Sort, keep: (entry: Entry) => boolean) {
-  return createLiveQueryCollection({
-    query: q =>
-      ORDER[sort](sectionOf(items, section)(q))
-        .orderBy(({i}) => i.bytes, 'desc')
-        .orderBy(({i}) => i.path)
-        .fn.where(({i}) => keep(i))
-        .limit(WINDOW)
-        .offset(0),
-    gcTime: 5000,
-    startSync: true,
-  })
-}
-
-type Totals = ReturnType<typeof totalsQuery>
-type Rows = ReturnType<typeof rowsQuery>
-
-function cached<T>(store: Map<string, T>, key: string, make: () => T) {
-  const known = store.get(key)
-  if (known) return known
-  const made = make()
-  store.set(key, made)
-  for (const old of [...store.keys()].slice(0, Math.max(0, store.size - KEEP))) store.delete(old)
-  return made
-}
-
-const totalsBy = new WeakMap<Items, Map<string, Totals>>()
-const rowsBy = new WeakMap<Items, Map<string, Rows>>()
-
-function storeOf<T>(by: WeakMap<Items, Map<string, T>>, items: Items) {
-  const known = by.get(items) ?? new Map<string, T>()
-  by.set(items, known)
-  return known
+const ORDER: Record<Sort, (rows: From) => From> = {
+  'size-desc': rows => rows.orderBy(({i}) => i.bytes, 'desc'),
+  'size-asc': rows => rows.orderBy(({i}) => i.bytes, 'asc'),
+  'name-asc': rows => rows.orderBy(({i}) => i.order, {direction: 'asc', stringSort: 'lexical'}),
+  'age-desc': rows => rows.orderBy(({i}) => i.age, {direction: 'desc', nulls: 'last'}),
+  'age-asc': rows => rows.orderBy(({i}) => i.age, {direction: 'asc', nulls: 'last'}),
 }
 
 export interface SectionTotal {
@@ -111,45 +57,60 @@ export interface SectionTotal {
   aged: number
 }
 
-function totalsOf(db: Db, shape: Shape, on: RowSelectionState) {
+const UNFILTERED: Shape = {q: '', risk: [], minSize: 0, minAge: -1, sort: 'size-desc', only: false}
+
+type Keep = ((row: Entry) => boolean) | null
+
+function useKept(shape: Shape, on: RowSelectionState): Keep {
+  return useMemo(() => (shape.q === '' && !shape.only ? null : predicateOf(shape, on)), [shape, on])
+}
+
+function totalsOf(groups: readonly (readonly Entry[] | undefined)[], keep: Keep): SectionTotal[] {
+  const totals = new Map<string, SectionTotal>()
+  for (const rows of groups) {
+    for (const row of rows ?? []) {
+      if (keep !== null && !keep(row)) continue
+      const total = totals.get(row.section) ?? {id: row.section, count: 0, bytes: 0, selectable: 0, aged: 0}
+      total.count += 1
+      total.bytes += row.bytes
+      total.selectable += row.selectable
+      total.aged += Number(row.age !== null && row.age !== undefined)
+      totals.set(row.section, total)
+    }
+  }
+  return [...totals.values()]
+}
+
+function useRiskRows(items: Items, shape: Shape | null, risk: Risk) {
+  return useLiveQuery(q => (shape === null ? undefined : riskRows(q, items, shape, risk))).data
+}
+
+function useTotalsOf(db: Db, shape: Shape | null, keep: Keep) {
   const items = db.scan.items.collection
-  return cached(storeOf(totalsBy, items), filterKey(shape, on), () => totalsQuery(items, predicateOf(shape, on)))
+  const safe = useRiskRows(items, shape, 'safe')
+  const review = useRiskRows(items, shape, 'review')
+  const report = useRiskRows(items, shape, 'report')
+  return useMemo(() => totalsOf([safe, review, report], keep), [safe, review, report, keep])
 }
 
-function rowsOf(db: Db, section: string, shape: Shape, on: RowSelectionState) {
+export function useTotals(db: Db, shape: Shape, on: RowSelectionState) {
+  const filtering = isFiltering(shape)
+  const keep = useKept(shape, on)
+  const all = useTotalsOf(db, UNFILTERED, null)
+  const shown = useTotalsOf(db, filtering ? shape : null, keep)
+  return {all, shown: filtering ? shown : all}
+}
+
+const NO_ROWS: Entry[] = []
+const SORT_KEPT_MS = 5_000
+
+export function useSectionRows(db: Db, section: {id: string; risk: Risk}, shape: Shape, on: RowSelectionState): readonly Entry[] {
   const items = db.scan.items.collection
-  return cached(storeOf(rowsBy, items), `${section}|${shape.sort}|${filterKey(shape, on)}`, () => rowsQuery(items, section, shape.sort, predicateOf(shape, on)))
-}
-
-export function prepare(db: Db, from: Shape, to: Shape, on: RowSelectionState) {
-  const shown = `|${from.sort}|${filterKey(from, on)}`
-  const sections = [...storeOf(rowsBy, db.scan.items.collection).keys()].filter(key => key.endsWith(shown)).map(key => key.slice(0, -shown.length))
-  totalsOf(db, to, on)
-  for (const section of sections) rowsOf(db, section, to, on)
-}
-
-export function useShapedTotals(db: Db, shape: Shape, on: RowSelectionState): SectionTotal[] {
-  const collection = totalsOf(db, shape, on)
-  const version = useVersion(collection)
-  return useMemo(() => collection.toArray, [collection, version])
-}
-
-export interface SectionWindow {
-  rows: Entry[]
-  offset: number
-  collection: Rows
-}
-
-export function useSectionWindow(db: Db, section: string, shape: Shape, on: RowSelectionState): SectionWindow {
-  const collection = rowsOf(db, section, shape, on)
-  const version = useVersion(collection)
-  return useMemo(() => ({rows: collection.toArray, offset: collection.utils.getWindow()?.offset ?? 0, collection}), [collection, version])
-}
-
-export function moveWindow(window: SectionWindow, start: number, end: number) {
-  const current = window.collection.utils.getWindow()
-  const offset = Math.max(0, start - WINDOW / 4)
-  const inside = current && start >= current.offset && end <= current.offset + current.limit
-  if (inside) return
-  void window.collection.utils.setWindow({offset, limit: Math.max(WINDOW, end - offset + WINDOW / 4)})
+  const {data} = useLiveQuery({
+    query: q => (shows(shape, section.risk) ? ORDER[shape.sort](fromItems(q, items)).where(({i}) => narrowed(i, shape, eq(i.section, section.id))) : undefined),
+    gcTime: SORT_KEPT_MS,
+  })
+  const rows = data ?? NO_ROWS
+  const keep = useKept(shape, on)
+  return useMemo(() => (keep === null ? rows : rows.filter(keep)), [rows, keep])
 }

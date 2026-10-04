@@ -4,11 +4,11 @@ import {ChevronDown, X} from 'lucide-react'
 import {Suspense, use, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
-import {formatBytes, plural} from '@/lib/data'
+import {counted, formatBytes, plural} from '@/lib/data'
 import type {Db} from '@/lib/db'
 import {finaleOf, formatDuration, formatUntil, logFeed, useLatest, useStaged, type Cleanup, type FilmPlan, type LogFeed, type MovieFeed, type Outcome, type Totals} from '@/lib/progress'
 import {createFilm, gaugeOf, pump, type Film as FilmState, type ParticlePhase} from '@/lib/film'
-import {cssMs} from '@/lib/motion'
+import {cssMs, useReducedMotion} from '@/lib/motion'
 import {DISK_COLORS} from './disk-donut'
 import {BurningFilm} from './radiant/burning-film'
 import ParticleText from './react-bits/particle-text'
@@ -128,12 +128,12 @@ function ProblemTile({label, rows}: {label: string; rows: readonly Outcome[]}) {
 function Tiles({totals}: {totals: Totals}) {
   return (
     <div className="grid w-full grid-cols-3 gap-3">
-      <Tile label="items removed">
-        <span data-ticker={totals.removed.length}>{totals.removed.length}</span>
+      <Tile label="removed for good">
+        <span data-ticker={totals.removed.length}>{totals.removed.length}</span> · {formatBytes(totals.reclaimed)}
       </Tile>
       {totals.held.length > 0 && (
-        <Tile label="held, not freed yet">
-          <span data-ticker={totals.held.length}>{totals.held.length}</span>
+        <Tile label="moved to hold, can be undone">
+          <span data-ticker={totals.held.length}>{totals.held.length}</span> · {formatBytes(totals.heldBytes)}
         </Tile>
       )}
       <Tile label="sections">
@@ -386,7 +386,7 @@ function emptyHeading(totals: Totals, all: readonly Outcome[]) {
 
 function emptySummary(totals: Totals, all: readonly Outcome[]) {
   const ran = all.filter(o => o.kind === 'ran').length
-  const parts = [totals.failed.length > 0 && `${totals.failed.length} not removed`, totals.kept.length > 0 && `${totals.kept.length} kept`, ran > 0 && `${plural(ran, 'command', 'commands')} ran`]
+  const parts = [totals.failed.length > 0 && `${counted(totals.failed.length)} not removed`, totals.kept.length > 0 && `${counted(totals.kept.length)} kept`, ran > 0 && `${plural(ran, 'command', 'commands')} ran`]
   return parts.filter(Boolean).join(' · ') || 'The cleanup had nothing to do'
 }
 
@@ -569,8 +569,29 @@ interface CleanupFilmProps extends FilmProps {
   returnFocus?: RefObject<HTMLButtonElement | null>
 }
 
+function StillFinale({db, plan, cleanup, elapsed, held}: FilmProps & {held: ReactNode}) {
+  const latest = useLatest(db)
+  const all = useStaged(db)
+  const totals = useMemo(() => finaleOf(latest, cleanup.done, elapsed), [latest, cleanup.done, elapsed])
+  const heading = cleanup.done || cleanup.abandoned ? headingOf(cleanup, totals, all) : 'Cleaning up'
+  return (
+    <div className="fixed inset-0 overflow-y-auto bg-background text-foreground">
+      <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
+        <h2 className="text-2xl font-semibold tracking-tight">{heading}</h2>
+        <div className="text-5xl font-bold tabular-nums">{figureOf(cleanup, totals, all, totals.reclaimed)}</div>
+        <HeldNote cleanup={cleanup} totals={totals} held={held} />
+        <Tiles totals={totals} />
+        <ol aria-label="Everything removed" className="flex w-full flex-col gap-4 text-left">
+          <CreditList plan={plan} totals={totals} />
+        </ol>
+      </div>
+    </div>
+  )
+}
+
 export function CleanupFilm({held, open, take, onReplay, onClose, returnFocus, ...props}: CleanupFilmProps) {
   const close = useRef<HTMLButtonElement>(null)
+  const reduced = useReducedMotion()
   const replay = () => {
     onReplay()
     close.current?.focus()
@@ -579,7 +600,7 @@ export function CleanupFilm({held, open, take, onReplay, onClose, returnFocus, .
     <DialogPrimitive.Root open={open} onOpenChange={next => next || onClose()}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Popup aria-label="Cleanup movie" initialFocus={close} finalFocus={returnFocus} className="fixed inset-0 z-50 outline-none">
-          <Film {...props} take={take} held={held} onReplay={replay} />
+          {reduced ? <StillFinale {...props} held={held} /> : <Film {...props} take={take} held={held} onReplay={replay} />}
           <DialogPrimitive.Close render={<Button ref={close} variant="secondary" size="sm" className="absolute top-4 right-4 z-10" />}>
             <X /> Close
           </DialogPrimitive.Close>

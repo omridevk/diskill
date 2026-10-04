@@ -5,9 +5,11 @@ import react from '@vitejs/plugin-react'
 import {playwright} from '@vitest/browser-playwright'
 import {defineConfig} from 'vitest/config'
 import {viteSingleFile} from 'vite-plugin-singlefile'
+import {startWalk, stopWalk} from './walk-commands'
 
 const review = process.env.DISK_CLEAN_REVIEW_URL
 const retina = playwright({contextOptions: {deviceScaleFactor: 2}})
+const reduced = playwright({contextOptions: {reducedMotion: 'reduce'}})
 const VIEWPORT = {width: 1440, height: 960}
 const CHROMIUM = {browser: 'chromium' as const, viewport: VIEWPORT}
 const FIREFOX = {browser: 'firefox' as const, viewport: VIEWPORT}
@@ -15,6 +17,7 @@ const FILM = ['src/film.test.tsx']
 const ROUTER = ['src/router.test.tsx']
 const HOLD = ['src/hold.test.tsx']
 const SCANNING = ['src/scanning.test.tsx']
+const WORDS = ['src/words.test.tsx', 'src/selection.test.tsx']
 
 interface Instance {
   browser: 'chromium' | 'firefox'
@@ -27,6 +30,7 @@ interface Instance {
 function inBrowsers(project: string, instances: Instance[]) {
   return {
     enabled: true,
+    commands: {startWalk, stopWalk},
     headless: true,
     provider: playwright(),
     instances: instances.map(instance => ({...instance, name: `${project} ${instance.name ?? instance.browser}`})),
@@ -63,10 +67,10 @@ export default defineConfig({
         test: {
           name: 'app',
           include: ['src/**/*.test.tsx'],
-          exclude: ['src/perf.test.tsx'],
+          exclude: ['src/perf.test.tsx', 'src/frames.test.tsx'],
           browser: inBrowsers('app', [
             CHROMIUM,
-            {...FIREFOX, include: [...FILM, ...ROUTER, ...HOLD, ...SCANNING], provider: retina},
+            {...FIREFOX, include: [...FILM, ...ROUTER, ...HOLD, ...SCANNING, ...WORDS], provider: retina},
             {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, include: FILM, provider: retina},
           ]),
         },
@@ -80,6 +84,23 @@ export default defineConfig({
         resolve: {alias: [{find: /^react-dom\/client$/, replacement: 'react-dom/profiling'}]},
         oxc: {jsx: {runtime: 'automatic', development: false}},
         test: {name: 'perf', include: ['src/perf.test.tsx'], browser: inBrowsers('perf', [CHROMIUM, FIREFOX])},
+      },
+      {
+        extends: true,
+        mode: 'production',
+        define: {'process.env.NODE_ENV': JSON.stringify('production')},
+        cacheDir: 'node_modules/.vite-frames',
+        oxc: {jsx: {runtime: 'automatic', development: false}},
+        test: {
+          name: 'frames',
+          include: ['src/frames.test.tsx'],
+          browser: inBrowsers('frames', [
+            CHROMIUM,
+            FIREFOX,
+            {...CHROMIUM, name: 'chromium reduced', provider: reduced},
+            {...FIREFOX, name: 'firefox reduced', provider: reduced},
+          ]),
+        },
       },
     ],
   },

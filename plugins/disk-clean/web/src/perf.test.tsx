@@ -111,9 +111,9 @@ async function interactions(rows: number): Promise<Work> {
   await expect.element(screen.getByText('~/tmp/item-00001')).toBeVisible()
   const section = () => element('[aria-label="Select all in Your macOS temp"]').click()
   const selectAll = await repeated([section, section])
-  await expect.poll(footerText).toContain(`${rows + 4} items selected`)
+  await expect.poll(footerText).toContain(`${(rows + 4).toLocaleString()} items selected`)
   const shortcuts = await repeated([press('d'), press('a')])
-  await expect.poll(footerText).toContain(`${rows + 6} items selected`)
+  await expect.poll(footerText).toContain(`${(rows + 6).toLocaleString()} items selected`)
   const scroller = scrollerOf(screen.getByText('~/tmp/item-00000').element())
   const scroll = await scrollThrough(scroller)
   scroller.scrollTop = scroller.scrollHeight
@@ -157,7 +157,7 @@ async function cleanup(events: number): Promise<Work> {
   await nextPaint()
   commits.length = 0
   await stream(source, paths)
-  await expect.poll(() => document.querySelector('header p')?.textContent).toContain(`${events} of ${events}`)
+  await expect.poll(() => document.querySelector('header p')?.textContent).toContain(`${events.toLocaleString()} of ${events.toLocaleString()}`)
   await nextPaint()
   const perCommit = [...commits]
   const newest = `Removed ~/tmp/item-${String(events - 1).padStart(5, '0')}`
@@ -191,7 +191,7 @@ async function scan(count: number): Promise<Work> {
     }
     tick()
   })
-  await expect.poll(footerText).toContain(`${count} items selected`)
+  await expect.poll(footerText).toContain(`${count.toLocaleString()} items selected`)
   await nextPaint()
   const perCommit = [...commits]
   await screen.unmount()

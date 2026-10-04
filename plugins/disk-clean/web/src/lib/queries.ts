@@ -95,21 +95,11 @@ function headlineOf(db: Sources) {
   )
 }
 
-function sectionTotalsOf(db: Sources) {
-  return createLiveQueryCollection(q =>
-    q
-      .from({i: db.items})
-      .groupBy(({i}) => i.section)
-      .select(({i}) => ({id: i.section, count: count(i.path), bytes: sum(i.bytes)})),
-  )
-}
-
 export function createQueries(db: Sources) {
   const log = logOf(db)
   const outcomes = outcomesOf(log)
   const latest = latestOf(outcomes)
   return {
-    sectionTotals: sectionTotalsOf(db),
     log,
     outcomes,
     latest,

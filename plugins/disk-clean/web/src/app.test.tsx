@@ -15,7 +15,7 @@ import type {ScanEvent} from './lib/scan-feed'
 import {NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
 import {categoriesOf} from './lib/views'
 import {squarifyInBounds} from './lib/treemap-tile'
-import {at, category, cleanupEvents, fixture, item} from './test/fixture'
+import {at, bigSection, category, cleanupEvents, fixture, item, withSection} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN, ringPoints, sendAll, sendRaw} from './test/page'
 import './index.css'
 
@@ -91,12 +91,45 @@ describe('cleanup', () => {
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
   })
 
-  test('card view shows every section and opens one in the list', async () => {
+  test('leaving Cleanup longer than a live query lives keeps its sections and rows when coming back', async () => {
     const screen = await render(<App loaded={fixture} history={at()} />)
+    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+    await screen.getByRole('tab', {name: 'Storage'}).click()
+    await expect.element(screen.getByRole('tab', {name: 'Storage'})).toHaveAttribute('aria-selected', 'true')
+    await new Promise(resolve => setTimeout(resolve, 6000))
+    await screen.getByRole('tab', {name: 'Cleanup'}).click()
+    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+    await expect.element(screen.getByRole('checkbox', {name: 'Select all in node_modules'})).toBeVisible()
+    await expect.element(screen.getByText('Nothing matches these filters.')).not.toBeInTheDocument()
+  }, 20_000)
+
+  test('with no filters set and nothing listed, the empty state offers no Clear filters', async () => {
+    const screen = await render(<App loaded={{...fixture, data: {...fixture.data, categories: []}}} history={at()} />)
+    await expect.element(screen.getByText('Nothing to clean up.')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Clear filters'})).not.toBeInTheDocument()
+  })
+
+  test('jumping straight to the end of a long sorted section shows its last rows', async () => {
+    const screen = await render(<App loaded={withSection(bigSection(3000))} history={at('/cleanup/temp?sort=name-asc')} />)
+    const first = screen.getByText('~/tmp/item-00000')
+    await expect.element(first).toBeVisible()
+    const scroller = first.element().closest('.overflow-auto')
+    if (!(scroller instanceof HTMLElement)) throw new Error('no table scroller')
+    scroller.scrollTop = scroller.scrollHeight
+    await expect.element(screen.getByText('~/tmp/item-02999')).toBeVisible()
+  })
+
+  test('card view shows every section and expands the one whose items are shown', async () => {
+    const history = at()
+    const screen = await render(<App loaded={fixture} history={history} />)
     await screen.getByRole('button', {name: 'Card view'}).click()
     await expect.element(screen.getByText('Large files')).toBeVisible()
-    await screen.getByRole('link', {name: /Show items/}).nth(1).click()
+    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+    await screen.getByRole('link', {name: /Show items/}).first().click()
     await expect.element(screen.getByText('~/code/web/node_modules')).toBeVisible()
+    expect(history.location.pathname).toBe('/cleanup/node')
+    expect(new URLSearchParams(history.location.search).get('view')).toBe('cards')
+    await expect.element(screen.getByRole('link', {name: /Items shown below/})).toBeVisible()
   })
 
   test('keyboard shortcuts select all, clear and reset', async () => {
@@ -558,7 +591,7 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
     await expect
       .element(screen.getByRole('contentinfo'))
-      .toHaveTextContent('Cleanup finishedFreed 3.5 GB · free space changed by +3.4 GB · 4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
+      .toMatchTextContent(/^Cleanup finishedFreed 3\.5 GB · 4 items · 3\.8 GB approved · a new cleanup starts with \/disk-clean/)
     expect(source.readyState).toBe(2)
 
     await details(screen).click()
@@ -609,17 +642,19 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Freed 3.5 GB')
   })
 
-  test('a lost connection says so until the stream comes back, but not during the hand-back to the watcher', async () => {
+  test('a dropped connection says so in every state until the stream comes back', async () => {
     const {screen, source} = await approveInApp()
     source.readyState = 0
     source.dispatchEvent(new Event('error'))
-    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
+    await barSays(screen, 'Reconnecting to disk-clean…')
     source.readyState = 1
+    source.dispatchEvent(new Event('open'))
+    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
     sendAll(source, cleanupEvents.slice(0, 3))
     await barSays(screen, 'Cleaning up ·')
     source.readyState = 0
     source.dispatchEvent(new Event('error'))
-    await barSays(screen, 'Reconnecting…')
+    await barSays(screen, 'Reconnecting to disk-clean…')
     source.readyState = 1
     source.dispatchEvent(new Event('open'))
     await barSays(screen, 'Cleaning up ·')
@@ -645,6 +680,22 @@ describe('cleanup in the app', () => {
     await details(screen).click()
     await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'})).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Watch the movie'})).not.toBeInTheDocument()
+    expect(document.querySelector('canvas')).toBeNull()
+  })
+
+  test('reduced motion opens the movie address as the final numbers and a static list, with no film', async () => {
+    await emulateReducedMotion('reduce')
+    const {source} = fakeEventSource()
+    const approved = ['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b', '/Users/you/Library/Caches/app-c', '/Users/you/Library/Caches/app-d']
+    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} history={at('/cleanup/caches?overlay=movie')} />)
+    await sendAll(source, cleanupEvents)
+    const movie = screen.getByRole('dialog', {name: 'Cleanup movie'})
+    await expect.element(movie.getByRole('heading', {name: 'You freed'})).toBeVisible()
+    await expect.element(movie.getByText('removed for good')).toBeVisible()
+    await expect.element(movie.getByText('3 · 3.5 GB')).toBeVisible()
+    await expect.element(movie.getByText('3s')).toBeVisible()
+    await expect.element(movie.getByRole('list', {name: 'Everything removed'}).getByText('~/Library/Caches/app-b')).toBeVisible()
+    expect(document.querySelector('[data-film="backdrop"]')).toBeNull()
     expect(document.querySelector('canvas')).toBeNull()
   })
 
@@ -729,10 +780,10 @@ describe('cleanup in the app', () => {
     sendAll(source, cleanupEvents.slice(1, 8))
     sendRaw(source, 'done', {free_before: 50 * GB, free_after: 49 * GB, elapsed_ms: 2500})
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
-    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('Cleanup finishedFreed 3.5 GB · free space changed by −1.0 GB · 4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
+    await expect.element(screen.getByRole('contentinfo')).toMatchTextContent(/^Cleanup finishedFreed 3\.5 GB · 4 items · 3\.8 GB approved · a new cleanup starts with \/disk-cleanNot removed/)
     await details(screen).click()
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
-    await expect.element(panel.getByText('Free space changed by')).toBeVisible()
+    await expect.element(panel.getByText('Free space change, all apps')).toBeVisible()
     await expect.element(panel.getByText('−1.0 GB')).toBeVisible()
   })
 
