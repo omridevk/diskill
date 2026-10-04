@@ -818,7 +818,8 @@ fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(
     if std::env::var("DISK_CLEAN_NO_BROWSER").is_ok_and(|v| v == "1") {
         eprintln!("DISK_CLEAN_NO_BROWSER=1, not opening a browser");
     } else {
-        let _ = std::process::Command::new("open").arg(&url).status();
+        let _ =
+            util::spawn(std::process::Command::new("open").arg(&url)).and_then(|mut c| c.wait());
     }
     Ok(served)
 }

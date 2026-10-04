@@ -10,6 +10,8 @@ use std::process::{Command, Stdio};
 
 fn request(port: u16, raw: String) -> (u16, String) {
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(60)))
+        .unwrap();
     s.write_all(raw.as_bytes()).unwrap();
     let mut out = String::new();
     s.read_to_string(&mut out).unwrap();
@@ -71,15 +73,15 @@ fn review_serves_page_and_writes_selection() {
     .unwrap();
     fs::write(run.join("status"), "done\n").unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["review", &run.to_string_lossy()])
-        .env("DISK_CLEAN_NO_BROWSER", "1")
-        .env("DISK_CLEAN_WATCH_START", "3")
-        .env("HOME", &home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = common::reaped(
+        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+            .args(["review", &run.to_string_lossy()])
+            .env("DISK_CLEAN_NO_BROWSER", "1")
+            .env("DISK_CLEAN_WATCH_START", "3")
+            .env("HOME", &home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut line = String::new();
     stderr.read_line(&mut line).unwrap();
@@ -300,17 +302,25 @@ fn open_events(port: u16, token: &str) -> BufReader<TcpStream> {
     reader
 }
 
+const EVENTS_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 fn read_until(reader: &mut BufReader<TcpStream>, until: &str) -> Vec<(String, Value)> {
+    let deadline = std::time::Instant::now() + EVENTS_WAIT;
     let mut line = String::new();
     let mut out = Vec::new();
     let mut name = String::new();
     loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no {until} event within {EVENTS_WAIT:?}; got {out:?}"
+        );
         line.clear();
         assert!(reader.read_line(&mut line).unwrap() > 0, "stream ended");
         let line = line.trim_end();
         if let Some(n) = line.strip_prefix("event: ") {
             name = n.to_string();
         } else if let Some(d) = line.strip_prefix("data: ") {
+            assert_ne!(name, "error", "the scan failed: {d}");
             if name != "replayed" {
                 out.push((name.clone(), serde_json::from_str(d).unwrap()));
             }
@@ -342,21 +352,7 @@ fn review_without_run_dir_streams_the_scan() {
         &home.join("code"),
         "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q -b wt ../wt main",
     );
-    fs::create_dir_all(&bin).unwrap();
-    let docker = bin.join("docker");
-    fs::write(
-        &docker,
-        format!(
-            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
-            gate.display()
-        ),
-    )
-    .unwrap();
-    Command::new("chmod")
-        .arg("+x")
-        .arg(&docker)
-        .status()
-        .unwrap();
+    blocking_docker(&bin, &gate);
     let (mut child, port, token) = spawn_live(&home, &bin);
 
     let (status, page) = get(port, "/");
@@ -502,20 +498,20 @@ fn review_without_run_dir_streams_the_scan() {
     assert!(sel.contains(cache.to_str().unwrap()));
 }
 
-fn spawn_live(home: &Path, bin: &Path) -> (std::process::Child, u16, String) {
+fn spawn_live(home: &Path, bin: &Path) -> (common::Reaped, u16, String) {
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .arg("review")
-        .env("HOME", home)
-        .env("PATH", path)
-        .env("DISK_CLEAN_SKIP_MAP", "1")
-        .env("DISK_CLEAN_WATCH_START", "1")
-        .env("DISK_CLEAN_NO_BROWSER", "1")
-        .env("DISK_CLEAN_MIN_BYTES", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = common::reaped(
+        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+            .arg("review")
+            .env("HOME", home)
+            .env("PATH", path)
+            .env("DISK_CLEAN_SKIP_MAP", "1")
+            .env("DISK_CLEAN_WATCH_START", "1")
+            .env("DISK_CLEAN_NO_BROWSER", "1")
+            .env("DISK_CLEAN_MIN_BYTES", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let url = loop {
         let mut line = String::new();
@@ -560,21 +556,7 @@ fn rescan_restarts_the_scan_in_place() {
     let new = home.join("Library/Caches/new");
     fs::create_dir_all(&old).unwrap();
     fs::write(old.join("blob"), vec![7u8; 64 * 1024]).unwrap();
-    fs::create_dir_all(&bin).unwrap();
-    let docker = bin.join("docker");
-    fs::write(
-        &docker,
-        format!(
-            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
-            gate.display()
-        ),
-    )
-    .unwrap();
-    Command::new("chmod")
-        .arg("+x")
-        .arg(&docker)
-        .status()
-        .unwrap();
+    blocking_docker(&bin, &gate);
     let (mut child, port, token) = spawn_live(&home, &bin);
     let rescan = |token: &str| post_to(port, "/rescan", &format!(r#"{{"token": "{token}"}}"#));
     let preview = || {
@@ -670,7 +652,7 @@ fn rescan_restarts_the_scan_in_place() {
     assert_eq!(chosen, [new.to_str().unwrap()]);
 }
 
-fn finished_review(tag: &str) -> (common::TempDir, std::process::Child, u16, String) {
+fn finished_review(tag: &str) -> (common::TempDir, common::Reaped, u16, String) {
     let t = common::temp_dir(tag);
     let home = t.0.join("h");
     let run = t.0.join("run");
@@ -685,14 +667,14 @@ fn finished_review(tag: &str) -> (common::TempDir, std::process::Child, u16, Str
         ),
     )
     .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["review", &run.to_string_lossy()])
-        .env("HOME", &home)
-        .env("DISK_CLEAN_NO_BROWSER", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = common::reaped(
+        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+            .args(["review", &run.to_string_lossy()])
+            .env("HOME", &home)
+            .env("DISK_CLEAN_NO_BROWSER", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut line = String::new();
     stderr.read_line(&mut line).unwrap();
@@ -897,8 +879,9 @@ fn blocking_docker(bin: &Path, gate: &Path) {
     fs::write(
         &docker,
         format!(
-            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
-            gate.display()
+            "#!/bin/sh\nwhile [ ! -e '{}' ]; do [ -d '{}' ] || exit 1; sleep 0.05; done\nexit 1\n",
+            gate.display(),
+            bin.display()
         ),
     )
     .unwrap();
@@ -1115,15 +1098,15 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
         })
         .collect();
     fs::write(run.join("scan.tsv"), rows).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["review", &run.to_string_lossy()])
-        .env("HOME", &home)
-        .env("DISK_CLEAN_NO_BROWSER", "1")
-        .env("DISK_CLEAN_WATCH_START", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = common::reaped(
+        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+            .args(["review", &run.to_string_lossy()])
+            .env("HOME", &home)
+            .env("DISK_CLEAN_NO_BROWSER", "1")
+            .env("DISK_CLEAN_WATCH_START", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut line = String::new();
     stderr.read_line(&mut line).unwrap();

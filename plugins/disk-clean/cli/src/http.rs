@@ -1,5 +1,7 @@
+use crate::util;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -226,10 +228,30 @@ fn turn_away(mut stream: TcpStream) {
     );
 }
 
+fn accept(listener: &TcpListener) -> io::Result<TcpStream> {
+    let mut waiting = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll reads and writes only the one pollfd it is given.
+    unsafe { libc::poll(&mut waiting, 1, -1) };
+    let (stream, _) = util::with_fd_lock(|| listener.accept())?;
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
 pub fn serve(listener: TcpListener, handle: impl Fn(TcpStream) + Send + Sync + 'static) {
     let handle = Arc::new(handle);
     let open = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming().flatten() {
+    if let Err(e) = listener.set_nonblocking(true) {
+        eprintln!("could not make the listener non-blocking: {e}");
+        return;
+    }
+    loop {
+        let Ok(stream) = accept(&listener) else {
+            continue;
+        };
         if open.load(Ordering::SeqCst) >= CONNECTIONS {
             turn_away(stream);
             continue;
