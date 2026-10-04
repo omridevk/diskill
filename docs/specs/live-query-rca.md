@@ -95,5 +95,21 @@ candidate in the `frames` project (Firefox first) and keep what wins:
 4. **The window offset** is now `useState` in `useSectionWindow`, a workaround for `getWindow()`
    lagging `setWindow`. Check the docs and source for the intended way to read the current window
    (or the `setWindow` promise) and use it. If local state is still needed, say why.
-If a budget still can't be met without patching DB, report the numbers and stop. The user decides
-on a patch.
+5. **More angles; work through them all before concluding anything:**
+   - Shrink what reaches `groupBy`: `select` only `section`, `bytes`, `selectable` and `age`
+     before grouping, so whatever it hashes per row is tiny.
+   - One filtered live query collection (`createLiveQueryCollection`, owned and disposed by the
+     route or component) that both the window query and the totals read from, so the filter runs
+     once per change, not once per consumer.
+   - Read how the TanStack DB docs, examples and tests do filtered aggregates and paging over
+     large collections, and copy their shape.
+   - Compare `useLiveQuery` dependency changes with the documented way to change parameters
+     without rebuilding the graph, if one exists.
+   - Debounce typing with the pacer we already use, if that is what DB's guides recommend for
+     search.
+   - Profile each change. Don't guess.
+
+The user's position: "no way the answer is patch and bug upstream". Assume our usage is still
+wrong until the docs, source and profiles show otherwise. A DB patch is not an outcome of this
+lane. If after all of the above a budget is still missed, report the numbers, the profile call
+paths and what was tried, and stop.
