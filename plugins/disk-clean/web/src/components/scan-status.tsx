@@ -1,10 +1,10 @@
 import {RotateCw} from 'lucide-react'
-import {useEffect, useState} from 'react'
+import {useState} from 'react'
 import {Button} from '@/components/ui/button'
-import type {Scan} from '@/lib/scan'
+import {useClock} from '@/lib/clock'
+import {plural} from '@/lib/data'
+import type {ScanState as Scan} from '@/lib/scan-feed'
 import LatticeLoader from './react-bits/lattice-loader'
-
-const TICK_MS = 100
 
 function statusOf(scan: Scan) {
   if (scan.error) return 'error'
@@ -13,18 +13,13 @@ function statusOf(scan: Scan) {
 
 function phaseOf(scan: Scan) {
   if (!scan.walked) return scan.rescans > 0 ? 'Rescanning' : 'Walking disk'
-  return `Checking ${scan.worktrees} ${scan.worktrees === 1 ? 'worktree' : 'worktrees'}`
+  return `Checking ${plural(scan.worktrees, 'worktree', 'worktrees')}`
 }
 
 function useScanClock(elapsed: number, running: boolean) {
   const [last, setLast] = useState({elapsed, at: performance.now()})
-  const [now, setNow] = useState(last.at)
+  const now = useClock(running)
   if (last.elapsed !== elapsed) setLast({elapsed, at: performance.now()})
-  useEffect(() => {
-    if (!running) return
-    const timer = setInterval(() => setNow(performance.now()), TICK_MS)
-    return () => clearInterval(timer)
-  }, [running])
   return running ? elapsed + Math.max(0, now - last.at) : elapsed
 }
 

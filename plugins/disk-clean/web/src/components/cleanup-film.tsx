@@ -1,11 +1,12 @@
 import {Dialog as DialogPrimitive} from '@base-ui/react/dialog'
 import {useGSAP} from '@gsap/react'
 import {ChevronDown, X} from 'lucide-react'
-import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
+import {Suspense, use, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
-import {formatDuration, formatUntil, totalsOf, useOutcomes, type Cleanup, type FilmPlan, type Outcome, type Totals} from '@/lib/cleanup'
-import {formatBytes} from '@/lib/data'
+import {formatBytes, plural} from '@/lib/data'
+import type {Db} from '@/lib/db'
+import {finaleOf, formatDuration, formatUntil, logFeed, useLatest, useStaged, type Cleanup, type FilmPlan, type LogFeed, type MovieFeed, type Outcome, type Totals} from '@/lib/progress'
 import {createFilm, gaugeOf, pump, type Film as FilmState, type ParticlePhase} from '@/lib/film'
 import {cssMs} from '@/lib/motion'
 import {DISK_COLORS} from './disk-donut'
@@ -21,10 +22,7 @@ const PARTICLE_SCATTER = 110
 const FIGURE_FONT = {family: "'Geist Variable'", size: 96, weight: 700}
 const FIGURE = `${FIGURE_FONT.weight} ${FIGURE_FONT.size}px ${FIGURE_FONT.family}`
 
-interface FilmProps {
-  plan: FilmPlan
-  cleanup: Cleanup
-}
+type FilmProps = MovieFeed
 
 function bySection(plan: FilmPlan, removed: readonly Outcome[]) {
   return plan.sections
@@ -331,48 +329,41 @@ function inkOffset(text: string) {
   }
 }
 
-function useInkOffset(text: string) {
-  const [offset, setOffset] = useState<{x: number; y: number; at: number} | null>(null)
-  useEffect(() => {
-    let live = true
-    document.fonts.load(FIGURE, text).then(() => live && setOffset({...inkOffset(text), at: performance.now()}))
-    return () => {
-      live = false
-    }
-  }, [text])
-  return offset
+const fontsLoading = new Map<string, Promise<void>>()
+
+function useFigureFont(text: string) {
+  if (document.fonts.check(FIGURE, text)) return
+  const loading = fontsLoading.get(text) ?? document.fonts.load(FIGURE, text).then(
+    () => undefined,
+    () => undefined,
+  )
+  fontsLoading.set(text, loading)
+  use(loading)
 }
 
-function useLanding(landing: boolean, mounted: number | null, onLanded: () => void) {
-  useEffect(() => {
-    if (!landing || mounted === null) return
-    const landsAt = mounted + cssMs('--gather-dur', 1600) + cssMs('--duration-medium', 350)
-    const timer = setTimeout(onLanded, Math.max(0, landsAt - performance.now()))
-    return () => clearTimeout(timer)
-  }, [landing, mounted, onLanded])
-}
-
-function Particles({text, landing, onLanded}: {text: string; landing: boolean; onLanded: () => void}) {
+function Particles({text, onLanded}: {text: string; onLanded: () => void}) {
   const gather = cssMs('--gather-dur', 1600)
-  const offset = useInkOffset(text)
-  useLanding(landing, offset?.at ?? null, onLanded)
-  if (!offset) return null
+  useFigureFont(text)
+  const offset = useMemo(() => inkOffset(text), [text])
   return (
-    <ParticleText
-      text={text}
-      fontFamily={FIGURE_FONT.family}
-      fontSize={FIGURE_FONT.size}
-      fontWeight={FIGURE_FONT.weight}
-      particleSize={2.2}
-      density={2}
-      color="#f5f8ff"
-      highlightColor="#a9c8f0"
-      glow={false}
-      gatherDuration={gather - PARTICLE_STAGGER}
-      stagger={PARTICLE_STAGGER}
-      scatter={PARTICLE_SCATTER}
-      style={{minHeight: 0, height: 320, transform: `translate(${offset.x}px, ${offset.y}px)`}}
-    />
+    <>
+      <i aria-hidden className="t-clock absolute" style={{animationDuration: `${gather + cssMs('--duration-medium', 350)}ms`}} onAnimationEnd={onLanded} />
+      <ParticleText
+        text={text}
+        fontFamily={FIGURE_FONT.family}
+        fontSize={FIGURE_FONT.size}
+        fontWeight={FIGURE_FONT.weight}
+        particleSize={2.2}
+        density={2}
+        color="#f5f8ff"
+        highlightColor="#a9c8f0"
+        glow={false}
+        gatherDuration={gather - PARTICLE_STAGGER}
+        stagger={PARTICLE_STAGGER}
+        scatter={PARTICLE_SCATTER}
+        style={{minHeight: 0, height: 320, transform: `translate(${offset.x}px, ${offset.y}px)`}}
+      />
+    </>
   )
 }
 
@@ -380,6 +371,8 @@ interface FinaleProps {
   plan: FilmPlan
   cleanup: Cleanup
   all: readonly Outcome[]
+  db: Db
+  elapsed: number
   particles: ParticlePhase
   held: ReactNode
   onLanded: () => void
@@ -393,7 +386,7 @@ function emptyHeading(totals: Totals, all: readonly Outcome[]) {
 
 function emptySummary(totals: Totals, all: readonly Outcome[]) {
   const ran = all.filter(o => o.kind === 'ran').length
-  const parts = [totals.failed.length > 0 && `${totals.failed.length} not removed`, totals.kept.length > 0 && `${totals.kept.length} kept`, ran > 0 && `${ran} ${ran === 1 ? 'command' : 'commands'} ran`]
+  const parts = [totals.failed.length > 0 && `${totals.failed.length} not removed`, totals.kept.length > 0 && `${totals.kept.length} kept`, ran > 0 && `${plural(ran, 'command', 'commands')} ran`]
   return parts.filter(Boolean).join(' · ') || 'The cleanup had nothing to do'
 }
 
@@ -422,9 +415,10 @@ function HeldNote({cleanup, totals, held}: {cleanup: Cleanup; totals: Totals; he
   )
 }
 
-function Finale({plan, cleanup, all, particles, held, onLanded, onReplay}: FinaleProps) {
+function Finale({plan, cleanup, all, db, elapsed, particles, held, onLanded, onReplay}: FinaleProps) {
   const {done, abandoned} = cleanup
-  const totals = useMemo(() => totalsOf(all, done), [all, done])
+  const latest = useLatest(db)
+  const totals = useMemo(() => finaleOf(latest, done, elapsed), [latest, done, elapsed])
   const freed = totals.reclaimed
   const empty = (totals.removed.length === 0 && totals.held.length === 0) || abandoned !== null
   const heading = headingOf(cleanup, totals, all)
@@ -439,7 +433,11 @@ function Finale({plan, cleanup, all, particles, held, onLanded, onReplay}: Final
             {figureOf(cleanup, totals, all, freed)}
           </div>
           <div data-film="particles" aria-hidden className="pointer-events-none absolute inset-x-0 -top-28 h-[320px]">
-            {particles !== 'off' && <Particles text={formatBytes(freed)} landing={particles === 'landing'} onLanded={onLanded} />}
+            {particles !== 'off' && (
+              <Suspense fallback={null}>
+                <Particles text={formatBytes(freed)} onLanded={onLanded} />
+              </Suspense>
+            )}
           </div>
         </div>
         <HeldNote cleanup={cleanup} totals={totals} held={held} />
@@ -464,37 +462,48 @@ function Finale({plan, cleanup, all, particles, held, onLanded, onReplay}: Final
   )
 }
 
-function useFilm(container: HTMLElement | null, plan: FilmPlan, cleanup: Cleanup, running: (on: boolean) => void) {
-  const latest = useRef(cleanup)
+function useFilm(container: HTMLElement | null, plan: FilmPlan, feed: LogFeed, running: (on: boolean) => void) {
   const film = useRef<FilmState | null>(null)
+  const landing = useRef({phase: 'off' as ParticlePhase, landed: false})
   const [shred, setShred] = useState<Outcome | null>(null)
   const [particles, setParticles] = useState<ParticlePhase>('off')
-  const {contextSafe} = useGSAP(
+  const play = () => void film.current?.tl.play()
+  const particlesTo = (phase: ParticlePhase) => {
+    if (phase === 'gather') landing.current.landed = false
+    landing.current.phase = phase
+    setParticles(phase)
+    if (phase === 'landing' && landing.current.landed) queueMicrotask(play)
+  }
+  const landed = () => {
+    landing.current.landed = true
+    if (landing.current.phase === 'landing') play()
+  }
+  useGSAP(
     (_, contextSafe) => {
       if (!container || !contextSafe) return
-      const tail = contextSafe(() => pump(film.current, latest.current, true))
+      const tail = contextSafe(() => pump(film.current, feed.cleanup(), feed.rows, true))
+      const next = contextSafe(() => pump(film.current, feed.cleanup(), feed.rows))
       const ready = contextSafe(() => {
         if (film.current) film.current.ready = true
-        pump(film.current, latest.current)
+        next()
       })
       const visible = contextSafe(() => {
         const current = film.current
         if (document.hidden || !current) return
-        current.flood = latest.current.log.length > current.processed
-        pump(current, latest.current)
+        current.flood = feed.rows.length > current.processed
+        next()
       })
-      film.current = createFilm(container, plan, {shred: setShred, particles: setParticles, running}, tail, ready)
-      film.current.backlog = latest.current.log.length
+      film.current = createFilm(container, plan, {shred: setShred, particles: particlesTo, running}, tail, ready)
+      film.current.backlog = feed.rows.length
+      const unsubscribe = feed.subscribe(next)
       document.addEventListener('visibilitychange', visible)
-      return () => document.removeEventListener('visibilitychange', visible)
+      return () => {
+        unsubscribe()
+        document.removeEventListener('visibilitychange', visible)
+      }
     },
     {dependencies: [container]},
   )
-  useLayoutEffect(() => {
-    latest.current = cleanup
-    contextSafe(() => pump(film.current, cleanup))()
-  }, [cleanup, contextSafe])
-  const landed = useCallback(() => void film.current?.tl.play(), [])
   return {shred, particles, landed}
 }
 
@@ -505,9 +514,10 @@ interface TakeProps extends FilmProps {
   onReplay: () => void
 }
 
-function Take({container, plan, cleanup, held, running, onReplay}: TakeProps) {
-  const {shred, particles, landed} = useFilm(container, plan, cleanup, running)
-  const all = useOutcomes(plan, cleanup.log)
+function Take({container, db, plan, cleanup, elapsed, held, running, onReplay}: TakeProps) {
+  const [feed] = useState(() => logFeed(db))
+  const {shred, particles, landed} = useFilm(container, plan, feed, running)
+  const all = useStaged(db)
   const waiting = cleanup.waiting && !cleanup.started
   return (
     <>
@@ -518,7 +528,7 @@ function Take({container, plan, cleanup, held, running, onReplay}: TakeProps) {
         <div data-film="caption" className="flex flex-col gap-1">
           <p className="text-2xl font-semibold tracking-tight">approved for deletion</p>
           <p className="text-sm text-muted-foreground">
-            {plan.items.size} items in {plan.sections.length} sections
+            {plural(plan.items.size, 'item', 'items')} in {plural(plan.sections.length, 'section', 'sections')}
           </p>
         </div>
         <p data-film="waiting" className="text-sm opacity-0">
@@ -526,12 +536,12 @@ function Take({container, plan, cleanup, held, running, onReplay}: TakeProps) {
         </p>
       </section>
       <Stage plan={plan} all={all} startFree={cleanup.started?.free ?? cleanup.done?.free_before ?? 0} shred={shred} />
-      {(cleanup.done || cleanup.abandoned) && <Finale plan={plan} cleanup={cleanup} all={all} particles={particles} held={held} onLanded={landed} onReplay={onReplay} />}
+      {(cleanup.done || cleanup.abandoned) && <Finale plan={plan} cleanup={cleanup} all={all} db={db} elapsed={elapsed} particles={particles} held={held} onLanded={landed} onReplay={onReplay} />}
     </>
   )
 }
 
-function Film({plan, cleanup, take, held, onReplay}: FilmProps & {take: number; held: ReactNode; onReplay: () => void}) {
+function Film({take, held, onReplay, ...props}: FilmProps & {take: number; held: ReactNode; onReplay: () => void}) {
   const [running, setRunning] = useState(true)
   const [container, setContainer] = useState<HTMLDivElement | null>(null)
   const replay = () => {
@@ -545,7 +555,7 @@ function Film({plan, cleanup, take, held, onReplay}: FilmProps & {take: number; 
           <BurningFilm running={running} className="absolute inset-0" />
         </div>
       </div>
-      <Take key={take} container={container} plan={plan} cleanup={cleanup} held={held} running={setRunning} onReplay={replay} />
+      <Take key={take} container={container} {...props} held={held} running={setRunning} onReplay={replay} />
     </div>
   )
 }
@@ -559,7 +569,7 @@ interface CleanupFilmProps extends FilmProps {
   returnFocus?: RefObject<HTMLButtonElement | null>
 }
 
-export function CleanupFilm({plan, cleanup, held, open, take, onReplay, onClose, returnFocus}: CleanupFilmProps) {
+export function CleanupFilm({held, open, take, onReplay, onClose, returnFocus, ...props}: CleanupFilmProps) {
   const close = useRef<HTMLButtonElement>(null)
   const replay = () => {
     onReplay()
@@ -569,7 +579,7 @@ export function CleanupFilm({plan, cleanup, held, open, take, onReplay, onClose,
     <DialogPrimitive.Root open={open} onOpenChange={next => next || onClose()}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Popup aria-label="Cleanup movie" initialFocus={close} finalFocus={returnFocus} className="fixed inset-0 z-50 outline-none">
-          <Film plan={plan} cleanup={cleanup} take={take} held={held} onReplay={replay} />
+          <Film {...props} take={take} held={held} onReplay={replay} />
           <DialogPrimitive.Close render={<Button ref={close} variant="secondary" size="sm" className="absolute top-4 right-4 z-10" />}>
             <X /> Close
           </DialogPrimitive.Close>

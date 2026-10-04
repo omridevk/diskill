@@ -1,18 +1,10 @@
-import type {RowSelectionState, Updater} from '@tanstack/react-table'
-import {isExact, type Category, type Item} from './data'
+import type {RowSelectionState} from '@tanstack/react-table'
+import {isExact, type Item, type Risk} from './data'
 
-export interface Picked {
-  rowSelection: RowSelectionState
-  isOn: (item: Item) => boolean
-  selected: Item[]
-  exactBytes: number
-  apparentBytes: number
-  risky: Item[]
-}
-
-export interface Selection extends Picked {
-  setRowSelection: (update: Updater<RowSelectionState>) => void
-  reset: () => void
+export interface Group<T extends Item = Item> {
+  id: string
+  risk: Risk
+  items: readonly T[]
 }
 
 export interface Picks {
@@ -53,29 +45,7 @@ function hashOf(path: string) {
   return hash
 }
 
-const tokenIndexes = new WeakMap<readonly Category[], Map<string, string>>()
-
-function tokensOf(categories: readonly Category[]) {
-  const known = tokenIndexes.get(categories)
-  if (known) return known
-  const paths = categories.flatMap(c => c.items.filter(pickable).map(i => i.path))
-  const shorts = new Map<string, number>()
-  for (const path of paths) {
-    const short = hashOf(path).slice(0, SHORT)
-    shorts.set(short, (shorts.get(short) ?? 0) + 1)
-  }
-  const tokens = new Map(
-    paths.map(path => {
-      const hash = hashOf(path)
-      const short = hash.slice(0, SHORT)
-      return [path, shorts.get(short) === 1 ? short : hash] as const
-    }),
-  )
-  tokenIndexes.set(categories, tokens)
-  return tokens
-}
-
-const sectionToken = (category: Category) => `${SECTION}${category.id}`
+const sectionToken = (category: {id: string}) => `${SECTION}${category.id}`
 
 export function cleanTokens(value: string) {
   return value
@@ -85,28 +55,167 @@ export function cleanTokens(value: string) {
 }
 
 function tokenSet(value: string) {
-  return new Set(value.split(SEPARATOR))
+  return new Set(value ? value.split(SEPARATOR) : [])
 }
 
-function pickedIn(category: Category, add: ReadonlySet<string>, drop: ReadonlySet<string>) {
+const shortOf = (path: string) => hashOf(path).slice(0, SHORT)
+
+interface Notes {
+  marks: string[]
+  add: Set<string>
+  drop: Set<string>
+}
+
+export interface Fragment<T extends Item = Item> {
+  items: readonly T[]
+  key: string
+  risk: Risk
+  selected: T[]
+  exactBytes: number
+  apparentBytes: number
+}
+
+export interface Decoded<T extends Item = Item> {
+  on: RowSelectionState
+  parts: readonly Fragment<T>[]
+}
+
+export function createSelector<T extends Item = Item>() {
+  const counts = new Map<string, number>()
+  const counted = new Map<string, Set<string>>()
+  const seen = new Map<string, readonly T[]>()
+  const owners = new Map<string, string>()
+  const paths = new Map<string, string>()
+  const fragments = new Map<string, Fragment<T>>()
+  const last: {categories: readonly Group<T>[] | null; add: string; drop: string; decoded: Decoded<T>} = {categories: null, add: '', drop: '', decoded: {on: {}, parts: []}}
+
+  const tokenOf = (path: string) => {
+    const short = shortOf(path)
+    return counts.get(short) === 1 ? short : hashOf(path)
+  }
+
+  const enter = (path: string, section: string) => {
+    const short = shortOf(path)
+    counts.set(short, (counts.get(short) ?? 0) + 1)
+    owners.set(short, section)
+    owners.set(hashOf(path), section)
+    paths.set(short, path)
+    paths.set(hashOf(path), path)
+  }
+
+  const leave = (path: string) => {
+    const short = shortOf(path)
+    counts.set(short, (counts.get(short) ?? 1) - 1)
+  }
+
+  const recount = (section: string, items: readonly T[]) => {
+    const before = counted.get(section) ?? new Set<string>()
+    const after = new Set<string>()
+    for (const item of items) {
+      if (!pickable(item)) continue
+      after.add(item.path)
+      if (!before.has(item.path)) enter(item.path, section)
+    }
+    for (const path of before) if (!after.has(path)) leave(path)
+    counted.set(section, after)
+    seen.set(section, items)
+  }
+
+  const sync = (categories: readonly Group<T>[]) => {
+    const live = new Set(categories.map(c => c.id))
+    for (const [section, before] of counted) {
+      if (live.has(section)) continue
+      for (const path of before) leave(path)
+      counted.delete(section)
+      seen.delete(section)
+      fragments.delete(section)
+    }
+    for (const category of categories) if (seen.get(category.id) !== category.items) recount(category.id, category.items)
+  }
+
+  const pathOf = (token: string) => {
+    const path = paths.get(token)
+    return path !== undefined && tokenOf(path) === token ? path : undefined
+  }
+
+  const notesOf = (add: ReadonlySet<string>, drop: ReadonlySet<string>) => {
+    const notes = new Map<string, Notes>()
+    const note = (token: string, picked: boolean) => {
+      const section = token.startsWith(SECTION) ? token.slice(SECTION.length) : owners.get(token)
+      if (section === undefined) return
+      const known = notes.get(section) ?? {marks: [], add: new Set<string>(), drop: new Set<string>()}
+      notes.set(section, known)
+      known.marks.push(`${picked ? '+' : '-'}${token}`)
+      const path = token.startsWith(SECTION) ? undefined : pathOf(token)
+      if (path !== undefined) (picked ? known.add : known.drop).add(path)
+    }
+    for (const token of add) note(token, true)
+    for (const token of drop) note(token, false)
+    return notes
+  }
+
+  const fragmentOf = (category: Group<T>, notes: Notes | undefined, add: ReadonlySet<string>, drop: ReadonlySet<string>): Fragment<T> => {
+    const key = (notes?.marks ?? []).toSorted().join(SEPARATOR)
+    const known = fragments.get(category.id)
+    if (known && known.items === category.items && known.key === key) return known
+    const fragment = buildFragment(category, key, notes, pickedIn(category, add, drop))
+    fragments.set(category.id, fragment)
+    return fragment
+  }
+
+  const decode = (categories: readonly Group<T>[], picks: Picks): Decoded<T> => {
+    if (last.categories === categories && last.add === picks.add && last.drop === picks.drop) return last.decoded
+    sync(categories)
+    const add = tokenSet(picks.add)
+    const drop = tokenSet(picks.drop)
+    const notes = notesOf(add, drop)
+    let changed = last.categories === null || last.categories.length !== categories.length
+    const parts = categories.map(category => {
+      const before = fragments.get(category.id)
+      const fragment = fragmentOf(category, notes.get(category.id), add, drop)
+      if (fragment !== before) changed = true
+      return fragment
+    })
+    if (changed) {
+      const on: RowSelectionState = {}
+      for (const part of parts) for (const item of part.selected) on[item.path] = true
+      last.decoded = {on, parts}
+    }
+    Object.assign(last, {categories, add: picks.add, drop: picks.drop})
+    return last.decoded
+  }
+
+  return {decode, tokenOf, sync}
+}
+
+function isOn(item: Item, notes: Notes | undefined, whole: boolean | null) {
+  if (!pickable(item)) return false
+  if (notes?.add.has(item.path)) return true
+  if (notes?.drop.has(item.path)) return false
+  return whole ?? item.preselect
+}
+
+function buildFragment<T extends Item>(category: Group<T>, key: string, notes: Notes | undefined, whole: boolean | null): Fragment<T> {
+  const fragment: Fragment<T> = {items: category.items, key, risk: category.risk, selected: [], exactBytes: 0, apparentBytes: 0}
+  for (const item of category.items) {
+    if (!isOn(item, notes, whole)) continue
+    fragment.selected.push(item)
+    if (isExact(item)) fragment.exactBytes += item.bytes
+    else fragment.apparentBytes += item.bytes
+  }
+  return fragment
+}
+
+export type Selector<T extends Item = Item> = ReturnType<typeof createSelector<T>>
+
+function pickedIn(category: {id: string}, add: ReadonlySet<string>, drop: ReadonlySet<string>) {
   const section = sectionToken(category)
   if (add.has(section)) return true
   return drop.has(section) ? false : null
 }
 
-export function rowSelectionOf(categories: readonly Category[], picks: Picks): RowSelectionState {
-  const tokens = tokensOf(categories)
-  const add = tokenSet(picks.add)
-  const drop = tokenSet(picks.drop)
-  const on: RowSelectionState = {}
-  for (const category of categories) {
-    const whole = pickedIn(category, add, drop)
-    for (const item of category.items.filter(pickable)) {
-      const token = tokens.get(item.path) ?? ''
-      if (add.has(token) || (!drop.has(token) && (whole ?? item.preselect))) on[item.path] = true
-    }
-  }
-  return on
+export function rowSelectionOf(categories: readonly Group[], picks: Picks): RowSelectionState {
+  return createSelector().decode(categories, picks).on
 }
 
 interface Delta {
@@ -127,9 +236,9 @@ function deltaOf(items: readonly Item[], on: RowSelectionState): Delta {
   return options.reduce((best, option) => (sizeOf(option) < sizeOf(best) ? option : best))
 }
 
-export function picksOf(categories: readonly Category[], on: RowSelectionState): Picks {
-  const tokens = tokensOf(categories)
-  const tokenOf = (item: Item) => tokens.get(item.path) ?? ''
+export function picksOf<T extends Item>(categories: readonly Group<T>[], on: RowSelectionState, selector: Selector<T> = createSelector<T>()): Picks {
+  selector.sync(categories)
+  const tokenOf = (item: Item) => selector.tokenOf(item.path)
   const add: string[] = []
   const drop: string[] = []
   for (const category of categories) {
@@ -140,51 +249,4 @@ export function picksOf(categories: readonly Category[], on: RowSelectionState):
     drop.push(...delta.drop.map(tokenOf))
   }
   return {add: add.join(SEPARATOR), drop: drop.join(SEPARATOR)}
-}
-
-function hasAncestorIn(path: string, paths: ReadonlySet<string>) {
-  for (let slash = path.indexOf('/', 1); slash > 0; slash = path.indexOf('/', slash + 1)) {
-    if (paths.has(path.slice(0, slash))) return true
-  }
-  return false
-}
-
-export function outermost<T extends {path: string}>(items: readonly T[]): T[] {
-  const paths = new Set(items.map(i => i.path))
-  return items.filter(i => !hasAncestorIn(i.path, paths))
-}
-
-export const sumBytes = (items: readonly {bytes: number}[]) => items.reduce((sum, i) => sum + i.bytes, 0)
-
-function totalsOf(selected: readonly Item[]) {
-  const counted = outermost(selected)
-  return {exactBytes: sumBytes(counted.filter(isExact)), apparentBytes: sumBytes(counted.filter(i => !isExact(i)))}
-}
-
-function pickedOf(categories: readonly Category[], on: RowSelectionState): Picked {
-  const selected = categories.flatMap(c => c.items).filter(i => pickable(i) && on[i.path] === true)
-  const review = new Set(categories.filter(c => c.risk === 'review').flatMap(c => c.items.map(i => i.path)))
-  return {
-    rowSelection: on,
-    isOn: item => on[item.path] === true,
-    selected,
-    ...totalsOf(selected),
-    risky: selected.filter(i => review.has(i.path)),
-  }
-}
-
-interface Cached extends Picks {
-  approved: readonly string[] | undefined
-  picked: Picked
-}
-
-const picks = new WeakMap<readonly Category[], Cached>()
-
-export function selectionOf(categories: readonly Category[], wanted: Picks, approved?: readonly string[]): Picked {
-  const known = picks.get(categories)
-  if (known && known.add === wanted.add && known.drop === wanted.drop && known.approved === approved) return known.picked
-  const on = approved ? Object.fromEntries(approved.map(path => [path, true] as const)) : rowSelectionOf(categories, wanted)
-  const picked = pickedOf(categories, on)
-  picks.set(categories, {add: wanted.add, drop: wanted.drop, approved, picked})
-  return picked
 }

@@ -10,10 +10,10 @@ export function useBack() {
 }
 
 export function useDialogExit() {
-  const [then, setThen] = useState<(() => void) | null>(null)
+  const [after, setAfter] = useState<(() => void) | null>(null)
   return {
-    open: then === null,
-    leave: (next: () => void) => setThen(() => next),
-    then,
+    open: after === null,
+    leave: (next: () => void) => setAfter(() => next),
+    after,
   }
 }

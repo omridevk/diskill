@@ -15,7 +15,7 @@
   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 // fallow-ignore-file complexity
-import {useEffect, useRef, type CSSProperties} from 'react'
+import {useCallback, type CSSProperties} from 'react'
 interface ParticleTextProps {
   text?: string
   particleSize?: number
@@ -121,15 +121,9 @@ const ParticleText = ({
   className = '',
   style,
 }: ParticleTextProps) => {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined
-
-    const container = containerRef.current
-    const canvas = canvasRef.current
-    if (!container || !canvas) return undefined
+  const canvasRef = useCallback((canvas: HTMLCanvasElement | null) => {
+    const container = canvas?.parentElement
+    if (!canvas || !(container instanceof HTMLDivElement)) return undefined
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return undefined
@@ -458,7 +452,7 @@ const ParticleText = ({
   ])
 
   return (
-    <div ref={containerRef} className={`relative block h-full min-h-[240px] w-full overflow-hidden touch-none ${className}`} style={style} role="img" aria-label={text}>
+    <div className={`relative block h-full min-h-[240px] w-full overflow-hidden touch-none ${className}`} style={style} role="img" aria-label={text}>
       <canvas ref={canvasRef} className="absolute inset-0 block h-full w-full" aria-hidden="true" />
     </div>
   )

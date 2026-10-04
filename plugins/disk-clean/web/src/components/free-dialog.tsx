@@ -1,8 +1,8 @@
 import type {RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
-import {formatUntil, type CleanupProgress} from '@/lib/cleanup'
-import {formatBytes} from '@/lib/data'
+import {formatUntil, type CleanupProgress} from '@/lib/progress'
+import {formatBytes, plural} from '@/lib/data'
 
 export function FreeDialog({
   progress,
@@ -26,7 +26,7 @@ export function FreeDialog({
         <DialogHeader>
           <DialogTitle>Free the space now?</DialogTitle>
           <DialogDescription>
-            This deletes the {count} held {count === 1 ? 'item' : 'items'} ({formatBytes(progress.held)}) for good. It can't be undone: Undo
+            This deletes the {plural(count, 'held item', 'held items')} ({formatBytes(progress.held)}) for good. It can't be undone: Undo
             stops working for them. Left alone they stay held until {formatUntil(progress.holdUntil)}, then the next disk-clean run frees them.
           </DialogDescription>
         </DialogHeader>

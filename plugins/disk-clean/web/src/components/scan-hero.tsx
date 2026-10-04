@@ -1,5 +1,7 @@
-import {formatBytes} from '@/lib/data'
-import type {Scan} from '@/lib/scan'
+import {counted, formatBytes, plural} from '@/lib/data'
+import {useDb} from '@/lib/db'
+import type {ScanState as Scan} from '@/lib/scan-feed'
+import {useScanProgress} from '@/lib/views'
 
 const DIR_CHARS = 64
 const SCANNING = 'Scanning your disk…'
@@ -25,11 +27,11 @@ export function useScanHero(live: boolean, scan: Scan, selected: number) {
 }
 
 export function ScanCounter({scan}: {scan: Scan}) {
-  const {files, bytes, dir} = scan.progress
+  const {files, bytes, dir} = useScanProgress(useDb())
   return (
     <div className="flex h-5 min-w-0 items-baseline gap-3 text-[13px] text-muted-foreground tabular-nums">
       <span className="shrink-0">
-        {files.toLocaleString()} files · {formatBytes(bytes)}
+        {plural(files, 'file', 'files', counted)} · {formatBytes(bytes)}
         {scan.walked ? ' scanned' : ''}
       </span>
       <span className="truncate font-mono text-xs text-muted-foreground/70" title={dir}>

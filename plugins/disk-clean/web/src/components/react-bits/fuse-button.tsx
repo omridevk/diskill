@@ -15,7 +15,8 @@
   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 // fallow-ignore-file complexity
-import React, {useEffect, useId, useRef, useState, type CSSProperties, type ReactNode} from 'react'
+import React, {useCallback, useId, useRef, useState, type CSSProperties, type ReactNode} from 'react'
+import {flushSync} from 'react-dom'
 import {Archive, Check, Undo2} from 'lucide-react'
 
 type FusePosition = 'outline' | 'bottom' | 'top'
@@ -26,7 +27,7 @@ type FuseSize = 'sm' | 'md' | 'lg'
 
 interface FuseButtonProps {
   label?: string
-  undoLabel?: string
+  undoLabel?: ReactNode
   doneLabel?: string
   icon?: ReactNode
   color?: string
@@ -57,6 +58,7 @@ interface Latest {
   onPhaseChange?: (phase: FusePhase) => void
   commitOn: FuseCommitOn
   settle: FuseSettle
+  pauseOnHover?: boolean
 }
 
 const LINE: Keyframe[] = [{transform: 'scaleX(1)'}, {transform: 'scaleX(0)'}]
@@ -104,20 +106,26 @@ const FuseButton: React.FC<FuseButtonProps> = ({
   const lastInput = useRef<'pointer' | 'keyboard'>('pointer')
   const windowRef = useRef(undoWindow)
   const latest = useRef<Latest>({commitOn, settle})
-  latest.current = {onCommit, onUndo, onFuseEnd, onPhaseChange, commitOn, settle}
+  latest.current = {onCommit, onUndo, onFuseEnd, onPhaseChange, commitOn, settle, pauseOnHover}
   const statusId = useId()
   const preset = SIZES[size] || SIZES.md
 
   const go = (next: FusePhase) => {
-    setInstant(lastInput.current === 'keyboard')
-    setPhase(next)
-    latest.current.onPhaseChange?.(next)
+    const inside = rootRef.current?.contains(document.activeElement)
+    flushSync(() => {
+      setInstant(lastInput.current === 'keyboard')
+      setPhase(next)
+      latest.current.onPhaseChange?.(next)
+    })
+    if (next === 'armed') undoRef.current?.focus({preventScroll: true})
+    else if (inside) (next === 'idle' ? idleRef.current : rootRef.current)?.focus({preventScroll: true})
   }
 
   const syncPlayState = () => {
     const a = anim.current
     if (!a) return
-    const {hover, hidden} = pause.current
+    const {hidden} = pause.current
+    const hover = pause.current.hover && latest.current.pauseOnHover
     if (hover || hidden) {
       if (a.playState === 'running') a.pause()
     } else if (a.playState === 'paused') {
@@ -146,6 +154,20 @@ const FuseButton: React.FC<FuseButtonProps> = ({
     syncPlayState()
   }
 
+  const attachRoot = useCallback((el: HTMLSpanElement | null) => {
+    rootRef.current = el
+    if (!el) return
+    const onVisibility = () => {
+      pause.current.hidden = document.hidden
+      syncPlayState()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      anim.current?.cancel()
+    }
+  }, [])
+
   const arm = () => {
     if (disabled || phase !== 'idle') return
     windowRef.current = undoWindow
@@ -166,36 +188,6 @@ const FuseButton: React.FC<FuseButtonProps> = ({
     onUndo?.()
     go('idle')
   }
-
-  useEffect(() => {
-    const inside = rootRef.current?.contains(document.activeElement)
-    if (phase === 'armed') undoRef.current?.focus({preventScroll: true})
-    else if (inside) (phase === 'idle' ? idleRef.current : rootRef.current)?.focus({preventScroll: true})
-  }, [phase])
-
-  useEffect(() => {
-    const onVisibility = () => {
-      pause.current.hidden = document.hidden
-      syncPlayState()
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility)
-      anim.current?.cancel()
-    }
-  }, [])
-
-  useEffect(() => {
-    const a = anim.current
-    if (!a || phase !== 'armed') return
-    light(Number(a.currentTime) || 0)
-  }, [fuse])
-
-  useEffect(() => {
-    if (pauseOnHover) return
-    pause.current.hover = false
-    syncPlayState()
-  }, [pauseOnHover])
 
   const handlePointerDown = (e: React.PointerEvent<HTMLSpanElement>) => {
     lastInput.current = 'pointer'
@@ -238,7 +230,7 @@ const FuseButton: React.FC<FuseButtonProps> = ({
 
   return (
     <span
-      ref={rootRef}
+      ref={attachRoot}
       tabIndex={-1}
       className={`group relative inline-grid h-[var(--fb-h)] grid-cols-[minmax(0,1fr)] isolate touch-manipulation select-none overflow-hidden rounded-[var(--fb-radius)] font-medium leading-none tracking-[0.01em] outline-none [font-family:inherit] [font-size:var(--fb-fs)] [background:var(--fb-bg)] [color:var(--fb-ink)] [-webkit-touch-callout:none] [-webkit-tap-highlight-color:transparent] [transition:transform_160ms_var(--fb-ease-out)] data-[pressed]:[transform:scale(var(--fb-press))] motion-reduce:data-[pressed]:[transform:none] has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-solid has-[:focus-visible]:outline-offset-[3px] has-[:focus-visible]:[outline-color:color-mix(in_srgb,var(--fb-ink)_60%,transparent)] data-[phase=idle]:has-[.fb-idle:disabled]:opacity-[0.55] contrast-more:[box-shadow:inset_0_0_0_1px_color-mix(in_srgb,var(--fb-ink)_40%,transparent)] ${className}`}
       data-phase={phase}

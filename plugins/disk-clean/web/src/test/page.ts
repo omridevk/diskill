@@ -1,5 +1,5 @@
 import {vi} from 'vitest'
-import type {ScanEvent} from '@/lib/scan'
+import type {ScanEvent} from '@/lib/scan-feed'
 
 export function fakeEventSource() {
   const target = new EventTarget()
@@ -66,6 +66,10 @@ export const PLAN = {
   bytes: 9.75 * GB,
 }
 
-export function mockServer(plan: object = PLAN) {
-  return vi.spyOn(window, 'fetch').mockImplementation(async input => new Response(String(input) === '/preview' ? JSON.stringify(plan) : '{}', {status: String(input) === '/preview' || String(input) === '/decide' ? 200 : 202}))
+export function mockServer(plan: object = PLAN, failing: ReadonlySet<string> = new Set()) {
+  return vi.spyOn(window, 'fetch').mockImplementation(async input => {
+    const url = String(input)
+    if (failing.has(url)) return new Response('server said no', {status: 500})
+    return new Response(url === '/preview' ? JSON.stringify(plan) : '{}', {status: url === '/preview' || url === '/decide' ? 200 : 202})
+  })
 }

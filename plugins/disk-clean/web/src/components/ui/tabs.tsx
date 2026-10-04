@@ -1,7 +1,7 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { cva, type VariantProps } from "class-variance-authority"
+import { cva } from "class-variance-authority"
 import { cn } from "cn"
 
 import { useTabsPill } from "@/lib/motion"

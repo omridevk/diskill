@@ -65,3 +65,31 @@ in full on every tick. Fix, per the TanStack DB live-queries guide:
   has to be computed in the table; not used unless measurement says so.
 - Perf tests assert flatness: the cost of one streamed batch, one tick and one filter keystroke at
   10k rows stays within a small factor of the 30-row baseline (median and p95), in both browsers.
+
+### Outcome (measured 2026-10-04)
+
+The live query shapes the rows; the table only renders and selects. React work per change at
+10,000 rows vs 30 rows (median / p95, ms):
+
+| | table row models (before) | live query shapes (after) |
+|---|---|---|
+| Chromium batch | 16.3 / 20.6 vs 4.4 / 5.2 | 3.7 / 4.2 vs 2.9 / 3.3 |
+| Chromium tick | 2.9 / 3.3 vs 2.4 / 2.9 | 2.9 / 3.2 vs 2.2 / 2.5 |
+| Chromium keystroke | 8.3 / 14.5 vs 1.5 / 2.6 | 4.6 / 7.0 vs 2.1 / 3.5 |
+| Firefox batch | 30.9 / 51.0 vs 16.4 / 190.8 | 5.5 / 13.3 vs 4.2 / 10.4 |
+| Firefox tick | 9.8 / 15.1 vs 3.9 / 7.7 | 4.5 / 6.7 vs 3.0 / 3.7 |
+| Firefox keystroke | 14.5 / 113.0 vs 3.1 / 11.9 | 6.6 / 28.1 vs 4.2 / 25.6 |
+
+Why it wins: with table-owned row models every streamed batch hands the table a new data array, and
+its core/filtered/grouped/sorted row models are rebuilt over all rows (O(n) per batch);
+`table.Subscribe` and row boundaries cut re-rendered rows, not that rebuild. With the live query, a
+batch updates the per-section `groupBy` totals and the open section's `orderBy`/`limit` window
+incrementally, and the table holds only the window (about 120 rows) the virtualizer is showing.
+
+Shape: `useShapedTotals` (filtered count, bytes, selectable, aged per section) and
+`useSectionWindow` (open section, sorted, `limit`/`offset` moved by the virtualizer's `onChange`).
+Live queries are cached per filter key. A new search string still needs one pass over the items to
+build its query (substring match cannot use an index): that build runs in the debounced search
+handler (`prepare`), outside React, and cost about 18 to 28 ms in Chromium and 90 to 160 ms in
+Firefox at 10,000 rows. No worker and no `workerRowModelsFeature`: the table no longer computes a
+row model over the section, and SSE parsing did not show in the profiles.

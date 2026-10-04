@@ -1,10 +1,10 @@
 import {createFileRoute, redirect} from '@tanstack/react-router'
-import {firstSection} from '@/lib/data'
+import {firstSectionNow} from '@/lib/page-data'
 import {OpenSection} from './-open-section'
 
 export const Route = createFileRoute('/_tabs/cleanup/')({
   beforeLoad: ({context}) => {
-    const section = firstSection(context.page.seen.scan.data.categories)
+    const section = firstSectionNow(context.db)
     if (section) throw redirect({to: '/cleanup/$section', params: {section}, search: true, replace: true})
   },
   component: Scanning,

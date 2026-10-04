@@ -6,11 +6,14 @@ import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {ConfirmDialog} from './components/confirm-dialog'
 import {gsap} from 'gsap'
-import {cleanupReducer, filmPlan, NO_CLEANUP, outcomes, totalsOf, type CleanupEvent} from './lib/cleanup'
-import {formatBytes, NO_DATA, type Category, type Loaded} from './lib/data'
+import type {CleanupEvent} from './lib/cleanup-feed'
+import {formatBytes, NO_DATA, outermost, type Category, type Loaded} from './lib/data'
+import {createDb, receiveCleanupEvents, receiveScanEvents, type Db} from './lib/db'
 import {cssMs, useTextSwap} from './lib/motion'
-import {scanBatchReducer, scanReducer, startScan, type ScanEvent} from './lib/scan'
-import {NO_PICKS, outermost, picksOf, rowSelectionOf} from './lib/selection'
+import {finaleOf, isOutcome, statusOf as cleanupStatus} from './lib/progress'
+import type {ScanEvent} from './lib/scan-feed'
+import {NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
+import {categoriesOf} from './lib/views'
 import {squarifyInBounds} from './lib/treemap-tile'
 import {at, category, cleanupEvents, fixture, item} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN, ringPoints, sendAll, sendRaw} from './test/page'
@@ -40,6 +43,17 @@ describe('cleanup', () => {
     const screen = await render(<App loaded={fixture} history={at()} />)
     await expect.element(screen.getByText('4 items selected · 3.8 GB')).toBeVisible()
     await expect.element(screen.getByText('3.8 GB', {exact: true}).first()).toBeVisible()
+  })
+
+  test('counts read as words: one item, one section, several sections', async () => {
+    const screen = await render(<App loaded={fixture} history={at()} />)
+    await expect.element(screen.getByText(/^4 items in 1 section ·/)).toBeVisible()
+    for (const name of ['app-b', 'app-c', 'app-d']) await screen.getByText(`~/Library/Caches/${name}`).click()
+    await expect.element(screen.getByText(/^1 item in 1 section ·/)).toBeVisible()
+    await expect.element(screen.getByText('1 item selected · 2.0 GB')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Delete 1 item · 2.0 GB'})).toBeVisible()
+    await screen.getByRole('checkbox', {name: 'Select all in node_modules'}).click()
+    await expect.element(screen.getByText(/^2 items in 2 sections ·/)).toBeVisible()
   })
 
   test('a section checkbox selects every item in it', async () => {
@@ -228,56 +242,79 @@ const walked: ScanEvent = {
 }
 const done: ScanEvent = {type: 'done', data: {reclaimable: 7 * GB, elapsed_ms: 9500}}
 const items = itemEvents(fixture.data.categories)
-const fold = (events: ScanEvent[]) => events.reduce(scanReducer, startScan(LIVE))
-const categoriesOf = (events: ScanEvent[]) => fold(events).data.categories
+function fed(events: readonly ScanEvent[], loaded: Loaded = LIVE) {
+  const db = createDb(loaded)
+  receiveScanEvents(db, events)
+  return db
+}
 
-describe('live scan reducer', () => {
+function stateOf(db: Db) {
+  return {
+    scan: db.scan.scan.synced.get('scan'),
+    disk: db.scan.disk.synced.get('disk'),
+    items: [...db.scan.items.synced.values()].toSorted((a, b) => a.path.localeCompare(b.path)),
+    sections: [...db.scan.sections.synced.values()].toSorted((a, b) => a.id.localeCompare(b.id)),
+  }
+}
+
+function scanOf(db: Db) {
+  const scan = db.scan.scan.synced.get('scan')
+  if (!scan) throw new Error('no scan row')
+  return scan
+}
+
+const categoriesIn = (db: Db) => categoriesOf(db.scan.sections.collection.toArray, db.scan.items.collection.toArray)
+
+describe('live scan data layer', () => {
   test('items land in their categories, ordered by risk then size like the server', () => {
-    const scan = fold([disk, ...items.toReversed()])
-    expect(scan.data.categories.map(c => c.id)).toEqual(['docker', 'caches', 'node', 'big'])
-    expect(scan.data.categories.find(c => c.id === 'caches')?.items.map(i => i.label)).toEqual([
+    const db = fed([disk, ...items.toReversed()])
+    const categories = categoriesIn(db)
+    expect(categories.map(c => c.id)).toEqual(['docker', 'caches', 'node', 'big'])
+    expect(categories.find(c => c.id === 'caches')?.items.map(i => i.label)).toEqual([
       '~/Library/Caches/app-a',
       '~/Library/Caches/app-b',
       '~/Library/Caches/app-c',
       '~/Library/Caches/app-d',
     ])
-    expect(scan.data.reclaimable).toBe(6.75 * GB)
-    expect([scan.data.total, scan.data.free, scan.walked, scan.done]).toEqual([500 * GB, 50 * GB, false, false])
+    const scan = db.scan.scan.synced.get('scan')
+    expect([db.scan.disk.synced.get('disk')?.total, db.scan.disk.synced.get('disk')?.free, scan?.walked, scan?.done]).toEqual([500 * GB, 50 * GB, false, false])
   })
 
   test('a replay of every event leaves the state unchanged', () => {
     const events = [disk, ...items, walked, done]
-    expect(fold([...events, ...events])).toEqual(fold(events))
+    expect(stateOf(fed([...events, ...events]))).toEqual(stateOf(fed(events)))
   })
 
   test('walked, done and error each set their part, and elapsed tracks the scan clock', () => {
-    const scan = fold([disk, ...items, walked, done])
-    expect([scan.walked, scan.done, scan.data.home, scan.data.reclaimable, scan.data.tree?.name]).toEqual([true, true, 40 * GB, 7 * GB, '~'])
-    expect([scan.worktrees, scan.walkedAt, scan.elapsed]).toEqual([3, 4000, 9500])
-    expect(scan.data).not.toHaveProperty('elapsed_ms')
-    expect(scan.data).not.toHaveProperty('worktrees')
-    expect(fold([disk, {type: 'error', data: {message: 'walk failed', elapsed_ms: 30}}]).error).toBe('walk failed')
+    const scan = scanOf(fed([disk, ...items, walked, done]))
+    expect({walked: scan.walked, done: scan.done, home: scan.home, reclaimable: scan.reclaimable, tree: scan.tree}).toMatchObject({walked: true, done: true, home: 40 * GB, reclaimable: 7 * GB, tree: {name: '~'}})
+    expect({worktrees: scan.worktrees, walkedAt: scan.walkedAt, elapsed: scan.elapsed}).toEqual({worktrees: 3, walkedAt: 4000, elapsed: 9500})
+    expect(scanOf(fed([disk, {type: 'error', data: {message: 'walk failed', elapsed_ms: 30}}])).error).toBe('walk failed')
   })
 
   test('a burst of events applied in one pass lands in the same state as one at a time', () => {
     const rescan: ScanEvent = {type: 'rescan', data: {elapsed_ms: 0}}
     const events = [disk, ...items, walked, rescan, ...items.toReversed(), ...items, done]
-    expect(scanBatchReducer(startScan(LIVE), events)).toEqual(fold(events))
+    const oneByOne = createDb(LIVE)
+    for (const event of events) receiveScanEvents(oneByOne, [event])
+    expect(stateOf(fed(events))).toEqual(stateOf(oneByOne))
   })
 
   test('a finished run starts walked and done', () => {
-    expect(startScan(fixture)).toMatchObject({walked: true, done: true, data: fixture.data})
+    const db = createDb(fixture)
+    expect(db.scan.scan.synced.get('scan')).toMatchObject({walked: true, done: true, tree: fixture.data.tree})
+    expect(categoriesIn(db).flatMap(c => c.items.map(i => i.path)).toSorted()).toEqual(fixture.data.categories.flatMap(c => c.items.map(i => i.path)).toSorted())
   })
 
   test('preselected items are selected when they arrive, and an unticked one stays unticked on replay', () => {
     const appA = items[0]?.type === 'item' ? items[0].data.item : undefined
     if (!appA) throw new Error('fixture has no first item')
-    const arrived = categoriesOf(items.slice(0, 2))
+    const arrived = categoriesIn(fed(items.slice(0, 2)))
     const first = rowSelectionOf(arrived, NO_PICKS)
     expect(Object.keys(first)).toEqual(['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b'])
     const {[appA.path]: _untick, ...rest} = first
     const unticked = picksOf(arrived, rest)
-    const replayed = rowSelectionOf(categoriesOf([...items, ...items]), unticked)
+    const replayed = rowSelectionOf(categoriesIn(fed([...items, ...items])), unticked)
     expect(replayed[appA.path]).toBeUndefined()
     expect(replayed['/Users/you/Library/Caches/app-d']).toBe(true)
     expect(replayed['/Users/you/code/web/node_modules']).toBeUndefined()
@@ -465,6 +502,13 @@ async function confirmDelete(screen: Screen) {
   await screen.getByRole('dialog').getByRole('button', {name: /^Move \d+ items to hold/}).click()
 }
 
+function approvedDb() {
+  const caches = fixture.data.categories[0]?.items.map(i => i.path) ?? []
+  const db = createDb({...fixture, approved: caches})
+  for (const query of Object.values(db.queries)) void query.preload()
+  return db
+}
+
 async function approveInApp() {
   mockServer()
   const {source} = fakeEventSource()
@@ -626,47 +670,56 @@ describe('cleanup in the app', () => {
     expect(getComputedStyle(status).color).toBe(getComputedStyle(document.body).color)
   })
 
-  test('the cleanup log only grows, and outcomes already derived are reused, not rebuilt', () => {
-    const plan = filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB)
+  test('the cleanup log only grows, and outcomes already derived are reused, not rebuilt', async () => {
     const events = cleanupEvents as readonly CleanupEvent[]
-    const first = cleanupReducer(NO_CLEANUP, events.slice(0, 4))
-    const next = cleanupReducer(first, events.slice(4))
-    expect(next.log.slice(0, first.log.length).every((event, i) => event === first.log[i])).toBe(true)
-    const before = outcomes(plan, first.log)
-    const after = outcomes(plan, next.log)
+    const db = approvedDb()
+    await db.queries.outcomes.preload()
+    receiveCleanupEvents(db, events.slice(0, 4))
+    const before = db.queries.outcomes.toArray
+    const log = db.queries.log.toArray
+    receiveCleanupEvents(db, events.slice(4))
+    expect(db.queries.log.toArray.slice(0, log.length).every((row, i) => row === log[i])).toBe(true)
+    const after = db.queries.outcomes.toArray
     expect(after.slice(0, before.length).every((outcome, i) => outcome === before[i])).toBe(true)
-    expect(outcomes(plan, next.log)).toBe(after)
     const removed = (path: string): CleanupEvent => ({type: 'removed', data: {path, bytes: 1, secs: 0, elapsed_ms: 1}})
-    const left = cleanupReducer(first, [removed('/left')])
-    const right = cleanupReducer(first, [removed('/right')])
-    expect([left.keys.has('/left'), left.keys.has('/right'), right.keys.has('/right'), right.keys.has('/left'), first.keys.has('/left')]).toEqual([true, false, true, false, false])
-    expect(cleanupReducer(right, [removed('/left')]).log.map(e => ('path' in e.data ? e.data.path : e.type)).slice(-2)).toEqual(['/right', '/left'])
-    expect(cleanupReducer(left, [removed('/left')])).toBe(left)
-    expect(after.map(o => o.key)).toEqual(outcomes(filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB), next.log).map(o => o.key))
+    receiveCleanupEvents(db, [removed('/right')])
+    receiveCleanupEvents(db, [removed('/left')])
+    const size = db.cleanup.events.collection.size
+    expect(db.queries.log.toArray.map(row => row.key).slice(-2)).toEqual(['/right', '/left'])
+    receiveCleanupEvents(db, [removed('/left')])
+    expect(db.cleanup.events.collection.size).toBe(size)
+    expect(db.queries.outcomes.toArray.map(o => o.key)).toEqual([...after.map(o => o.key), '/right', '/left'])
   })
 
-  test('a replayed stream adds no rows twice', () => {
-    const plan = filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB)
+  test('a replayed stream adds no rows twice', async () => {
     const events = cleanupEvents as readonly CleanupEvent[]
-    const once = cleanupReducer(NO_CLEANUP, events)
-    expect(cleanupReducer(once, events)).toBe(once)
-    expect(cleanupReducer(NO_CLEANUP, [...events, ...events]).log).toEqual(once.log)
-    expect(totalsOf(outcomes(plan, once.log), once.done)).toMatchObject({reclaimed: 3.5 * GB, sections: 1, seconds: 3})
+    const once = approvedDb()
+    receiveCleanupEvents(once, events)
+    const twice = approvedDb()
+    receiveCleanupEvents(twice, [...events, ...events])
+    receiveCleanupEvents(once, events)
+    await once.queries.latest.preload()
+    expect(twice.queries.log.toArray.map(row => row.id)).toEqual(once.queries.log.toArray.map(row => row.id))
+    const {done} = cleanupStatus(once.queries.status.toArray)
+    expect(finaleOf(once.queries.latest.toArray.filter(isOutcome), done, 0)).toMatchObject({reclaimed: 3.5 * GB, sections: 1, seconds: 3})
   })
 
-  test('a new run starts a fresh log: old keys and derived outcomes are not carried over', () => {
-    const plan = filmPlan(fixture.data.categories, fixture.data.categories[0]!.items, 3.75 * GB, 500 * GB)
+  test('a new run starts a fresh log: old keys and derived outcomes are not carried over', async () => {
     const events = cleanupEvents as readonly CleanupEvent[]
-    const once = cleanupReducer(NO_CLEANUP, events)
-    const before = outcomes(plan, once.log)
+    const db = approvedDb()
+    await db.queries.outcomes.preload()
+    receiveCleanupEvents(db, events)
+    const before = db.queries.outcomes.toArray
     const [, started, removed] = cleanupEvents
-    const rerun = cleanupReducer(once, [
+    receiveCleanupEvents(db, [
       {type: 'started', data: {...started.data, run: 'run-2'}},
       {type: 'removed', data: {...removed.data}},
     ])
-    expect(rerun.log.map(e => e.type)).toEqual(['started', 'removed'])
-    expect([rerun.done, rerun.waiting, rerun.keys.has(removed.data.path), rerun.keys.has('/Users/you/code/wt')]).toEqual([null, false, true, false])
-    const after = outcomes(plan, rerun.log)
+    expect(db.queries.log.toArray.map(row => row.type)).toEqual(['started', 'removed'])
+    const status = cleanupStatus(db.queries.status.toArray)
+    const keys = db.queries.outcomes.toArray.map(o => o.key)
+    expect([status.done, status.waiting, keys.includes(removed.data.path), keys.includes('/Users/you/code/wt')]).toEqual([null, false, true, false])
+    const after = db.queries.outcomes.toArray
     expect(after.map(o => o.key)).toEqual([removed.data.path])
     expect(after[0]).not.toBe(before[0])
   })
@@ -740,7 +793,7 @@ describe('cancel', () => {
 function Swapping({text}: {text: string}) {
   const label = useTextSwap(text)
   return (
-    <span ref={label.ref} className="t-text-swap">
+    <span key={label.shown} className={label.className} onAnimationEnd={label.onAnimationEnd}>
       {label.shown}
     </span>
   )

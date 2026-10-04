@@ -119,6 +119,12 @@ export function formatBytes(n: number): string {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${UNITS[unit]}`
 }
 
+export function plural(n: number, one: string, many: string, format: (n: number) => string = String) {
+  return `${format(n)} ${n === 1 ? one : many}`
+}
+
+export const counted = (n: number) => n.toLocaleString()
+
 export const isExact = (item: Item) => item.accuracy === 'exact'
 
 const RISK_ORDER: Risk[] = ['safe', 'review', 'report']
@@ -128,3 +134,16 @@ export function firstSection(categories: readonly Category[]) {
 }
 
 export const RISK_LABEL: Record<Risk, string> = {safe: 'safe', review: 'review', report: 'report only'}
+
+export function ancestorsOf(path: string) {
+  const found: string[] = []
+  for (let slash = path.indexOf('/', 1); slash > 0; slash = path.indexOf('/', slash + 1)) found.push(path.slice(0, slash))
+  return found
+}
+
+export function outermost<T extends {path: string}>(items: readonly T[]): T[] {
+  const paths = new Set(items.map(i => i.path))
+  return items.filter(i => !ancestorsOf(i.path).some(outer => paths.has(outer)))
+}
+
+export const sumBytes = (items: readonly {bytes: number}[]) => items.reduce((sum, i) => sum + i.bytes, 0)

@@ -15,7 +15,8 @@
   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 // fallow-ignore-file complexity
-import React, {useEffect, useLayoutEffect, useRef, useState, type CSSProperties} from 'react'
+import React, {useState, type CSSProperties} from 'react'
+import {useClock} from '@/lib/clock'
 
 type LatticeStatus = 'working' | 'done' | 'error'
 type LatticePatternName = 'arrow' | 'dots' | 'orbit' | 'ripple' | 'snake' | 'spiral' | 'sweep' | 'spin' | 'rain' | 'pulse'
@@ -139,34 +140,16 @@ const LatticeLoader: React.FC<LatticeLoaderProps> = ({
   const d = step * pat.scale
   const cycle = Math.round(pat.loop * d)
 
-  const timerRef = useRef<HTMLSpanElement>(null)
-  const dsRef = useRef(0)
-  const markRef = useRef<'done' | 'error'>('done')
-  const mark = status === 'working' ? markRef.current : status
-  markRef.current = mark
-  const [announce, setAnnounce] = useState(`${label}, in progress`)
-
-  const paint = (ds: number) => {
-    dsRef.current = ds
-    if (timerRef.current) timerRef.current.textContent = fmt(ds)
-  }
-
-  useLayoutEffect(() => {
-    if (elapsed != null) {
-      paint(Math.round(elapsed * 10))
-      return undefined
-    }
-    if (status !== 'working') return undefined
-    const startedAt = performance.now()
-    paint(0)
-    const id = setInterval(() => paint(Math.floor((performance.now() - startedAt) / 100)), 100)
-    return () => clearInterval(id)
-  }, [status, elapsed])
-
-  useEffect(() => {
-    if (status === 'working') setAnnounce(`${label}, in progress`)
-    else setAnnounce(`${status === 'done' ? doneLabel : errorLabel}${showTimer ? ` ${spoken(dsRef.current)}` : ''}`)
-  }, [status])
+  const [lastMark, setLastMark] = useState<'done' | 'error'>('done')
+  if (status !== 'working' && status !== lastMark) setLastMark(status)
+  const mark = status === 'working' ? lastMark : status
+  const ticking = elapsed == null && status === 'working'
+  const now = useClock(ticking)
+  const [run, setRun] = useState(() => ({status, since: performance.now(), frozen: 0}))
+  const counted = Math.max(0, Math.floor((now - run.since) / 100))
+  if (run.status !== status) setRun({status, since: performance.now(), frozen: run.status === 'working' ? counted : run.frozen})
+  const ds = elapsed != null ? Math.round(elapsed * 10) : ticking ? counted : run.frozen
+  const announce = status === 'working' ? `${label}, in progress` : `${status === 'done' ? doneLabel : errorLabel}${showTimer ? ` ${spoken(ds)}` : ''}`
 
   return (
     <span
@@ -242,8 +225,8 @@ const LatticeLoader: React.FC<LatticeLoaderProps> = ({
         </span>
       </span>
       {showTimer ? (
-        <span ref={timerRef} className="font-mono tabular-nums opacity-60 [font-size:calc(var(--ll-font)*0.875)]" aria-hidden="true">
-          0.0s
+        <span className="font-mono tabular-nums opacity-60 [font-size:calc(var(--ll-font)*0.875)]" aria-hidden="true">
+          {fmt(ds)}
         </span>
       ) : null}
       <span className="sr-only">{announce}</span>

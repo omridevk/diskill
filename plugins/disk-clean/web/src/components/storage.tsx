@@ -12,9 +12,12 @@ import {ChartBoundary} from './chart-boundary'
 import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './chart-card'
 import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatBytes, tilde, type Category, type ScanData, type TreeNode} from '@/lib/data'
+import {counted, formatBytes, plural, tilde, type TreeNode} from '@/lib/data'
+import {useDb} from '@/lib/db'
 import type {Shape} from '@/lib/search'
-import {outermost, sumBytes, type Selection} from '@/lib/selection'
+import {useHome, useSelection} from '@/lib/page-data'
+import type {Disk} from '@/lib/scan-feed'
+import {useCleanable, useDisk, useInside, useScanState} from '@/lib/views'
 import {squarifyInBounds} from '@/lib/treemap-tile'
 
 interface Row {
@@ -69,25 +72,14 @@ function titleOf(node: TreeNode) {
   return node.name === '~' ? 'Home folder' : node.name
 }
 
-function cleanupInside(path: string, categories: readonly Category[], selection: Selection) {
-  const prefix = path.endsWith('/') ? path : `${path}/`
-  const inside = categories
-    .filter(c => c.risk !== 'report')
-    .flatMap(c => c.items.filter(i => i.path === path || i.path.startsWith(prefix)).map(item => ({...item, risk: c.risk})))
-  return {
-    bytes: sumBytes(outermost(inside)),
-    count: inside.length,
-    selected: sumBytes(outermost(inside.filter(selection.isOn))),
-    risk: inside.some(i => i.risk === 'review') ? ('review' as const) : ('safe' as const),
-  }
+interface Figures extends Disk {
+  home: number
 }
 
-function FolderCard({node, parents, data, home, selection}: {node: TreeNode | null; parents: Map<string, TreeNode>; data: ScanData; home: string; selection: Selection}) {
+function FolderCard({node, parents, total, home}: {node: TreeNode | null; parents: Map<string, TreeNode>; total: number; home: string}) {
   if (!node) return null
   const parent = parents.get(node.path)
-  const total = data.total
   const top = node.children.filter(c => !c.rest).slice(0, 3)
-  const cleanup = cleanupInside(node.path, data.categories, selection)
   return (
     <ChartCard title={titleOf(node)} subtitle={tilde(node.path, home)} hint={node.children.length > 0 ? 'Click to zoom' : undefined}>
       <BigBytes bytes={node.bytes} />
@@ -103,24 +95,25 @@ function FolderCard({node, parents, data, home, selection}: {node: TreeNode | nu
           ))}
         </div>
       )}
-      <Cleanable {...cleanup} />
+      <Cleanable path={node.path} />
     </ChartCard>
   )
 }
 
 function Activity({node}: {node: TreeNode}) {
-  const parts = [node.files > 0 && `${node.files.toLocaleString()} files`, node.mtime > 0 && `changed ${changedAgo(node.mtime)}`].filter(Boolean)
+  const parts = [node.files > 0 && plural(node.files, 'file', 'files', counted), node.mtime > 0 && `changed ${changedAgo(node.mtime)}`].filter(Boolean)
   if (parts.length === 0) return null
   return <div className="text-muted-foreground">{parts.join(' · ')}</div>
 }
 
-function Cleanable({bytes, count, selected, risk}: ReturnType<typeof cleanupInside>) {
+function Cleanable({path}: {path: string}) {
+  const {bytes, count, selected, risk} = useInside(useDb(), path, useSelection().rowSelection)
   if (count === 0) return null
   return (
     <div className="flex items-center gap-2 border-t pt-2.5">
       <span className={`size-2 shrink-0 rounded-full ${RISK_BAR[risk]}`} />
       <span>
-        {formatBytes(bytes)} cleanable in {count} {count === 1 ? 'item' : 'items'} · {formatBytes(selected)} selected
+        {formatBytes(bytes)} cleanable in {plural(count, 'item', 'items')} · {formatBytes(selected)} selected
       </span>
     </div>
   )
@@ -143,7 +136,7 @@ function branchFocus<T extends {id: string; ancestorIds: readonly string[]}, X e
   }
 }
 
-function Reconciliation({data}: {data: ScanData}) {
+function Reconciliation({data}: {data: Figures}) {
   const other = Math.max(0, data.used - data.home)
   const reserved = Math.max(0, data.total - data.used - data.free)
   const rows: [string, number, string, string][] = [
@@ -173,7 +166,7 @@ function Reconciliation({data}: {data: ScanData}) {
       ))}
       {data.snapshots > 0 && (
         <p className="pt-1 text-xs text-muted-foreground">
-          {data.snapshots} local Time Machine snapshot{data.snapshots === 1 ? '' : 's'} sit inside the reserve row; macOS
+          {plural(data.snapshots, 'local Time Machine snapshot', 'local Time Machine snapshots')} {data.snapshots === 1 ? 'sits' : 'sit'} inside the reserve row; macOS
           purges them when space runs low.
         </p>
       )}
@@ -265,24 +258,78 @@ function focusOf(flat: ReturnType<typeof flatten> | null, root: string, zoom: st
   return flat?.byPath.has(wanted) ? wanted : root
 }
 
+function useStorageData() {
+  const db = useDb()
+  const scan = useScanState(db)
+  const disk = useDisk(db)
+  return {data: {...disk, home: scan.home}, tree: scan.tree, cleanable: useCleanable(db)}
+}
+
+function drillTarget(point: ChartPoint | null, flat: ReturnType<typeof flatten>, shape: Shape, focus: string) {
+  let node = nodeOf(point)
+  while (shape === 'treemap' && node) {
+    const parent = flat.parents.get(node.path)
+    if (!parent || parent.path === focus) break
+    node = parent
+  }
+  return node?.children.length ? node : null
+}
+
+function Crumbs({chain, root}: {chain: readonly TreeNode[]; root: string}) {
+  return (
+    <nav aria-label="Folder path" className="flex grow flex-wrap items-center gap-1 text-sm">
+      {chain.map((n, i) => (
+        <Fragment key={n.path}>
+          {i > 0 && <span className="text-muted-foreground">/</span>}
+          <Link
+            to="/storage/$"
+            params={{_splat: splatOf(n.path, root)}}
+            search
+            activeOptions={{exact: true}}
+            className={i === chain.length - 1 ? 'font-semibold' : `text-muted-foreground transition-[color] duration-(--duration-quick) ease-(--ease-smooth-out) motion-reduce:transition-none hover:text-foreground`}
+          >
+            {n.name}
+          </Link>
+        </Fragment>
+      ))}
+    </nav>
+  )
+}
+
+function Details({shown, focusNode, total, cleanable, shape}: {shown: TreeNode; focusNode: TreeNode; total: number; cleanable: ReadonlySet<string>; shape: Shape}) {
+  return (
+  <aside className="flex flex-col gap-2 border-l pl-5">
+    <div className="font-mono text-xs break-all text-muted-foreground">{shown.path}</div>
+    <div className="text-3xl font-bold tracking-tight tabular-nums">{formatBytes(shown.bytes)}</div>
+    <div className="text-xs text-muted-foreground">
+      {((shown.bytes / total) * 100).toFixed(1)}% of the disk
+      {shown !== focusNode ? ` · ${((shown.bytes / focusNode.bytes) * 100).toFixed(1)}% of ${focusNode.name}` : ''}
+    </div>
+    {cleanable.has(shown.path) && <Badge className="self-start bg-blue-400/15 text-blue-300">cleanable</Badge>}
+    <div className="mt-2 flex flex-col gap-1 border-t pt-3">
+      {shown.children.slice(0, 8).map(k => (
+        <div key={k.path} className="flex items-center gap-2 text-xs">
+          <span className={`grow truncate ${k.rest ? 'text-muted-foreground italic' : ''}`}>{k.name}</span>
+          <span className="tabular-nums">{formatBytes(k.bytes)}</span>
+        </div>
+      ))}
+    </div>
+    <p className="mt-auto text-xs text-muted-foreground">
+      Click a {shape === 'sunburst' ? 'ring' : 'tile'} to zoom in, a crumb to go back. White outlines mark folders the Cleanup tab can delete.
+    </p>
+  </aside>
+  )
+}
+
 function chainOf(parents: Map<string, TreeNode>, focus: TreeNode) {
   const chain: TreeNode[] = []
   for (let n: TreeNode | undefined = focus; n; n = parents.get(n.path)) chain.unshift(n)
   return chain
 }
 
-function drillTarget(start: TreeNode | null, shape: Shape, parents: Map<string, TreeNode>, focus: string) {
-  let node = start
-  while (shape === 'treemap' && node) {
-    const parent = parents.get(node.path)
-    if (!parent || parent.path === focus) break
-    node = parent
-  }
-  return node
-}
-
-export function Storage({data, home, cleanable, selection, shape, zoom}: {data: ScanData; home: string; cleanable: Set<string>; selection: Selection; shape: Shape; zoom: string}) {
-  const tree = data.tree
+export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
+  const {data, tree, cleanable} = useStorageData()
+  const home = useHome()
   const flat = useMemo(() => (tree ? flatten(tree) : null), [tree])
   const root = tree?.path ?? ''
   const focus = focusOf(flat, root, zoom)
@@ -299,29 +346,14 @@ export function Storage({data, home, cleanable, selection, shape, zoom}: {data: 
   const shown = hover ?? focusNode
 
   const drill = (point: ChartPoint | null) => {
-    const node = drillTarget(nodeOf(point), shape, flat.parents, focus)
-    if (node?.children.length) navigate({to: '/storage/$', params: {_splat: splatOf(node.path, root)}, search: true})
+    const node = drillTarget(point, flat, shape, focus)
+    if (node) navigate({to: '/storage/$', params: {_splat: splatOf(node.path, root)}, search: true})
   }
 
   return (
     <div className="flex flex-col gap-5 overflow-auto px-7 py-5">
       <div className="flex items-center gap-3">
-        <nav aria-label="Folder path" className="flex grow flex-wrap items-center gap-1 text-sm">
-          {chain.map((n, i) => (
-            <Fragment key={n.path}>
-              {i > 0 && <span className="text-muted-foreground">/</span>}
-              <Link
-                to="/storage/$"
-                params={{_splat: splatOf(n.path, root)}}
-                search
-                activeOptions={{exact: true}}
-                className={i === chain.length - 1 ? 'font-semibold' : `text-muted-foreground transition-[color] duration-(--duration-quick) ease-(--ease-smooth-out) motion-reduce:transition-none hover:text-foreground`}
-              >
-                {n.name}
-              </Link>
-            </Fragment>
-          ))}
-        </nav>
+        <Crumbs chain={chain} root={root} />
         <ToggleGroup value={[shape]} onValueChange={v => v[0] && navigate({to: '.', search: prev => ({...prev, shape: v[0] as Shape})})} variant="outline" size="sm" aria-label="Chart">
           <ToggleGroupItem value="sunburst">Sunburst</ToggleGroupItem>
           <ToggleGroupItem value="treemap">Treemap</ToggleGroupItem>
@@ -338,30 +370,11 @@ export function Storage({data, home, cleanable, selection, shape, zoom}: {data: 
               onFocusChange={point => setHover(nodeOf(point))}
               onRender={onRender}
               onSelect={drill}
-              renderTooltipBody={({primaryPoint}) => <FolderCard node={nodeOf(primaryPoint ?? null)} parents={flat.parents} data={data} home={home} selection={selection} />}
+              renderTooltipBody={({primaryPoint}) => <FolderCard node={nodeOf(primaryPoint ?? null)} parents={flat.parents} total={data.total} home={home} />}
             />
           </div>
         </ChartBoundary>
-        <aside className="flex flex-col gap-2 border-l pl-5">
-          <div className="font-mono text-xs break-all text-muted-foreground">{shown.path}</div>
-          <div className="text-3xl font-bold tracking-tight tabular-nums">{formatBytes(shown.bytes)}</div>
-          <div className="text-xs text-muted-foreground">
-            {((shown.bytes / data.total) * 100).toFixed(1)}% of the disk
-            {shown !== focusNode ? ` · ${((shown.bytes / focusNode.bytes) * 100).toFixed(1)}% of ${focusNode.name}` : ''}
-          </div>
-          {cleanable.has(shown.path) && <Badge className="self-start bg-blue-400/15 text-blue-300">cleanable</Badge>}
-          <div className="mt-2 flex flex-col gap-1 border-t pt-3">
-            {shown.children.slice(0, 8).map(k => (
-              <div key={k.path} className="flex items-center gap-2 text-xs">
-                <span className={`grow truncate ${k.rest ? 'text-muted-foreground italic' : ''}`}>{k.name}</span>
-                <span className="tabular-nums">{formatBytes(k.bytes)}</span>
-              </div>
-            ))}
-          </div>
-          <p className="mt-auto text-xs text-muted-foreground">
-            Click a {shape === 'sunburst' ? 'ring' : 'tile'} to zoom in, a crumb to go back. White outlines mark folders the Cleanup tab can delete.
-          </p>
-        </aside>
+        <Details shown={shown} focusNode={focusNode} total={data.total} cleanable={cleanable} shape={shape} />
       </div>
       <Reconciliation data={data} />
     </div>

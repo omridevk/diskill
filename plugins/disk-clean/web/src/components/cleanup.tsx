@@ -1,5 +1,8 @@
+import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
+import {useDebouncer} from '@tanstack/react-pacer/debouncer'
+import {useLiveQuery} from '@tanstack/react-db'
 import {Link, useNavigate} from '@tanstack/react-router'
-import {functionalUpdate, useTable, type ReactTable, type RowSelectionState} from '@tanstack/react-table'
+import type {RowSelectionState, Updater} from '@tanstack/react-table'
 import {LayoutGrid, List, Search, TriangleAlert} from 'lucide-react'
 import {createContext, use, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
@@ -9,28 +12,16 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import type {CleanupProgress} from '@/lib/cleanup'
-import {formatBytes, RISK_LABEL, type Category, type Item, type Risk} from '@/lib/data'
+import {formatBytes, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
+import {useDb, type Db} from '@/lib/db'
+import type {CleanupProgress, Removal} from '@/lib/progress'
+import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
-import {outermost, sumBytes, type Selection} from '@/lib/selection'
-import {
-  columns,
-  enableRowSelection,
-  entriesOf,
-  features,
-  filtersOf,
-  HIDDEN_COLUMNS,
-  listOf,
-  searchFilter,
-  sortOf,
-  SORTING,
-  type Entry,
-  type EntryRow,
-} from './cleanup-columns'
+import {useProgress, useSelection, type Selection} from '@/lib/page-data'
+import {isFiltering, predicateOf, prepare, useSectionWindow, useShapedTotals, type SectionTotal} from '@/lib/shaping'
+import {useSections} from '@/lib/views'
 import {DataTable} from './data-table'
-
-type CleanupTable = ReactTable<typeof features, Entry>
 
 const GROUPS: [string, Risk][] = [
   ['Safe to delete', 'safe'],
@@ -52,60 +43,29 @@ const SORT_LABEL: Record<Sort, string> = {
 }
 const QUICK_SELECT_MIN = 4
 
-interface Group {
-  category: Category
-  row: EntryRow
-}
+const SEARCH_WAIT = 150
 
-const groupBytes = new WeakMap<readonly EntryRow[], number>()
-
-function bytesOf(rows: readonly EntryRow[]) {
-  const known = groupBytes.get(rows)
-  if (known !== undefined) return known
-  const bytes = sumBytes(outermost(rows.map(r => r.original)))
-  groupBytes.set(rows, bytes)
-  return bytes
-}
-
-const selectableCounts = new WeakMap<readonly EntryRow[], number>()
-
-function selectableCount(rows: readonly EntryRow[]) {
-  const known = selectableCounts.get(rows)
-  if (known !== undefined) return known
-  let count = 0
-  for (const row of rows) if (row.getCanSelect()) count++
-  selectableCounts.set(rows, count)
-  return count
-}
-
-function pickedCount(rows: readonly EntryRow[], on: RowSelectionState) {
-  let count = 0
-  for (const row of rows) if (on[row.id] === true) count++
-  return count
-}
-
-interface Removal {
-  bytes: number
+interface Section extends CategoryHead {
   count: number
-  restored: number
+  bytes: number
 }
 
-const CLEARED = new Set(['removed', 'held', 'freed'])
-
-function removalsOf(progress: CleanupProgress | null) {
-  const removals = new Map<string, Removal>()
-  for (const outcome of progress?.byKey.values() ?? []) {
-    const restored = outcome.kind === 'restored'
-    if (!restored && !CLEARED.has(outcome.kind)) continue
-    const known = removals.get(outcome.section) ?? {bytes: 0, count: 0, restored: 0}
-    removals.set(outcome.section, {
-      bytes: known.bytes + outcome.bytes,
-      count: known.count + (restored ? 0 : 1),
-      restored: known.restored + (restored ? 1 : 0),
-    })
-  }
-  return removals
+interface Shown {
+  count: number
+  bytes: number
+  selectable: number
+  aged: number
+  picked: number
 }
+
+interface Group {
+  category: Section
+  shown: Shown
+}
+
+type Keep = (entry: Item) => boolean
+
+type Choose = (section: string | null, wanted: Keep) => void
 
 function sectionProgress(removal: Removal | undefined, total: number) {
   const done = removal?.count ?? 0
@@ -127,26 +87,26 @@ function planned(section: string, progressed: Progressed) {
   return progressed.progress.plan.sections.find(s => s.id === section)
 }
 
-function pickedLabel(group: Group, on: RowSelectionState, progressed: Progressed | null) {
-  const rows = group.row.subRows
-  if (group.category.risk === 'report') return `${rows.length} listed`
+function pickedLabel({category, shown}: Group, progressed: Progressed | null) {
+  if (category.risk === 'report') return `${shown.count} listed`
   if (progressed) {
-    const plan = planned(group.category.id, progressed)
-    return plan ? sectionProgress(progressed.removals.get(group.category.id), plan.count) : 'not approved'
+    const plan = planned(category.id, progressed)
+    return plan ? sectionProgress(progressed.removals.get(category.id), plan.count) : 'not approved'
   }
-  return `${pickedCount(rows, on)}/${selectableCount(rows)}`
+  return `${shown.picked}/${shown.selectable}`
 }
 
-function SectionCheckbox({group, locked}: {group: Group; locked: boolean}) {
-  if (group.category.risk === 'report' || selectableCount(group.row.subRows) === 0) return null
-  const all = group.row.getIsAllSubRowsSelected()
+function SectionCheckbox({group, locked, choose}: {group: Group; locked: boolean; choose: Choose}) {
+  const {category, shown} = group
+  if (category.risk === 'report' || shown.selectable === 0) return null
+  const all = shown.picked >= shown.selectable
   return (
     <Checkbox
-      aria-label={`Select all in ${group.category.title}`}
+      aria-label={`Select all in ${category.title}`}
       checked={all}
-      indeterminate={group.row.getIsSomeSelected()}
+      indeterminate={shown.picked > 0 && !all}
       disabled={locked}
-      onCheckedChange={() => group.row.toggleSelected(!all)}
+      onCheckedChange={() => choose(category.id, () => !all)}
       className="mt-0.5"
     />
   )
@@ -157,7 +117,7 @@ function SectionBar({group, max, progressed}: {group: Group; max: number; progre
   if (!progressed) {
     return (
       <span className="h-[3px] grow overflow-hidden rounded-full bg-zinc-800">
-        <span className={`block h-[3px] ${RISK_BAR[category.risk]}`} style={{width: `${Math.max(2, (bytesOf(group.row.subRows) / max) * 100)}%`}} />
+        <span className={`block h-[3px] ${RISK_BAR[category.risk]}`} style={{width: `${Math.max(2, (group.shown.bytes / max) * 100)}%`}} />
       </span>
     )
   }
@@ -182,38 +142,27 @@ function SectionBar({group, max, progressed}: {group: Group; max: number; progre
   )
 }
 
-const pickWhere = (rows: readonly EntryRow[], wanted: (row: EntryRow) => boolean) => (old: RowSelectionState) => {
-  const next = {...old}
-  for (const row of rows) {
-    if (wanted(row)) next[row.id] = true
-    else delete next[row.id]
-  }
-  return next
-}
-
-function QuickSelect({table, group}: {table: CleanupTable; group: Group}) {
-  const rows = group.row.subRows
-  const count = selectableCount(rows)
-  if (count < QUICK_SELECT_MIN) return null
-  const hasAge = rows.some(r => r.original.age !== null)
-  const idle = (days: number) => () => table.setRowSelection(pickWhere(rows.filter(r => r.getCanSelect()), r => (r.original.age ?? -1) >= days))
+function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
+  const {category, shown} = group
+  if (shown.selectable < QUICK_SELECT_MIN) return null
+  const idle = (days: number) => () => choose(category.id, entry => (entry.age ?? -1) >= days)
   return (
     <div className="flex items-center gap-1 text-xs text-muted-foreground">
       <span className="pr-1">Select:</span>
-      <Button size="xs" variant="ghost" onClick={() => group.row.toggleSelected(true)}>
-        all {count}
+      <Button size="xs" variant="ghost" onClick={() => choose(category.id, () => true)}>
+        all {shown.selectable}
       </Button>
-      {hasAge && (
+      {shown.aged > 0 && (
         <Button size="xs" variant="ghost" onClick={idle(90)}>
           idle 90+ days
         </Button>
       )}
-      {hasAge && (
+      {shown.aged > 0 && (
         <Button size="xs" variant="ghost" onClick={idle(365)}>
           idle 1+ year
         </Button>
       )}
-      <Button size="xs" variant="ghost" onClick={() => group.row.toggleSelected(false)}>
+      <Button size="xs" variant="ghost" onClick={() => choose(category.id, () => false)}>
         none
       </Button>
     </div>
@@ -229,29 +178,28 @@ function SectionLink({section, ...props}: {section: string; className?: string; 
 const OPEN_SECTION = 'has-[a[data-status=active]]:border-zinc-700 has-[a[data-status=active]]:bg-zinc-900'
 const DEFAULT_SECTION = '[&:not(:has(a[data-status=active]))_[data-default]]:border-zinc-700 [&:not(:has(a[data-status=active]))_[data-default]]:bg-zinc-900'
 
-function SectionButton({group, on, first, locked, max, progressed}: {group: Group; on: RowSelectionState; first: boolean; locked: boolean; max: number; progressed: Progressed | null}) {
-  const {category} = group
-  const picked = pickedCount(group.row.subRows, on)
-  const lit = !progressed && picked > 0
+function SectionButton({group, first, max, progressed, choose}: {group: Group; first: boolean; max: number; progressed: Progressed | null; choose: Choose}) {
+  const {category, shown} = group
+  const lit = !progressed && shown.picked > 0
   return (
     <div data-default={first || undefined} className={`flex items-start gap-2.5 rounded-lg border p-2.5 ${STATE_MOTION} ${lit ? 'border-blue-400/35 bg-blue-400/5' : 'border-transparent'} ${OPEN_SECTION}`}>
-      <SectionCheckbox group={group} locked={locked} />
+      <SectionCheckbox group={group} locked={progressed !== null} choose={choose} />
       <SectionLink section={category.id} className="flex grow flex-col gap-1.5 text-left">
         <span className="flex w-full items-baseline gap-2">
           <span className="grow text-[13px] font-medium">{category.title}</span>
-          <span className="text-[13px] font-semibold whitespace-nowrap tabular-nums">{formatBytes(bytesOf(group.row.subRows))}</span>
+          <span className="text-[13px] font-semibold whitespace-nowrap tabular-nums">{formatBytes(shown.bytes)}</span>
         </span>
         <span className="flex w-full items-center gap-2">
           <SectionBar group={group} max={max} progressed={progressed} />
-          <span className="text-[11px] text-muted-foreground">{pickedLabel(group, on, progressed)}</span>
+          <span className="text-[11px] text-muted-foreground">{pickedLabel(group, progressed)}</span>
         </span>
       </SectionLink>
     </div>
   )
 }
 
-function ListView({groups, on, progressed, children}: {groups: Group[]; on: RowSelectionState; progressed: Progressed | null; children: ReactNode}) {
-  const max = Math.max(1, ...groups.map(g => bytesOf(g.row.subRows)))
+function ListView({groups, progressed, choose, children}: {groups: Group[]; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
+  const max = Math.max(1, ...groups.map(g => g.shown.bytes))
   const first = groups[0]?.category.id
   return (
     <div className="flex min-h-0 grow">
@@ -263,15 +211,7 @@ function ListView({groups, on, progressed, children}: {groups: Group[]; on: RowS
             <div key={risk} className="flex flex-col gap-1.5">
               <div className="px-1 pb-0.5 text-[11px] font-medium tracking-wider text-muted-foreground/70 uppercase">{label}</div>
               {inGroup.map(group => (
-                <SectionButton
-                  key={group.category.id}
-                  group={group}
-                  on={on}
-                  first={group.category.id === first}
-                  locked={progressed !== null}
-                  max={max}
-                  progressed={progressed}
-                />
+                <SectionButton key={group.category.id} group={group} first={group.category.id === first} max={max} progressed={progressed} choose={choose} />
               ))}
             </div>
           )
@@ -282,23 +222,34 @@ function ListView({groups, on, progressed, children}: {groups: Group[]; on: RowS
   )
 }
 
-function SectionPanel({table, group, progressed}: {table: CleanupTable; group: Group; progressed: Progressed | null}) {
-  const reveal = useReveal(group.category.id)
+function SectionPanel({group, view}: {group: Group; view: ListState}) {
+  const {category, shown} = group
+  const db = useDb()
+  const replay = useReveal(category.id)
+  const slice = useSectionWindow(db, category.id, view.list, view.on)
   return (
-    <main ref={reveal} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
+    <main key={category.id} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
       <div className="flex flex-col gap-2.5 border-b px-6 pt-4 pb-3">
         <div className="flex items-center gap-2.5">
-          <h2 className="text-lg font-semibold tracking-tight">{group.category.title}</h2>
-          <Badge className={RISK_BADGE[group.category.risk]}>{RISK_LABEL[group.category.risk]}</Badge>
+          <h2 className="text-lg font-semibold tracking-tight">{category.title}</h2>
+          <Badge className={RISK_BADGE[category.risk]}>{RISK_LABEL[category.risk]}</Badge>
           <span className="grow" />
           <span className="text-[13px] text-muted-foreground tabular-nums">
-            {formatBytes(bytesOf(group.row.subRows))} · {group.row.subRows.length} of {group.category.items.length} shown
+            {formatBytes(shown.bytes)} · {shown.count} of {category.count} shown
           </span>
         </div>
-        <p className="text-[13px] text-muted-foreground">{group.category.desc}</p>
-        {!progressed && <QuickSelect table={table} group={group} />}
+        <p className="text-[13px] text-muted-foreground">{category.desc}</p>
+        {!view.progressed && <QuickSelect group={group} choose={view.choose} />}
       </div>
-      <DataTable key={group.category.id} table={table} rows={group.row.subRows} label={group.category.title} />
+      <DataTable
+        key={category.id}
+        slice={slice}
+        count={shown.count}
+        label={category.title}
+        progress={view.progressed?.progress ?? null}
+        rowSelection={view.on}
+        onRowSelectionChange={view.setRowSelection}
+      />
     </main>
   )
 }
@@ -314,19 +265,19 @@ function LearnChevron() {
   )
 }
 
-function SectionCard({group, on, progressed}: {group: Group; on: RowSelectionState; progressed: Progressed | null}) {
-  const {category} = group
-  const lit = !progressed && pickedCount(group.row.subRows, on) > 0
+function SectionCard({group, progressed, choose}: {group: Group; progressed: Progressed | null; choose: Choose}) {
+  const {category, shown} = group
+  const lit = !progressed && shown.picked > 0
   return (
     <div className={`flex flex-col gap-3 rounded-xl border p-4 ${STATE_MOTION} ${lit ? 'border-blue-400/45 bg-blue-400/5' : 'bg-card'}`}>
       <div className="flex items-center gap-2.5">
-        <SectionCheckbox group={group} locked={progressed !== null} />
+        <SectionCheckbox group={group} locked={progressed !== null} choose={choose} />
         <span className="grow text-sm font-medium">{category.title}</span>
         <Badge className={RISK_BADGE[category.risk]}>{RISK_LABEL[category.risk]}</Badge>
       </div>
       <div className="flex items-baseline gap-2">
-        <span className="text-2xl font-semibold tracking-tight tabular-nums">{formatBytes(bytesOf(group.row.subRows))}</span>
-        <span className="text-xs text-muted-foreground">{pickedLabel(group, on, progressed)}</span>
+        <span className="text-2xl font-semibold tracking-tight tabular-nums">{formatBytes(shown.bytes)}</span>
+        <span className="text-xs text-muted-foreground">{pickedLabel(group, progressed)}</span>
       </div>
       <p className="grow text-xs leading-relaxed text-muted-foreground">{category.desc}</p>
       <SectionLink section={category.id} className={buttonVariants({variant: 'link', size: 'xs', className: 't-learn self-start px-0'})}>
@@ -336,7 +287,7 @@ function SectionCard({group, on, progressed}: {group: Group; on: RowSelectionSta
   )
 }
 
-function CardsView({groups, on, progressed}: {groups: Group[]; on: RowSelectionState; progressed: Progressed | null}) {
+function CardsView({groups, progressed, choose}: {groups: Group[]; progressed: Progressed | null; choose: Choose}) {
   return (
     <div className="flex min-h-0 grow flex-col gap-5 overflow-auto px-7 py-5">
       {GROUPS.map(([label, risk]) => {
@@ -347,7 +298,7 @@ function CardsView({groups, on, progressed}: {groups: Group[]; on: RowSelectionS
             <h3 className="text-[11px] font-medium tracking-wider text-muted-foreground/70 uppercase">{label}</h3>
             <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
               {inGroup.map(group => (
-                <SectionCard key={group.category.id} group={group} on={on} progressed={progressed} />
+                <SectionCard key={group.category.id} group={group} progressed={progressed} choose={choose} />
               ))}
             </div>
           </section>
@@ -377,29 +328,37 @@ function FilterSelect<T extends string | number>({label, value, options, render,
 function useTyped(value: string) {
   const [typed, setTyped] = useState(value)
   const [seen, setSeen] = useState(value)
+  const [sent, setSent] = useState(value)
   if (seen !== value) {
     setSeen(value)
-    setTyped(value)
+    if (value !== sent) setTyped(value)
   }
-  return [typed, setTyped] as const
+  return {typed, setTyped, setSent}
 }
 
 function SearchBox({value, onChange, inputRef}: {value: string; onChange: (q: string) => void; inputRef: RefObject<HTMLInputElement | null>}) {
-  const [typed, setTyped] = useTyped(value)
-  const type = (q: string) => {
-    setTyped(q)
+  const {typed, setTyped, setSent} = useTyped(value)
+  const send = (q: string) => {
+    setSent(q)
     onChange(q)
   }
+  const later = useDebouncer(send, {wait: SEARCH_WAIT})
   return (
     <div className="relative w-72">
       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
       <Input
         ref={inputRef}
         value={typed}
-        onChange={e => type(e.target.value)}
+        onChange={e => {
+          setTyped(e.target.value)
+          later.maybeExecute(e.target.value)
+        }}
+        onBlur={() => later.flush()}
         onKeyDown={e => {
           if (e.key !== 'Escape') return
-          type('')
+          later.cancel()
+          setTyped('')
+          send('')
           e.currentTarget.blur()
         }}
         placeholder="Filter paths…"
@@ -419,25 +378,18 @@ function Toggle({on, label, onClick}: {on: boolean; label: string; onClick: () =
   )
 }
 
-function setFilter(table: CleanupTable, id: string, value: unknown) {
-  table.getColumn(id)?.setFilterValue(value)
-}
-
-function Toolbar({table, list, onList, searchRef}: {table: CleanupTable; list: CleanupSearch; onList: ChangeList; searchRef: RefObject<HTMLInputElement | null>}) {
-  const toggleRisk = (risk: Risk) => {
-    const risks = list.risk.includes(risk) ? list.risk.filter(r => r !== risk) : [...list.risk, risk]
-    setFilter(table, 'risk', risks.length > 0 ? risks : undefined)
-  }
+function Toolbar({list, onList, onSearch, searchRef}: {list: CleanupSearch; onList: ChangeList; onSearch: (q: string) => void; searchRef: RefObject<HTMLInputElement | null>}) {
+  const toggleRisk = (risk: Risk) => onList({risk: list.risk.includes(risk) ? list.risk.filter(r => r !== risk) : [...list.risk, risk]})
   return (
     <div className="flex flex-wrap items-center gap-2 border-b px-7 py-3">
-      <SearchBox value={list.q} onChange={q => table.setGlobalFilter(q)} inputRef={searchRef} />
+      <SearchBox value={list.q} onChange={onSearch} inputRef={searchRef} />
       {RISKS.map(risk => (
         <Toggle key={risk} on={list.risk.includes(risk)} label={RISK_LABEL[risk]} onClick={() => toggleRisk(risk)} />
       ))}
-      <FilterSelect label="Minimum size" value={list.minSize} options={MIN_SIZES} render={n => (n === 0 ? 'Any size' : `≥ ${formatBytes(n)}`)} onChange={n => setFilter(table, 'bytes', n > 0 ? n : undefined)} />
-      <FilterSelect label="Minimum idle time" value={list.minAge} options={MIN_AGES} render={n => (n === -1 ? 'Any age' : `Idle ${n}+ days`)} onChange={n => setFilter(table, 'age', n >= 0 ? n : undefined)} />
-      <FilterSelect label="Sort" value={list.sort} options={SORTS} render={s => SORT_LABEL[s]} onChange={sort => table.setSorting(SORTING[sort])} />
-      <Toggle on={list.only} label="Only selected" onClick={() => setFilter(table, 'selected', list.only ? undefined : true)} />
+      <FilterSelect label="Minimum size" value={list.minSize} options={MIN_SIZES} render={n => (n === 0 ? 'Any size' : `≥ ${formatBytes(n)}`)} onChange={minSize => onList({minSize})} />
+      <FilterSelect label="Minimum idle time" value={list.minAge} options={MIN_AGES} render={n => (n === -1 ? 'Any age' : `Idle ${n}+ days`)} onChange={minAge => onList({minAge})} />
+      <FilterSelect label="Sort" value={list.sort} options={SORTS} render={s => SORT_LABEL[s]} onChange={sort => onList({sort})} />
+      <Toggle on={list.only} label="Only selected" onClick={() => onList({only: !list.only})} />
       <span className="grow" />
       <ToggleGroup value={[list.view]} onValueChange={v => v[0] && onList({view: v[0] as View})} variant="outline" size="sm" aria-label="View">
         <ToggleGroupItem value="list" aria-label="List view">
@@ -460,11 +412,7 @@ function Warning({children}: {children: ReactNode}) {
   )
 }
 
-function plural(n: number, one: string, many: string) {
-  return `${n} ${n === 1 ? one : many}`
-}
-
-function WarningLines({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
+function WarningLines({hidden, risky}: {hidden: Item[]; risky: number}) {
   return (
     <div className="flex flex-col gap-1 border-b bg-amber-500/5 px-7 py-2 text-xs text-amber-200">
       {hidden.length > 0 && (
@@ -472,7 +420,7 @@ function WarningLines({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
           {plural(hidden.length, 'selected item is', 'selected items are')} hidden by the filters ({formatBytes(sumBytes(outermost(hidden)))}). They will still be deleted.
         </Warning>
       )}
-      {risky.length > 0 && <Warning>{plural(risky.length, 'item', 'items')} marked review selected: slow or costly to rebuild.</Warning>}
+      {risky > 0 && <Warning>{plural(risky, 'item', 'items')} marked review selected: slow or costly to rebuild.</Warning>}
     </div>
   )
 }
@@ -483,8 +431,8 @@ function useHeld<T>(value: T, keep: boolean) {
   return held.current
 }
 
-function Warnings({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
-  const open = hidden.length > 0 || risky.length > 0
+function Warnings({hidden, risky}: {hidden: Item[]; risky: number}) {
+  const open = hidden.length > 0 || risky > 0
   const shown = useHeld({hidden, risky}, open)
   return (
     <div className="t-acc" data-open={String(open)} inert={!open}>
@@ -497,54 +445,65 @@ function Warnings({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
   )
 }
 
-function shortcutsOn(actions: Record<string, () => void>) {
-  return (node: HTMLElement | null) => {
-    const view = node?.ownerDocument.defaultView
-    if (!view) return
-    const onKey = (event: KeyboardEvent) => {
-      const action = actions[event.key]
-      const typing = event.target instanceof Element && event.target.closest('input, select, textarea, [role="dialog"], [role="listbox"]')
-      if (!action || typing || event.metaKey || event.ctrlKey || event.altKey) return
-      event.preventDefault()
-      action()
+function chosen(db: Db, section: string | null, keep: Keep, wanted: Keep, old: RowSelectionState) {
+  const next = {...old}
+  const groups = section === null ? [...db.scan.bySection.values()] : [db.scan.bySection.get(section)]
+  for (const group of groups) {
+    for (const entry of group?.items.values() ?? []) {
+      if (entry.report || !keep(entry)) continue
+      if (wanted(entry)) next[entry.path] = true
+      else delete next[entry.path]
     }
-    view.addEventListener('keydown', onKey)
-    return () => view.removeEventListener('keydown', onKey)
   }
+  return next
 }
 
-const LOCKED_KEYS = new Set(['a', 'd', 'r'])
+function shadowOf(db: Db, keep: Keep) {
+  const items = db.scan.items.synced
+  const inner = new Map<string, Item>()
+  for (const nest of db.scan.nests.synced.values()) {
+    const outer = items.get(nest.outer)
+    const inside = items.get(nest.inner)
+    if (outer && inside && outer.section === inside.section && keep(outer) && keep(inside)) inner.set(inside.path, inside)
+  }
+  const bySection = new Map<string, number>()
+  for (const entry of inner.values()) bySection.set(entry.section, (bySection.get(entry.section) ?? 0) + entry.bytes)
+  return bySection
+}
 
-function groupsOf(table: CleanupTable, categories: readonly Category[]): Group[] {
-  const rows = new Map(table.getRowModel().rows.map(row => [String(row.groupingValue), row]))
+function pickedOf(selection: Selection, keep: Keep, filtering: boolean): ReadonlyMap<string, number> {
+  if (!filtering) return selection.picked
+  const counts = new Map<string, number>()
+  for (const entry of selection.selected) if (keep(entry)) counts.set(entry.section, (counts.get(entry.section) ?? 0) + 1)
+  return counts
+}
+
+function sectionsOf(heads: readonly CategoryHead[], totals: readonly {id: string; count: number; bytes: number}[]): Section[] {
+  const byId = new Map(totals.map(total => [total.id, total]))
+  return heads
+    .flatMap(head => {
+      const total = byId.get(head.id)
+      return total ? [{...head, count: total.count, bytes: total.bytes}] : []
+    })
+    .toSorted((a, b) => b.bytes - a.bytes)
+}
+
+interface Shaping {
+  totals: readonly SectionTotal[]
+  shadow: ReadonlyMap<string, number>
+  picked: ReadonlyMap<string, number>
+}
+
+function groupsOf(sections: readonly Section[], {totals, shadow, picked}: Shaping): Group[] {
+  const byId = new Map(totals.map(total => [total.id, total]))
   return GROUPS.flatMap(([, risk]) =>
-    categories.filter(c => c.risk === risk).flatMap(category => {
-      const row = rows.get(category.id)
-      return row ? [{category, row}] : []
+    sections.filter(c => c.risk === risk).flatMap(category => {
+      const total = byId.get(category.id)
+      if (!total || total.count === 0) return []
+      const bytes = total.bytes - (shadow.get(category.id) ?? 0)
+      return [{category, shown: {count: total.count, bytes, selectable: total.selectable, aged: total.aged, picked: picked.get(category.id) ?? 0}}]
     }),
   )
-}
-
-function useCleanupTable(categories: readonly Category[], selection: Selection, list: CleanupSearch, onList: ChangeList, progress: CleanupProgress | null) {
-  const data = useMemo(() => entriesOf(categories), [categories])
-  const only = list.only ? selection.rowSelection : null
-  const columnFilters = useMemo(() => filtersOf(list, only ?? {}), [list.risk, list.minSize, list.minAge, list.only, only])
-  return useTable({
-    features,
-    columns,
-    data,
-    getRowId: row => row.path,
-    enableRowSelection,
-    globalFilterFn: searchFilter,
-    getColumnCanGlobalFilter: column => column.id === 'search',
-    initialState: {grouping: ['section'], columnVisibility: HIDDEN_COLUMNS},
-    state: {rowSelection: selection.rowSelection, globalFilter: list.q, columnFilters, sorting: SORTING[list.sort]},
-    onRowSelectionChange: selection.setRowSelection,
-    onGlobalFilterChange: update => onList({q: String(functionalUpdate(update, list.q) ?? '')}, {replace: true}),
-    onColumnFiltersChange: update => onList(listOf(functionalUpdate(update, columnFilters))),
-    onSortingChange: update => onList({sort: sortOf(functionalUpdate(update, SORTING[list.sort]))}),
-    meta: {progress},
-  })
 }
 
 function useListChange(): ChangeList {
@@ -553,36 +512,55 @@ function useListChange(): ChangeList {
 }
 
 interface ListState {
-  table: CleanupTable
   groups: Group[]
   progressed: Progressed | null
+  list: CleanupSearch
+  on: RowSelectionState
+  setRowSelection: (update: Updater<RowSelectionState>) => void
+  choose: Choose
 }
 
 const ListContext = createContext<ListState | null>(null)
 
-export function Cleanup({categories, selection, list, progress, children}: {categories: Category[]; selection: Selection; list: CleanupSearch; progress: CleanupProgress | null; children: ReactNode}) {
-  const onList = useListChange()
-  const table = useCleanupTable(categories, selection, list, onList, progress)
-  const search = useRef<HTMLInputElement>(null)
-  const reveal = useReveal(list.view)
-  const groups = groupsOf(table, categories)
-  const filtered = table.getFilteredRowModel().rowsById
-  const hidden = useMemo(() => selection.selected.filter(i => !filtered[i.path]), [selection.selected, filtered])
+function useSectionList(db: Db) {
+  const heads = useSections(db)
+  const {data: totals} = useLiveQuery(db.queries.sectionTotals)
+  return useMemo(() => sectionsOf(heads, totals), [heads, totals])
+}
+
+function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep) {
   const on = selection.rowSelection
-  const removals = useMemo(() => removalsOf(progress), [progress])
-  const progressed = progress && {progress, removals}
+  const sections = useSectionList(db)
+  const totals = useShapedTotals(db, list, on)
+  const filtering = isFiltering(list)
+  const items = db.scan.items.version()
+  const nests = db.scan.nests.version()
+  const shadow = useMemo(() => shadowOf(db, keep), [db, keep, items, nests])
+  const picked = useMemo(() => pickedOf(selection, keep, filtering), [selection, keep, filtering])
+  const hidden = useMemo(() => (filtering ? selection.selected.filter(entry => !keep(entry)) : []), [filtering, selection.selected, keep])
+  return {groups: groupsOf(sections, {totals, shadow, picked}), hidden}
+}
 
-  const shortcuts: Record<string, () => void> = {
-    '/': () => search.current?.focus(),
-    a: () => table.toggleAllRowsSelected(true),
-    d: () => table.resetRowSelection(true),
-    r: () => selection.reset(),
-    v: () => onList({view: list.view === 'list' ? 'cards' : 'list'}),
-  }
-  const keys = shortcutsOn(progress ? Object.fromEntries(Object.entries(shortcuts).filter(([key]) => !LOCKED_KEYS.has(key))) : shortcuts)
+const inOverlay = (event: KeyboardEvent) => event.target instanceof Element && event.target.closest('[role="dialog"], [role="listbox"]') !== null
 
-  const body =
-    groups.length === 0 ? (
+function useShortcuts(actions: [Hotkey, () => void, boolean][]) {
+  useHotkeys(
+    actions.map(([hotkey, action, enabled]) => ({
+      hotkey,
+      callback: (event: KeyboardEvent) => {
+        if (inOverlay(event)) return
+        event.preventDefault()
+        action()
+      },
+      options: {enabled},
+    })),
+    {preventDefault: false, stopPropagation: false},
+  )
+}
+
+function Body({groups, list, onList, progressed, choose, children}: {groups: Group[]; list: CleanupSearch; onList: ChangeList; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
+  if (groups.length === 0) {
+    return (
       <div className="flex grow flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
         Nothing matches these filters.
         <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
@@ -590,24 +568,62 @@ export function Cleanup({categories, selection, list, progress, children}: {cate
         </Button>
         {children}
       </div>
-    ) : list.view === 'list' ? (
-      <ListView groups={groups} on={on} progressed={progressed}>
+    )
+  }
+  if (list.view === 'list') {
+    return (
+      <ListView groups={groups} progressed={progressed} choose={choose}>
         {children}
       </ListView>
-    ) : (
-      <>
-        <CardsView groups={groups} on={on} progressed={progressed} />
-        {children}
-      </>
     )
+  }
+  return (
+    <>
+      <CardsView groups={groups} progressed={progressed} choose={choose} />
+      {children}
+    </>
+  )
+}
+
+export function Cleanup({list, children}: {list: CleanupSearch; children: ReactNode}) {
+  const db = useDb()
+  const selection = useSelection()
+  const {progress} = useProgress()
+  const onList = useListChange()
+  const search = useRef<HTMLInputElement>(null)
+  const replay = useReveal(list.view)
+  const on = selection.rowSelection
+  const keep = useMemo(() => predicateOf(list, on), [list, on])
+  const {groups, hidden} = useGroups(db, list, selection, keep)
+  const progressed = progress && {progress, removals: progress.removals}
+  const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
+  const open = !progress
+
+  useShortcuts([
+    ['/', () => search.current?.focus(), true],
+    ['A', () => choose(null, () => true), open],
+    ['D', () => selection.setRowSelection({}), open],
+    ['R', () => selection.reset(), open],
+    ['V', () => onList({view: list.view === 'list' ? 'cards' : 'list'}), true],
+  ])
 
   return (
-    <ListContext value={{table, groups, progressed}}>
-      <div ref={keys} className="flex min-h-0 grow flex-col">
-        <Toolbar table={table} list={list} onList={onList} searchRef={search} />
+    <ListContext value={{groups, progressed, list, on, setRowSelection: selection.setRowSelection, choose}}>
+      <div className="flex min-h-0 grow flex-col">
+        <Toolbar
+          list={list}
+          onList={onList}
+          onSearch={q => {
+            prepare(db, list, {...list, q}, on)
+            onList({q}, {replace: true})
+          }}
+          searchRef={search}
+        />
         <Warnings hidden={hidden} risky={selection.risky} />
-        <div ref={reveal} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
-          {body}
+        <div key={list.view} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
+          <Body groups={groups} list={list} onList={onList} progressed={progressed} choose={choose}>
+            {children}
+          </Body>
         </div>
       </div>
     </ListContext>
@@ -617,5 +633,5 @@ export function Cleanup({categories, selection, list, progress, children}: {cate
 export function SectionDetail({section}: {section: string}) {
   const view = use(ListContext)
   const group = view && (view.groups.find(g => g.category.id === section) ?? view.groups[0])
-  return view && group ? <SectionPanel table={view.table} group={group} progressed={view.progressed} /> : null
+  return view && group ? <SectionPanel group={group} view={view} /> : null
 }
