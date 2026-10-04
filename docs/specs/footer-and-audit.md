@@ -61,3 +61,18 @@ Surfaces:
 For each surface, the report gives the findings table (before, after, why) and a before/after
 screenshot pair in Chromium and Firefox at 1280 px. Everything uses shadcn components and the
 existing design tokens: no new ad-hoc colors, spacing or radii.
+
+## Known findings to fix in this pass (from the 2026-10-05 merge review)
+
+- **Light theme:** the selected sidebar section uses a hard-coded dark background, so its title and
+  size are dark on near-black and can't be read. All colours go through the theme tokens.
+- **Risk filter vs the open section:** turning on "review" while a safe section is open leaves the
+  open section out of the sidebar and shows "Nothing in this section matches these filters." The
+  open section should follow the filter: open the first visible section, keeping the URL in sync.
+- **Scan status:** the fixed status slot leaves a wide gap before Rescan when the text is short
+  ("Scan complete"). Keep the slot stable without the stranded gap (Rescan inside the slot's line,
+  or the slot sized to the longest real phase).
+- **Typing headroom:** the per-keystroke flatness check passes on a quiet machine but fails at a
+  load average around 10 to 40 (Chromium 21.6 vs 17.6 ms, Firefox p95 31.6 vs 18.8 ms). Trim the
+  remaining plain-JS work per keystroke (`pickedOf`, `hidden`, the virtualizer re-measure) until
+  it passes under that load too.
