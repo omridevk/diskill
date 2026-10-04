@@ -1,4 +1,4 @@
-import {and, eq, gte, like, useLiveQuery, type InitialQueryBuilder, type Ref} from '@tanstack/react-db'
+import {and, eq, gte, useLiveQuery, type InitialQueryBuilder, type Ref} from '@tanstack/react-db'
 import type {RowSelectionState} from '@tanstack/react-table'
 import {useMemo} from 'react'
 import type {Risk} from './data'
@@ -21,17 +21,13 @@ export function predicateOf(shape: Shape, on: RowSelectionState) {
     (!shape.only || on[entry.path] === true)
 }
 
-const LIKE_WILDCARDS = /[%_]/g
-
 type Items = Db['scan']['items']['collection']
 
 const shows = (shape: Shape, risk: Risk) => shape.risk.length === 0 || shape.risk.includes(risk)
 
 function narrowed(i: Ref<Entry>, shape: Shape, own: ReturnType<typeof eq>) {
-  const q = shape.q.toLowerCase().replace(LIKE_WILDCARDS, '_')
   return [
     own,
-    ...(q === '' ? [] : [like(i.search, `%${q}%`)]),
     ...(shape.minSize > 0 ? [gte(i.bytes, shape.minSize)] : []),
     ...(shape.minAge >= 0 ? [gte(i.age, shape.minAge)] : []),
   ].reduce((left, right) => and(left, right))
@@ -63,11 +59,17 @@ export interface SectionTotal {
 
 const UNFILTERED: Shape = {q: '', risk: [], minSize: 0, minAge: -1, sort: 'size-desc', only: false}
 
-function totalsOf(groups: readonly (readonly Entry[] | undefined)[], on: RowSelectionState | null): SectionTotal[] {
+type Keep = ((row: Entry) => boolean) | null
+
+function useKept(shape: Shape, on: RowSelectionState): Keep {
+  return useMemo(() => (shape.q === '' && !shape.only ? null : predicateOf(shape, on)), [shape, on])
+}
+
+function totalsOf(groups: readonly (readonly Entry[] | undefined)[], keep: Keep): SectionTotal[] {
   const totals = new Map<string, SectionTotal>()
   for (const rows of groups) {
     for (const row of rows ?? []) {
-      if (on !== null && on[row.path] !== true) continue
+      if (keep !== null && !keep(row)) continue
       const total = totals.get(row.section) ?? {id: row.section, count: 0, bytes: 0, selectable: 0, aged: 0}
       total.count += 1
       total.bytes += row.bytes
@@ -83,18 +85,19 @@ function useRiskRows(items: Items, shape: Shape | null, risk: Risk) {
   return useLiveQuery(q => (shape === null ? undefined : riskRows(q, items, shape, risk))).data
 }
 
-function useTotalsOf(db: Db, shape: Shape | null, on: RowSelectionState | null) {
+function useTotalsOf(db: Db, shape: Shape | null, keep: Keep) {
   const items = db.scan.items.collection
   const safe = useRiskRows(items, shape, 'safe')
   const review = useRiskRows(items, shape, 'review')
   const report = useRiskRows(items, shape, 'report')
-  return useMemo(() => totalsOf([safe, review, report], on), [safe, review, report, on])
+  return useMemo(() => totalsOf([safe, review, report], keep), [safe, review, report, keep])
 }
 
 export function useTotals(db: Db, shape: Shape, on: RowSelectionState) {
   const filtering = isFiltering(shape)
+  const keep = useKept(shape, on)
   const all = useTotalsOf(db, UNFILTERED, null)
-  const shown = useTotalsOf(db, filtering ? shape : null, shape.only ? on : null)
+  const shown = useTotalsOf(db, filtering ? shape : null, keep)
   return {all, shown: filtering ? shown : all}
 }
 
@@ -108,5 +111,6 @@ export function useSectionRows(db: Db, section: {id: string; risk: Risk}, shape:
     gcTime: SORT_KEPT_MS,
   })
   const rows = data ?? NO_ROWS
-  return useMemo(() => (shape.only ? rows.filter(row => on[row.path] === true) : rows), [rows, shape.only, on])
+  const keep = useKept(shape, on)
+  return useMemo(() => (keep === null ? rows : rows.filter(keep)), [rows, keep])
 }
