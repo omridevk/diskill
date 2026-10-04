@@ -1,4 +1,4 @@
-import {createFileRoute, Link, notFound} from '@tanstack/react-router'
+import {createFileRoute, Link, notFound, Outlet} from '@tanstack/react-router'
 import {OpenSection} from './-open-section'
 
 export const Route = createFileRoute('/cleanup/$section')({
@@ -12,7 +12,12 @@ export const Route = createFileRoute('/cleanup/$section')({
 
 function Section() {
   const {section} = Route.useParams()
-  return <OpenSection section={section} />
+  return (
+    <>
+      <OpenSection section={section} />
+      <Outlet />
+    </>
+  )
 }
 
 function MissingSection() {

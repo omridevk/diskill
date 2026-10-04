@@ -57,7 +57,7 @@ describe('the URL', () => {
       await again.screen.unmount()
     }
     const {history, screen} = await open('/')
-    await expect.poll(() => where(history)).toBe('/cleanup')
+    await expect.poll(() => where(history)).toBe('/cleanup/caches')
     await screen.unmount()
   })
 
@@ -87,7 +87,7 @@ describe('the URL', () => {
     await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
     const dialog = screen.getByRole('dialog')
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
-    expect(where(history)).toBe('/cleanup/confirm')
+    expect(where(history)).toBe('/cleanup/node/confirm')
     history.back()
     await expect.element(dialog).not.toBeInTheDocument()
     expect(where(history)).toBe('/cleanup/node')
@@ -148,18 +148,18 @@ describe('the URL', () => {
 
   test('the confirm modal opens from the URL and Escape goes back to the list it came from', async () => {
     planned()
-    const cold = await open('/cleanup/confirm?q=you')
+    const cold = await open('/cleanup/caches/confirm?q=you')
     const dialog = cold.screen.getByRole('dialog')
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
     expect(window.fetch).toHaveBeenCalledWith('/preview', expect.objectContaining({method: 'POST'}))
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
-    expect(cold.history.location.href).toBe('/cleanup?q=you')
+    expect(cold.history.location.href).toBe('/cleanup/caches?q=you')
 
     await cold.screen.getByRole('link', {name: /^node_modules/}).click()
     await cold.screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
-    expect(cold.history.location.href).toBe('/cleanup/confirm?q=you')
+    expect(cold.history.location.href).toBe('/cleanup/node/confirm?q=you')
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
     expect(cold.history.location.href).toBe('/cleanup/node?q=you')
@@ -174,20 +174,20 @@ describe('the URL', () => {
     await screen.getByRole('contentinfo').getByRole('button', {name: 'Free the space now'}).click()
     const dialog = screen.getByRole('dialog', {name: 'Free the space now?'})
     await expect.element(dialog).toBeVisible()
-    expect(history.location.href).toBe('/cleanup/free?q=you')
+    expect(history.location.href).toBe('/cleanup/caches/free?q=you')
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
-    expect(history.location.href).toBe('/cleanup?q=you')
+    expect(history.location.href).toBe('/cleanup/caches?q=you')
     history.forward()
     await expect.element(dialog).toBeVisible()
 
     const again = await reload(screen, history, loaded)
     sendAll(source, heldEvents)
     await expect.element(again.screen.getByRole('dialog', {name: 'Free the space now?'})).toBeVisible()
-    expect(again.history.location.href).toBe('/cleanup/free?q=you')
+    expect(again.history.location.href).toBe('/cleanup/caches/free?q=you')
     await again.screen.unmount()
-    const refused = await open('/cleanup/free?q=you')
-    await expect.poll(() => refused.history.location.href).toBe('/cleanup?q=you')
+    const refused = await open('/cleanup/caches/free?q=you')
+    await expect.poll(() => refused.history.location.href).toBe('/cleanup/caches?q=you')
   })
 
   test('the progress panel and the movie open from the URL, and Escape returns to the previous URL', async () => {
@@ -204,7 +204,7 @@ describe('the URL', () => {
     expect(history.length).toBe(entries)
     await userEvent.keyboard('{Escape}')
     await expect.element(panel).not.toBeInTheDocument()
-    expect(history.location.href).toBe('/cleanup')
+    expect(history.location.href).toBe('/cleanup/caches')
 
     await details(screen).click()
     await expect.poll(() => query(history).overlay).toBe('progress')
@@ -217,7 +217,7 @@ describe('the URL', () => {
     await expect.poll(() => query(history).take).toBe('1')
     await userEvent.keyboard('{Escape}')
     await expect.element(movie).not.toBeInTheDocument()
-    expect(history.location.href).toBe('/cleanup')
+    expect(history.location.href).toBe('/cleanup/caches')
     await expect.element(details(screen)).toHaveFocus()
     history.forward()
     await expect.element(movie).toBeInTheDocument()
@@ -227,7 +227,7 @@ describe('the URL', () => {
     await expect.element(reopened).toBeInTheDocument()
     await userEvent.keyboard('{Escape}')
     await expect.element(reopened).not.toBeInTheDocument()
-    expect(again.history.location.href).toBe('/cleanup')
+    expect(again.history.location.href).toBe('/cleanup/caches')
   })
 
   test('an unknown section is not found, inside the Cleanup tab', async () => {
@@ -239,8 +239,8 @@ describe('the URL', () => {
   })
 
   test('a /cleanup/free deep link with nothing held redirects to the list', async () => {
-    const {history, screen} = await open('/cleanup/free')
-    await expect.poll(() => history.location.href).toBe('/cleanup')
+    const {history, screen} = await open('/cleanup/caches/free')
+    await expect.poll(() => history.location.href).toBe('/cleanup/caches')
     await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
     await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
   })
@@ -248,7 +248,7 @@ describe('the URL', () => {
   test('the confirm route shows its pending state, then the plan', async () => {
     let answer: (plan: Response) => void = () => {}
     vi.spyOn(window, 'fetch').mockImplementation(() => new Promise(resolve => (answer = resolve)))
-    const {screen} = await open('/cleanup/confirm')
+    const {screen} = await open('/cleanup/caches/confirm')
     const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
     await expect.element(dialog.getByText('Checking the selection…')).toBeVisible()
     await expect.element(dialog.getByRole('button', {name: 'Delete'})).toBeDisabled()
@@ -320,7 +320,7 @@ describe('the selection in the URL', () => {
     expect(where(history)).toBe('/cleanup/node')
     history.back()
     await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
-    expect(where(history)).toBe('/cleanup')
+    expect(where(history)).toBe('/cleanup/caches')
   })
 
   const where = (history: RouterHistory) => history.location.pathname
@@ -349,7 +349,7 @@ describe('errors are shown, never swallowed', () => {
 
   test('a /preview 500 shows what failed, and Retry works once the server recovers', async () => {
     const recover = answering(async () => new Response('the selection changed on disk', {status: 500}))
-    const {screen} = await open('/cleanup/confirm')
+    const {screen} = await open('/cleanup/caches/confirm')
     const failed = screen.getByRole('dialog', {name: "Couldn't check the selection"})
     await expect.element(failed.getByText(/disk-clean answered 500 to \/preview: the selection changed on disk/)).toBeVisible()
     recover()
@@ -359,7 +359,7 @@ describe('errors are shown, never swallowed', () => {
 
   test('an unreachable server says so, and Retry works once it is back', async () => {
     const recover = answering(() => Promise.reject(new TypeError('Failed to fetch')))
-    const {screen} = await open('/cleanup/confirm')
+    const {screen} = await open('/cleanup/caches/confirm')
     const failed = screen.getByRole('dialog', {name: "Couldn't check the selection"})
     await expect.element(failed.getByText(/Can't reach disk-clean/)).toBeVisible()
     recover()
@@ -375,7 +375,7 @@ describe('errors are shown, never swallowed', () => {
     await expect.element(dialog.getByText('Checking the selection…')).toBeVisible()
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
-    expect(history.location.pathname).toBe('/cleanup')
+    expect(history.location.pathname).toBe('/cleanup/caches')
   })
 
   test('a render error in a tab shows the root error page, not a blank screen', async () => {
@@ -386,3 +386,76 @@ describe('errors are shown, never swallowed', () => {
     expect(errors).toHaveBeenCalled()
   })
 })
+
+describe('dialogs and tabs keep your place', () => {
+  beforeEach(() => gsap.globalTimeline.timeScale(20))
+  afterEach(() => {
+    gsap.globalTimeline.timeScale(1)
+    vi.restoreAllMocks()
+  })
+
+  async function open(url: string, loaded: Loaded = fixture) {
+    const history = at(url)
+    const screen = await render(<App loaded={loaded} history={history} />)
+    return {history, screen}
+  }
+
+  const sectionTitle = () => document.querySelector('main h2')?.textContent
+
+  test('Delete and Escape keep the open section and every search param', async () => {
+    mockServer()
+    const url = '/cleanup/node?q=web&sort=name-asc'
+    const {history, screen} = await open(url)
+    await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
+    await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
+    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    await expect.element(dialog.getByText('6 items in total')).toBeVisible()
+    expect(history.location.href).toBe('/cleanup/node/confirm?q=web&sort=name-asc')
+    expect(sectionTitle()).toBe('node_modules')
+    await userEvent.keyboard('{Escape}')
+    await expect.element(dialog).not.toBeInTheDocument()
+    expect(history.location.href).toBe(url)
+    expect(sectionTitle()).toBe('node_modules')
+  })
+
+  test('a tab returns to the section and search it was left at', async () => {
+    const {history, screen} = await open('/cleanup/node?q=web')
+    await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
+    await screen.getByRole('tab', {name: 'Storage'}).click()
+    await expect.element(screen.getByLabelText('Storage sunburst of /Users/you')).toBeVisible()
+    await screen.getByRole('tab', {name: 'Cleanup'}).click()
+    await expect.poll(() => history.location.href).toBe('/cleanup/node?q=web')
+    await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
+    await expect.element(screen.getByRole('textbox', {name: 'Filter paths'})).toHaveValue('web')
+  })
+
+  test('paths read from the home folder the server reports when the storage map is skipped', async () => {
+    mockServer()
+    const {screen} = await open('/cleanup/caches/confirm', {...fixture, data: {...fixture.data, tree: null}})
+    const held = screen.getByRole('dialog', {name: 'Confirm the cleanup'}).getByRole('list', {name: 'Moved to hold'})
+    await expect.element(held.getByRole('listitem').first()).toHaveTextContent('~/Library/Caches/app-a2.0 GB')
+    await expect.element(held.getByText('/Users/you', {exact: false})).not.toBeInTheDocument()
+  })
+
+  test('closing a dialog finishes its exit animation before the URL changes', async () => {
+    mockServer()
+    const {history, screen} = await open('/cleanup/caches')
+    await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
+    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    await expect.element(dialog.getByText('6 items in total')).toBeVisible()
+    const popup = dialog.element()
+    const order: string[] = []
+    const watch = new MutationObserver(() => {
+      if (popup.hasAttribute('data-ending-style') && !order.includes('closing')) order.push('closing')
+    })
+    watch.observe(popup, {attributes: true})
+    const running = () => popup.getAnimations({subtree: true}).filter(animation => animation.playState === 'running').length
+    const stop = history.subscribe(() => order.push(`url ${history.location.pathname} with ${running()} running`))
+    await userEvent.keyboard('{Escape}')
+    await expect.poll(() => order.length).toBe(2)
+    watch.disconnect()
+    stop()
+    expect(order).toEqual(['closing', 'url /cleanup/caches with 0 running'])
+  })
+})
+

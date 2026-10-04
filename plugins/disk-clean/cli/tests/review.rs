@@ -494,6 +494,12 @@ fn spawn_live(home: &Path, bin: &Path) -> (std::process::Child, u16, String) {
         .parse()
         .unwrap();
     let (_, page) = get(port, "/");
+    let reported = page
+        .split_once(r#"<meta name="disk-clean-home" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(home, _)| home.to_string())
+        .expect("home meta");
+    assert_eq!(Path::new(&reported).canonicalize().unwrap(), home.canonicalize().unwrap());
     let token = page
         .split_once(r#"<meta name="disk-clean-token" content=""#)
         .and_then(|(_, rest)| rest.split_once('"'))

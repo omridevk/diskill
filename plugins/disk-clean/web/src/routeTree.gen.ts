@@ -14,9 +14,9 @@ import { Route as CleanupRouteImport } from './routes/cleanup'
 import { Route as InsightsRouteImport } from './routes/insights'
 import { Route as CleanupIndexRouteImport } from './routes/cleanup.index'
 import { Route as CleanupSectionRouteImport } from './routes/cleanup.$section'
-import { Route as CleanupConfirmRouteImport } from './routes/cleanup.confirm'
-import { Route as CleanupFreeRouteImport } from './routes/cleanup.free'
 import { Route as StorageSplatRouteImport } from './routes/storage.$'
+import { Route as CleanupSectionConfirmRouteImport } from './routes/cleanup.$section.confirm'
+import { Route as CleanupSectionFreeRouteImport } from './routes/cleanup.$section.free'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -43,51 +43,51 @@ const CleanupSectionRoute = CleanupSectionRouteImport.update({
   path: '/$section',
   getParentRoute: () => CleanupRoute,
 } as any)
-const CleanupConfirmRoute = CleanupConfirmRouteImport.update({
-  id: '/confirm',
-  path: '/confirm',
-  getParentRoute: () => CleanupRoute,
-} as any)
-const CleanupFreeRoute = CleanupFreeRouteImport.update({
-  id: '/free',
-  path: '/free',
-  getParentRoute: () => CleanupRoute,
-} as any)
 const StorageSplatRoute = StorageSplatRouteImport.update({
   id: '/storage/$',
   path: '/storage/$',
   getParentRoute: () => rootRouteImport,
+} as any)
+const CleanupSectionConfirmRoute = CleanupSectionConfirmRouteImport.update({
+  id: '/confirm',
+  path: '/confirm',
+  getParentRoute: () => CleanupSectionRoute,
+} as any)
+const CleanupSectionFreeRoute = CleanupSectionFreeRouteImport.update({
+  id: '/free',
+  path: '/free',
+  getParentRoute: () => CleanupSectionRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/cleanup': typeof CleanupRouteWithChildren
   '/insights': typeof InsightsRoute
-  '/cleanup/$section': typeof CleanupSectionRoute
-  '/cleanup/confirm': typeof CleanupConfirmRoute
-  '/cleanup/free': typeof CleanupFreeRoute
+  '/cleanup/$section': typeof CleanupSectionRouteWithChildren
   '/storage/$': typeof StorageSplatRoute
   '/cleanup/': typeof CleanupIndexRoute
+  '/cleanup/$section/confirm': typeof CleanupSectionConfirmRoute
+  '/cleanup/$section/free': typeof CleanupSectionFreeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/insights': typeof InsightsRoute
-  '/cleanup/$section': typeof CleanupSectionRoute
-  '/cleanup/confirm': typeof CleanupConfirmRoute
-  '/cleanup/free': typeof CleanupFreeRoute
+  '/cleanup/$section': typeof CleanupSectionRouteWithChildren
   '/storage/$': typeof StorageSplatRoute
   '/cleanup': typeof CleanupIndexRoute
+  '/cleanup/$section/confirm': typeof CleanupSectionConfirmRoute
+  '/cleanup/$section/free': typeof CleanupSectionFreeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/cleanup': typeof CleanupRouteWithChildren
   '/insights': typeof InsightsRoute
-  '/cleanup/$section': typeof CleanupSectionRoute
-  '/cleanup/confirm': typeof CleanupConfirmRoute
-  '/cleanup/free': typeof CleanupFreeRoute
+  '/cleanup/$section': typeof CleanupSectionRouteWithChildren
   '/storage/$': typeof StorageSplatRoute
   '/cleanup/': typeof CleanupIndexRoute
+  '/cleanup/$section/confirm': typeof CleanupSectionConfirmRoute
+  '/cleanup/$section/free': typeof CleanupSectionFreeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -96,29 +96,29 @@ export interface FileRouteTypes {
     | '/cleanup'
     | '/insights'
     | '/cleanup/$section'
-    | '/cleanup/confirm'
-    | '/cleanup/free'
     | '/storage/$'
     | '/cleanup/'
+    | '/cleanup/$section/confirm'
+    | '/cleanup/$section/free'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/insights'
     | '/cleanup/$section'
-    | '/cleanup/confirm'
-    | '/cleanup/free'
     | '/storage/$'
     | '/cleanup'
+    | '/cleanup/$section/confirm'
+    | '/cleanup/$section/free'
   id:
     | '__root__'
     | '/'
     | '/cleanup'
     | '/insights'
     | '/cleanup/$section'
-    | '/cleanup/confirm'
-    | '/cleanup/free'
     | '/storage/$'
     | '/cleanup/'
+    | '/cleanup/$section/confirm'
+    | '/cleanup/$section/free'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -165,20 +165,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CleanupSectionRouteImport
       parentRoute: typeof CleanupRoute
     }
-    '/cleanup/confirm': {
-      id: '/cleanup/confirm'
-      path: '/confirm'
-      fullPath: '/cleanup/confirm'
-      preLoaderRoute: typeof CleanupConfirmRouteImport
-      parentRoute: typeof CleanupRoute
-    }
-    '/cleanup/free': {
-      id: '/cleanup/free'
-      path: '/free'
-      fullPath: '/cleanup/free'
-      preLoaderRoute: typeof CleanupFreeRouteImport
-      parentRoute: typeof CleanupRoute
-    }
     '/storage/$': {
       id: '/storage/$'
       path: '/storage/$'
@@ -186,20 +172,44 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StorageSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/cleanup/$section/confirm': {
+      id: '/cleanup/$section/confirm'
+      path: '/confirm'
+      fullPath: '/cleanup/$section/confirm'
+      preLoaderRoute: typeof CleanupSectionConfirmRouteImport
+      parentRoute: typeof CleanupSectionRoute
+    }
+    '/cleanup/$section/free': {
+      id: '/cleanup/$section/free'
+      path: '/free'
+      fullPath: '/cleanup/$section/free'
+      preLoaderRoute: typeof CleanupSectionFreeRouteImport
+      parentRoute: typeof CleanupSectionRoute
+    }
   }
 }
 
+interface CleanupSectionRouteChildren {
+  CleanupSectionConfirmRoute: typeof CleanupSectionConfirmRoute
+  CleanupSectionFreeRoute: typeof CleanupSectionFreeRoute
+}
+
+const CleanupSectionRouteChildren: CleanupSectionRouteChildren = {
+  CleanupSectionConfirmRoute: CleanupSectionConfirmRoute,
+  CleanupSectionFreeRoute: CleanupSectionFreeRoute,
+}
+
+const CleanupSectionRouteWithChildren = CleanupSectionRoute._addFileChildren(
+  CleanupSectionRouteChildren,
+)
+
 interface CleanupRouteChildren {
-  CleanupSectionRoute: typeof CleanupSectionRoute
-  CleanupConfirmRoute: typeof CleanupConfirmRoute
-  CleanupFreeRoute: typeof CleanupFreeRoute
+  CleanupSectionRoute: typeof CleanupSectionRouteWithChildren
   CleanupIndexRoute: typeof CleanupIndexRoute
 }
 
 const CleanupRouteChildren: CleanupRouteChildren = {
-  CleanupSectionRoute: CleanupSectionRoute,
-  CleanupConfirmRoute: CleanupConfirmRoute,
-  CleanupFreeRoute: CleanupFreeRoute,
+  CleanupSectionRoute: CleanupSectionRouteWithChildren,
   CleanupIndexRoute: CleanupIndexRoute,
 }
 

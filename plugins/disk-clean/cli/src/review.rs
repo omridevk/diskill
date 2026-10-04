@@ -277,9 +277,17 @@ pub fn token() -> String {
     out
 }
 
+fn attribute(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 pub fn render(data: &Value, token: &str) -> String {
     let json = data.to_string().replace('<', "\\u003c");
     PAGE.replacen("__TOKEN__", token, 1)
+        .replacen("__HOME__", &attribute(&util::home()), 1)
         .replacen("__DATA__", &json, 1)
 }
 

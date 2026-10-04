@@ -62,6 +62,7 @@ export type OpenEvents = (url: string) => EventSourceLike
 export interface Loaded {
   data: ScanData
   token: string
+  home: string
   live?: boolean
   approved?: string[]
   openEvents?: OpenEvents
@@ -71,24 +72,24 @@ export const NO_DATA: ScanData = {categories: [], reclaimable: 0, free: 0, total
 
 async function loadDev(): Promise<Loaded> {
   const params = new URLSearchParams(location.search)
-  if (params.has('live')) return {data: NO_DATA, token: params.get('token') ?? '', live: true}
+  if (params.has('live')) return {data: NO_DATA, token: params.get('token') ?? '', home: '', live: true}
   const response = await fetch('/dev/fixture.json')
-  return response.json()
+  const loaded: Loaded = await response.json()
+  return {...loaded, home: ''}
+}
+
+function metaOf(name: string) {
+  return document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content ?? ''
 }
 
 export async function load(): Promise<Loaded> {
   const text = document.getElementById('disk-clean-data')?.textContent ?? ''
-  const token = document.querySelector<HTMLMetaElement>('meta[name="disk-clean-token"]')?.content ?? ''
+  const token = metaOf('disk-clean-token')
+  const home = metaOf('disk-clean-home')
   if (import.meta.env.DEV && text.trim() === '__DATA__') return loadDev()
   const parsed: ScanData | {live: true} | (ScanData & {approved: true; selection: string[]}) = JSON.parse(text)
-  if ('live' in parsed) return {data: NO_DATA, token, live: true}
-  return 'approved' in parsed ? {data: parsed, token, approved: parsed.selection} : {data: parsed, token}
-}
-
-export function homeOf(root: TreeNode | null): string {
-  if (!root) return ''
-  if (root.name === '~') return root.path
-  return root.children.map(homeOf).find(Boolean) ?? ''
+  if ('live' in parsed) return {data: NO_DATA, token, home, live: true}
+  return 'approved' in parsed ? {data: parsed, token, home, approved: parsed.selection} : {data: parsed, token, home}
 }
 
 export function tilde(path: string, home: string) {
@@ -119,5 +120,11 @@ export function formatBytes(n: number): string {
 }
 
 export const isExact = (item: Item) => item.accuracy === 'exact'
+
+const RISK_ORDER: Risk[] = ['safe', 'review', 'report']
+
+export function firstSection(categories: readonly Category[]) {
+  return RISK_ORDER.flatMap(risk => categories.filter(c => c.risk === risk))[0]?.id
+}
 
 export const RISK_LABEL: Record<Risk, string> = {safe: 'safe', review: 'review', report: 'report only'}

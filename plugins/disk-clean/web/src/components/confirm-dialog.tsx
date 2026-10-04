@@ -163,9 +163,15 @@ function Decision({plan, home, onCancel, onConfirm}: {plan: Plan | null; home: s
   )
 }
 
-export function ConfirmDialog({plan, home, onClose, onConfirm}: {plan: Plan | null; home: string; onClose: () => void; onConfirm: () => void}) {
+interface Exit {
+  open: boolean
+  onClose: () => void
+  onClosed: () => void
+}
+
+export function ConfirmDialog({plan, home, open, onClose, onClosed, onConfirm}: Exit & {plan: Plan | null; home: string; onConfirm: () => void}) {
   return (
-    <Dialog open onOpenChange={open => open || onClose()}>
+    <Dialog open={open} onOpenChange={next => next || onClose()} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Confirm the cleanup</DialogTitle>
@@ -180,9 +186,9 @@ export function ConfirmDialog({plan, home, onClose, onConfirm}: {plan: Plan | nu
   )
 }
 
-export function ConfirmFailed({message, onClose, onRetry}: {message: string; onClose: () => void; onRetry: () => void}) {
+export function ConfirmFailed({message, open, onClose, onClosed, onRetry}: Exit & {message: string; onRetry: () => void}) {
   return (
-    <Dialog open onOpenChange={open => open || onClose()}>
+    <Dialog open={open} onOpenChange={next => next || onClose()} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Couldn't check the selection</DialogTitle>

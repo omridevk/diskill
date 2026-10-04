@@ -12,7 +12,7 @@ import {ChartBoundary} from './chart-boundary'
 import {BigBytes, CARD_TOOLTIP, ChartCard, changedAgo, Meter, shareOf} from './chart-card'
 import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatBytes, homeOf, tilde, type Category, type ScanData, type TreeNode} from '@/lib/data'
+import {formatBytes, tilde, type Category, type ScanData, type TreeNode} from '@/lib/data'
 import type {Shape} from '@/lib/search'
 import {outermost, sumBytes, type Selection} from '@/lib/selection'
 import {squarifyInBounds} from '@/lib/treemap-tile'
@@ -265,7 +265,23 @@ function focusOf(flat: ReturnType<typeof flatten> | null, root: string, zoom: st
   return flat?.byPath.has(wanted) ? wanted : root
 }
 
-export function Storage({data, cleanable, selection, shape, zoom}: {data: ScanData; cleanable: Set<string>; selection: Selection; shape: Shape; zoom: string}) {
+function chainOf(parents: Map<string, TreeNode>, focus: TreeNode) {
+  const chain: TreeNode[] = []
+  for (let n: TreeNode | undefined = focus; n; n = parents.get(n.path)) chain.unshift(n)
+  return chain
+}
+
+function drillTarget(start: TreeNode | null, shape: Shape, parents: Map<string, TreeNode>, focus: string) {
+  let node = start
+  while (shape === 'treemap' && node) {
+    const parent = parents.get(node.path)
+    if (!parent || parent.path === focus) break
+    node = parent
+  }
+  return node
+}
+
+export function Storage({data, home, cleanable, selection, shape, zoom}: {data: ScanData; home: string; cleanable: Set<string>; selection: Selection; shape: Shape; zoom: string}) {
   const tree = data.tree
   const flat = useMemo(() => (tree ? flatten(tree) : null), [tree])
   const root = tree?.path ?? ''
@@ -279,18 +295,11 @@ export function Storage({data, cleanable, selection, shape, zoom}: {data: ScanDa
   }
 
   const focusNode = flat.byPath.get(focus) ?? tree
-  const home = homeOf(tree)
-  const chain: TreeNode[] = []
-  for (let n: TreeNode | undefined = focusNode; n; n = flat.parents.get(n.path)) chain.unshift(n)
+  const chain = chainOf(flat.parents, focusNode)
   const shown = hover ?? focusNode
 
   const drill = (point: ChartPoint | null) => {
-    let node = nodeOf(point)
-    while (shape === 'treemap' && node) {
-      const parent = flat.parents.get(node.path)
-      if (!parent || parent.path === focus) break
-      node = parent
-    }
+    const node = drillTarget(nodeOf(point), shape, flat.parents, focus)
     if (node?.children.length) navigate({to: '/storage/$', params: {_splat: splatOf(node.path, root)}, search: true})
   }
 

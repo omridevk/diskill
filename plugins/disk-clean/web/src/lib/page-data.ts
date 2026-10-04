@@ -112,6 +112,10 @@ export function useScanData() {
   return usePage().scan.data
 }
 
+export function useHome() {
+  return usePage().loaded.home
+}
+
 export function useStreaming() {
   const {live, settled} = usePage()
   return {live, settled}

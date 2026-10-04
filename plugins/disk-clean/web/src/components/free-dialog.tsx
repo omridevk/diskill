@@ -8,18 +8,20 @@ export function FreeDialog({
   progress,
   open,
   onOpenChange,
+  onClosed,
   onFree,
   returnFocus,
 }: {
   progress: CleanupProgress
   open: boolean
   onOpenChange: (open: boolean) => void
+  onClosed: () => void
   onFree: () => void
   returnFocus?: RefObject<HTMLButtonElement | null>
 }) {
   const count = progress.heldCount
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-md" finalFocus={returnFocus}>
         <DialogHeader>
           <DialogTitle>Free the space now?</DialogTitle>

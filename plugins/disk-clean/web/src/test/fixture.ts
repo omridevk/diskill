@@ -84,7 +84,7 @@ const data: ScanData = {
   },
 }
 
-export const fixture: Loaded = {data, token: 'test-token'}
+export const fixture: Loaded = {data, token: 'test-token', home: '/Users/you'}
 
 export const cleanupEvents = [
   {type: 'waiting', data: {}},
@@ -107,7 +107,7 @@ export function bigSection(count: number): Category {
 
 export function withSection(extra: Category): Loaded {
   const [first, ...rest] = categories
-  return {data: {...data, categories: first ? [first, extra, ...rest] : [extra]}, token: 'test-token'}
+  return {data: {...data, categories: first ? [first, extra, ...rest] : [extra]}, token: 'test-token', home: '/Users/you'}
 }
 
 const CACHES = ['app-a', 'app-b', 'app-c', 'app-d'].map((name, i) => ({path: `/Users/you/Library/Caches/${name}`, bytes: [2, 1, 0.5, 0.25][i]! * GB}))

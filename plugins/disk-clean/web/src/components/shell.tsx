@@ -1,8 +1,9 @@
-import {Link, Outlet, useNavigate} from '@tanstack/react-router'
+import {Link, linkOptions, Outlet, useLinkProps, useLocation, useNavigate} from '@tanstack/react-router'
 import {HardDrive} from 'lucide-react'
-import {useRef, type RefObject} from 'react'
+import {useRef, useState, type RefObject} from 'react'
 import {TAB_LINK, TabLinks} from '@/components/ui/tabs'
 import {resultBytes, type CleanupProgress} from '@/lib/cleanup'
+import {firstSection} from '@/lib/data'
 import type {Scan} from '@/lib/scan'
 import {useShownOnMount} from '@/lib/motion'
 import {useDecisions, useProgress, useScan, useSelection, type Ending} from '@/lib/page-data'
@@ -12,8 +13,6 @@ import {BarText, CleanupTracker, DetailsButton, HeldActions, ProgressTrack} from
 import {ScanCounter, useScanHero} from './scan-hero'
 import {RescanButton, ScanStatus} from './scan-status'
 import {Summary} from './summary'
-
-const TAB = {role: 'tab', className: TAB_LINK, activeOptions: {includeSearch: false}, activeProps: {'aria-selected': true}, inactiveProps: {'aria-selected': false}} as const
 
 function Finished({title, body}: Ending) {
   const lines = useShownOnMount()
@@ -50,18 +49,31 @@ function Status({items, progress, lost}: {items: number; progress: CleanupProgre
   )
 }
 
+const TABS = linkOptions([
+  {to: '/cleanup', label: 'Cleanup'},
+  {to: '/storage/$', params: {_splat: ''}, label: 'Storage'},
+  {to: '/insights', label: 'Insights'},
+])
+
+function TabLink({tab}: {tab: (typeof TABS)[number]}) {
+  const {label, ...start} = tab
+  const here = useLocation({select: location => location.href})
+  const active = 'data-status' in useLinkProps({...start, activeOptions: {includeSearch: false}})
+  const [last, setLast] = useState<string | undefined>(undefined)
+  if (active && last !== here) setLast(here)
+  return (
+    <Link {...start} href={active ? here : last} role="tab" aria-selected={active} className={TAB_LINK}>
+      {label}
+    </Link>
+  )
+}
+
 function Tabs() {
   return (
     <TabLinks label="Views">
-      <Link to="/cleanup" {...TAB}>
-        Cleanup
-      </Link>
-      <Link to="/storage/$" params={{_splat: ''}} {...TAB}>
-        Storage
-      </Link>
-      <Link to="/insights" {...TAB}>
-        Insights
-      </Link>
+      {TABS.map(tab => (
+        <TabLink key={tab.label} tab={tab} />
+      ))}
     </TabLinks>
   )
 }
@@ -117,13 +129,14 @@ export function Shell() {
   const detailsRef = useRef<HTMLButtonElement>(null)
   const {data} = scan.scan
   const itemCount = data.categories.reduce((sum, c) => sum + c.items.length, 0)
+  const sectionOf = (params: {section?: string}) => params.section ?? firstSection(data.categories) ?? ''
   const held = progress && (
     <HeldActions
       progress={progress}
       busy={decisions.heldBusy}
       error={decisions.heldError}
       onUndo={() => decisions.held('undo')}
-      onFree={() => navigate({to: '/cleanup/free', search: true})}
+      onFree={() => navigate({to: '/cleanup/$section/free', params: prev => ({section: sectionOf(prev)}), search: true})}
     />
   )
 
@@ -145,7 +158,7 @@ export function Shell() {
         progress={progress}
         held={held}
         onCancel={decisions.cancel}
-        onDelete={() => navigate({to: '/cleanup/confirm', search: true})}
+        onDelete={() => navigate({to: '/cleanup/$section/confirm', params: prev => ({section: sectionOf(prev)}), search: true})}
       />
     </div>
   )

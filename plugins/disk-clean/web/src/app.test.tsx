@@ -163,7 +163,7 @@ describe('other tabs', () => {
 describe('confirm dialog', () => {
   test('lists totals, every held path with its size, the steps that cannot be undone and the rejections', async () => {
     const confirmed = vi.fn()
-    const screen = await render(<ConfirmDialog plan={PLAN} home="/Users/you" onClose={() => {}} onConfirm={confirmed} />)
+    const screen = await render(<ConfirmDialog plan={PLAN} home="/Users/you" open onClose={() => {}} onClosed={() => {}} onConfirm={confirmed} />)
     const held = screen.getByRole('list', {name: 'Moved to hold'})
     await expect.element(screen.getByRole('heading', {name: /^Moved to hold \(undo available\)/})).toBeVisible()
     await expect.poll(() => held.getByRole('listitem').elements().length).toBe(4)
@@ -177,10 +177,10 @@ describe('confirm dialog', () => {
 
   test('says Delete when nothing can be held, and waits for the plan', async () => {
     const plan = {...PLAN, hold: [], hold_bytes: 0, count: 2}
-    const screen = await render(<ConfirmDialog plan={plan} home="" onClose={() => {}} onConfirm={() => {}} />)
+    const screen = await render(<ConfirmDialog plan={plan} home="" open onClose={() => {}} onClosed={() => {}} onConfirm={() => {}} />)
     await expect.element(screen.getByRole('button', {name: 'Delete 2 items'})).toBeEnabled()
     await expect.element(screen.getByRole('list', {name: 'Moved to hold'})).not.toBeInTheDocument()
-    await screen.rerender(<ConfirmDialog plan={null} home="" onClose={() => {}} onConfirm={() => {}} />)
+    await screen.rerender(<ConfirmDialog plan={null} home="" open onClose={() => {}} onClosed={() => {}} onConfirm={() => {}} />)
     await expect.element(screen.getByText('Checking the selection…')).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Delete'})).toBeDisabled()
   })
@@ -207,7 +207,7 @@ describe('treemap tiling', () => {
 })
 
 const GB = 1024 ** 3
-const LIVE: Loaded = {data: NO_DATA, token: 'test-token', live: true}
+const LIVE: Loaded = {data: NO_DATA, token: 'test-token', home: '/Users/you', live: true}
 
 function itemEvents(categories: Category[]): ScanEvent[] {
   return categories
