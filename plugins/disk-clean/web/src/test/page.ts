@@ -2,11 +2,23 @@ import {vi} from 'vitest'
 import type {ScanEvent} from '@/lib/scan'
 
 export function fakeEventSource() {
-  const source = Object.assign(new EventTarget(), {
+  const target = new EventTarget()
+  let unheard: Event[] | null = []
+  const connect = () => {
+    const replay = unheard ?? []
+    unheard = null
+    for (const event of replay) EventTarget.prototype.dispatchEvent.call(target, event)
+  }
+  const source = Object.assign(target, {
     readyState: 1,
     close: () => {
       source.readyState = 2
     },
+    addEventListener: (...args: Parameters<EventTarget['addEventListener']>) => {
+      EventTarget.prototype.addEventListener.apply(target, args)
+      queueMicrotask(connect)
+    },
+    dispatchEvent: (event: Event) => (unheard ? unheard.push(event) > 0 : EventTarget.prototype.dispatchEvent.call(target, event)),
   })
   const send = (event: ScanEvent) => source.dispatchEvent(new MessageEvent(event.type, {data: JSON.stringify(event.data)}))
   return {source, send}
@@ -33,6 +45,7 @@ export function sendRaw(source: EventTarget, type: string, data: object) {
 
 export function sendAll(source: EventTarget, events: readonly {type: string; data: object}[]) {
   for (const event of events) sendRaw(source, event.type, event.data)
+  return new Promise(requestAnimationFrame)
 }
 
 const GB = 1024 ** 3

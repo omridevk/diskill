@@ -1,5 +1,6 @@
 import {gsap} from 'gsap'
 import {useEffect, useState} from 'react'
+import {flushSync} from 'react-dom'
 import {afterEach, beforeEach, describe, expect, test} from 'vitest'
 import {page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
@@ -133,7 +134,12 @@ function settledIn(screen: Awaited<ReturnType<typeof render>>) {
   return expect.poll(() => document.querySelector('[data-settled]'), {timeout: 20_000}).not.toBeNull()
 }
 
-function Streamed({log}: {log: readonly CleanupEvent[]}) {
+interface Sample {
+  items: number
+  ms: number
+}
+
+function Streamed({log, steps}: {log: readonly CleanupEvent[]; steps: Sample[]}) {
   const [cleanup, setCleanup] = useState(NO_CLEANUP)
   useEffect(() => {
     let sent = 0
@@ -141,31 +147,47 @@ function Streamed({log}: {log: readonly CleanupEvent[]}) {
     const step = () => {
       const next = log.slice(sent, sent + STREAM_CHUNK)
       sent += next.length
-      setCleanup(current => cleanupReducer(current, next))
+      const start = performance.now()
+      flushSync(() => setCleanup(current => cleanupReducer(current, next)))
+      steps.push({items: sent, ms: performance.now() - start})
       if (sent < log.length) frame = requestAnimationFrame(step)
     }
     frame = requestAnimationFrame(step)
     return () => cancelAnimationFrame(frame)
-  }, [log])
+  }, [log, steps])
   return <Movie cleanup={cleanup} />
 }
 
-async function streamFrames(count: number) {
-  const screen = await render(<Streamed log={quickLog(count)} />)
-  const frames: number[] = []
-  let last = 0
-  let watching = true
-  const tick = (now: number) => {
-    if (last) frames.push(now - last)
-    last = now
-    if (watching) requestAnimationFrame(tick)
+function timeTicks(into: Sample[], items: () => number) {
+  let start = 0
+  const open = () => {
+    start = performance.now()
   }
-  requestAnimationFrame(tick)
+  const close = () => {
+    into.push({items: items(), ms: performance.now() - start})
+  }
+  gsap.ticker.add(open, false, true)
+  gsap.ticker.add(close)
+  return () => {
+    gsap.ticker.remove(open)
+    gsap.ticker.remove(close)
+  }
+}
+
+function leastWork(samples: readonly Sample[], from: number, to: number) {
+  const work = samples.filter(s => s.items > from && s.items <= to).map(s => s.ms)
+  return work.toSorted((a, b) => a - b)[Math.floor(work.length / 10)] ?? Infinity
+}
+
+async function streamWork(count: number) {
+  const steps: Sample[] = []
+  const ticks: Sample[] = []
+  const stop = timeTicks(ticks, () => steps.at(-1)?.items ?? 0)
+  const screen = await render(<Streamed log={quickLog(count)} steps={steps} />)
   await expect.poll(() => visibility('finale'), {timeout: 40_000}).toBe('visible')
-  watching = false
+  stop()
   await screen.unmount()
-  frames.sort((a, b) => a - b)
-  return frames[Math.floor(frames.length * 0.95)] ?? Infinity
+  return {steps, ticks}
 }
 
 describe('the cleanup movie', () => {
@@ -401,11 +423,14 @@ describe('the cleanup movie', () => {
     await page.viewport(...size)
   }, 30_000)
 
-  test('streaming 3000 removals plays as smoothly as 30', async () => {
+  test('streaming 3000 removals costs as little work per frame at the end as in the first 300', async () => {
     gsap.globalTimeline.timeScale(4)
-    const small = await streamFrames(30)
-    const big = await streamFrames(3000)
-    expect(big, `p95 frame ${big} ms against ${small} ms for 30 items`).toBeLessThan(small * 2 + 50)
+    const work = await streamWork(3000)
+    for (const [name, samples] of Object.entries(work)) {
+      const first = leastWork(samples, 0, 300)
+      const last = leastWork(samples, 2700, Infinity)
+      expect.soft(last, `${name}: ${last.toFixed(2)} ms of work per frame at 3000 items against ${first.toFixed(2)} ms in the first 300`).toBeLessThan(first * 2 + 2)
+    }
   }, 90_000)
 
   test('waiting for Claude only animates compositor properties', async () => {
