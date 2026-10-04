@@ -1,4 +1,4 @@
-import {ancestorsOf, isExact, type Category, type Insights, type Item, type Loaded, type TreeNode} from './data'
+import {ancestorsOf, isExact, isPickable, type Category, type Insights, type Item, type Loaded, type TreeNode} from './data'
 import {ownedCollection, type Writes} from './owned'
 
 export type CategoryHead = Omit<Category, 'items' | 'bytes'>
@@ -19,6 +19,7 @@ export type ScanEvent =
   | {type: 'done'; data: Timed<{reclaimable: number}>}
   | {type: 'error'; data: Timed<{message: string}>}
   | {type: 'rescan'; data: Timed<object>}
+  | {type: 'unlisted'; data: Timed<{path: string}>}
 
 export interface Entry extends Item {
   section: string
@@ -53,6 +54,7 @@ export interface ScanState {
   done: boolean
   error: string
   worktrees: number
+  stopped: boolean
   elapsed: number
   walkedAt: number
   rescans: number
@@ -65,7 +67,7 @@ export interface ScanState {
 const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
 
 function entryOf(item: Item, head: CategoryHead, scan: number): Entry {
-  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), selectable: item.report ? 0 : 1, scan}
+  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), selectable: isPickable(item) ? 1 : 0, scan}
 }
 
 function startState(loaded: Loaded): ScanState {
@@ -77,6 +79,7 @@ function startState(loaded: Loaded): ScanState {
     done: finished,
     error: '',
     worktrees: 0,
+    stopped: false,
     elapsed: 0,
     walkedAt: 0,
     rescans: 0,
@@ -137,7 +140,7 @@ interface Batch {
 
 type Handlers = {[K in ScanEvent['type']]: (batch: Batch, data: Extract<ScanEvent, {type: K}>['data'], store: ScanStore) => void}
 
-const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, elapsed: 0, walkedAt: 0}
+export const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0}
 
 function takeItem(batch: Batch, {category, item}: {category: CategoryHead; item: Item}) {
   batch.heads.set(category.id, category)
@@ -146,6 +149,13 @@ function takeItem(batch: Batch, {category, item}: {category: CategoryHead; item:
 
 function stale(store: ScanStore, scan: number) {
   return [...store.items.synced.values()].filter(e => e.scan !== scan).map(e => e.path)
+}
+
+function stillChecking(store: ScanStore, batch: Batch) {
+  const latest = new Map<string, Entry>()
+  for (const entry of store.items.synced.values()) latest.set(entry.path, entry)
+  for (const entry of batch.items) latest.set(entry.path, entry)
+  return [...latest.values()].filter(e => e.checking === true).map(e => e.path)
 }
 
 const HANDLERS: Handlers = {
@@ -162,9 +172,13 @@ const HANDLERS: Handlers = {
   done: (batch, {reclaimable}, store) => {
     if (batch.state.rescans > 0) {
       const fresh = new Set(batch.items.filter(e => e.scan === batch.state.rescans).map(e => e.path))
-      batch.removed = stale(store, batch.state.rescans).filter(path => !fresh.has(path))
+      batch.removed.push(...stale(store, batch.state.rescans).filter(path => !fresh.has(path)))
     }
+    batch.removed.push(...stillChecking(store, batch))
     batch.state = {...batch.state, reclaimable, done: true}
+  },
+  unlisted: (batch, {path}) => {
+    batch.removed.push(path)
   },
   error: (batch, {message}) => {
     batch.state = {...batch.state, error: message}
@@ -234,15 +248,16 @@ function bySectionOf(entries: readonly Entry[]) {
 }
 
 function writeItems(store: ScanStore, batch: Batch, removed: ReadonlySet<string>) {
-  if (batch.items.length === 0 && removed.size === 0) return
-  indexSections(store, batch.items, removed)
+  const items = removed.size === 0 ? batch.items : batch.items.filter(e => !removed.has(e.path))
+  if (items.length === 0 && removed.size === 0) return
+  indexSections(store, items, removed)
   store.items.write(writes => {
-    for (const entry of batch.items) writes.put(entry)
+    for (const entry of items) writes.put(entry)
     for (const path of removed) writes.remove(path)
   })
   if (batch.heads.size > 0) store.sections.write(writes => batch.heads.forEach(head => writes.put(head)))
   store.nests.write(writes => {
-    writeNests(store, batch.items, writes)
+    writeNests(store, items, writes)
     dropNests(store, removed, writes)
   })
 }

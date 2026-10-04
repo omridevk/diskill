@@ -5,11 +5,11 @@ import {functionalUpdate, type RowSelectionState, type Updater} from '@tanstack/
 import {useCallback, useDeferredValue, useMemo} from 'react'
 import {approve as approveItems, askHeld, cancel as cancelRun, restartScan} from './actions'
 import {preview, type Plan} from './api'
-import {firstSection, sumBytes} from './data'
+import {firstSection, isPickable, sumBytes} from './data'
 import {useDb, type Db} from './db'
 import {useCleanupProgress} from './progress'
 import type {CategoryHead, Entry, Nest, ScanState} from './scan-feed'
-import {createSelector, NO_PICKS, picksOf, type Decoded, type Fragment, type Picks, type Selector} from './selection'
+import {createSelector, fingerprint, NO_PICKS, picksOf, type Decoded, type Fragment, type Picks, type Selector} from './selection'
 import {useScanState, useSession, useVersion} from './views'
 
 export interface Ending {
@@ -25,6 +25,9 @@ export interface Selection {
   setRowSelection: (update: Updater<RowSelectionState>) => void
   isOn: (item: {path: string}) => boolean
   reset: () => void
+  clear: () => void
+  selectable: number
+  recommended: boolean
   selected: Entry[]
   exactBytes: number
   apparentBytes: number
@@ -43,6 +46,7 @@ interface Cached {
 interface Section extends CategoryHead {
   items: Entry[]
   bytes: number
+  selectable: number
 }
 
 interface Grouped {
@@ -60,7 +64,7 @@ function sectionNow(db: Db, head: CategoryHead, known: Cached | undefined): Cach
   if (!group || group.items.size === 0) return null
   if (known?.version === group.version && known.head === head) return known
   const items = [...group.items.values()]
-  return {version: group.version, head, section: {...head, items, bytes: sumBytes(items)}}
+  return {version: group.version, head, section: {...head, items, bytes: sumBytes(items), selectable: items.filter(isPickable).length}}
 }
 
 function categoriesNow(db: Db) {
@@ -182,7 +186,7 @@ export function firstSectionNow(db: Db) {
 export function canConfirm(db: Db, picks: Picks) {
   const scan = scanNow(db)
   const approved = db.session.synced.get('session')?.approved ?? false
-  return scan !== undefined && scan.done && scan.error === '' && !approved && selectedNow(db, picks).length > 0
+  return scan !== undefined && scan.error === '' && !approved && selectedNow(db, picks).length > 0
 }
 
 export function hasSection(db: Db, section: string) {
@@ -197,11 +201,11 @@ interface PreviewRow extends Plan {
   id: 'plan'
 }
 
-function previewCollection(db: Db, key: string, picks: Picks) {
+function previewCollection(db: Db, key: string, items: readonly Entry[]) {
   return createCollection(
     queryCollectionOptions({
       queryKey: ['preview', key],
-      queryFn: async (): Promise<PreviewRow[]> => [{...(await preview(db.loaded.token, selectedNow(db, picks))), id: 'plan'}],
+      queryFn: async (): Promise<PreviewRow[]> => [{...(await preview(db.loaded.token, items)), id: 'plan'}],
       queryClient: db.queryClient,
       getKey: row => row.id,
       startSync: false,
@@ -209,25 +213,39 @@ function previewCollection(db: Db, key: string, picks: Picks) {
   )
 }
 
-type Preview = ReturnType<typeof previewCollection>
+interface Preview {
+  collection: ReturnType<typeof previewCollection>
+  items: readonly Entry[]
+  bytes: number
+}
 
 const previews = new WeakMap<Db, Map<string, Preview>>()
 
-export function previewOf(db: Db, picks: Picks) {
-  const key = `${scanNow(db)?.rescans ?? 0}|${picks.add}|${picks.drop}`
+function previewOf(db: Db, picks: Picks): [string, Preview] {
+  const {selected, exactBytes} = derivedOf(db, decodedNow(db, picks))
+  const scan = scanNow(db)
+  const scanning = scan?.done !== true
+  const key = `${scan?.rescans ?? 0}|${scanning ? 'scanning' : 'done'}|${fingerprint(selected.map(e => e.path))}`
   const mine = previews.get(db) ?? new Map<string, Preview>()
   previews.set(db, mine)
   const known = mine.get(key)
-  if (known) return known
-  const collection = previewCollection(db, key, picks)
-  mine.set(key, collection)
-  return collection
+  if (known) return [key, known]
+  const made = {collection: previewCollection(db, key, selected), items: selected, bytes: exactBytes}
+  mine.set(key, made)
+  return [key, made]
+}
+
+export function previewAt(db: Db, key: string) {
+  const known = previews.get(db)?.get(key)
+  if (!known) throw new Error('This preview is no longer available. Close the dialog and press Delete again.')
+  return known
 }
 
 export async function loadPreview(db: Db, picks: Picks) {
-  const collection = previewOf(db, picks)
+  const [key, {collection}] = previewOf(db, picks)
   if (collection.status === 'error') await collection.utils.refetch({throwOnError: true})
   else await collection.preload()
+  return key
 }
 
 const root = getRouteApi('__root__')
@@ -266,15 +284,18 @@ export function useSelection(): Selection {
     [db, navigate],
   )
   const reset = useCallback(() => navigate({to: '.', search: prev => ({...prev, ...NO_PICKS}), replace: true}), [navigate])
+  const clear = useCallback(() => setRowSelection({}), [setRowSelection])
   const count = categories.reduce((sum, c) => sum + c.items.length, 0)
+  const selectable = categories.reduce((sum, c) => sum + c.selectable, 0)
+  const recommended = picks.add === '' && picks.drop === ''
   return useMemo(
-    () => ({count, rowSelection: on, setRowSelection, isOn: item => on[item.path] === true, reset, ...derived}),
-    [count, on, setRowSelection, reset, derived],
+    () => ({count, selectable, recommended, rowSelection: on, setRowSelection, isOn: item => on[item.path] === true, reset, clear, ...derived}),
+    [count, selectable, recommended, on, setRowSelection, reset, clear, derived],
   )
 }
 
 function settledOf(live: boolean, scan: ScanState) {
-  return {tracking: live || scan.rescans > 0, settled: scan.walked || scan.rescans > 0 || scan.error !== ''}
+  return {tracking: live || scan.rescans > 0, settled: scan.walked || scan.rescans > 0 || scan.error !== '' || scan.stopped}
 }
 
 export function useScan() {
@@ -298,18 +319,23 @@ export function useProgress() {
   return {progress: useCleanupProgress(useDb())}
 }
 
+const attempts = new WeakMap<Db, Preview>()
+
 export function useDecisions() {
   const db = useDb()
   const session = useSession(db)
-  const picks = usePicks()
-  const approve = (picks: Picks) => {
-    const {selected, exactBytes} = derivedOf(db, decodedNow(db, picks))
-    if (selected.length === 0) return
-    void approveItems(db, selected, exactBytes)
+  const approve = (preview: Preview) => {
+    if (preview.items.length === 0) return
+    attempts.set(db, preview)
+    void approveItems(db, preview.items, preview.bytes)
+  }
+  const retry = () => {
+    const last = attempts.get(db)
+    if (last) approve(last)
   }
   const cancel = () => void cancelRun(db)
   const held = (action: 'undo' | 'free') => void askHeld(db, action)
-  return {approved: session.approved, done: session.cancelled ? CANCELLED : null, approve, retry: () => approve(picks), cancel, held}
+  return {approved: session.approved, done: session.cancelled ? CANCELLED : null, approve, retry, cancel, held}
 }
 
 export function useConnection() {

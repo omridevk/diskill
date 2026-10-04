@@ -1,6 +1,7 @@
 import {createColumnHelper, metaHelper, rowSelectionFeature, tableFeatures, type Row} from '@tanstack/react-table'
+import {Loader2} from 'lucide-react'
 import {Checkbox} from '@/components/ui/checkbox'
-import {formatBytes, isExact} from '@/lib/data'
+import {formatBytes, isExact, isPickable} from '@/lib/data'
 import type {CleanupProgress, Outcome} from '@/lib/progress'
 import type {Entry} from '@/lib/scan-feed'
 
@@ -48,6 +49,7 @@ export function toggleRow(row: EntryRow, checked: boolean, event?: Event) {
 }
 
 function RowCheckbox({row, locked}: {row: EntryRow; locked: boolean}) {
+  if (row.original.checking) return <Loader2 aria-hidden className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
   return (
     <Checkbox
       aria-label={row.original.label}
@@ -65,7 +67,13 @@ function PathCell({row, progress}: {row: EntryRow; progress: CleanupProgress | n
       <span data-label className="truncate font-mono text-[12.5px]">
         {item.label}
       </span>
-      {item.note && <span className="truncate text-xs text-muted-foreground">{item.note}</span>}
+      {item.checking && (
+        <span className="flex min-w-0 gap-1.5 text-xs">
+          <span className="shrink-0 text-amber-300">checking…</span>
+          <span className="truncate text-muted-foreground">it can be ticked once its check answers</span>
+        </span>
+      )}
+      {item.note && !item.checking && <span className="truncate text-xs text-muted-foreground">{item.note}</span>}
       {progress?.plan.items.has(item.path) && <ItemStatus path={item.path} progress={progress} />}
     </span>
   )
@@ -107,4 +115,4 @@ export const columns = helper.columns([
   }),
 ])
 
-export const enableRowSelection = (row: EntryRow) => !row.original.report
+export const enableRowSelection = (row: EntryRow) => isPickable(row.original)

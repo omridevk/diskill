@@ -489,7 +489,7 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let plan = plan(&index_scan(&util::read_lines(&scan_path)), &items);
+    let plan = plan(&index_scan(&util::complete_lines(&scan_path)), &items);
 
     if dry_run {
         print_dry_run(&plan, dir);

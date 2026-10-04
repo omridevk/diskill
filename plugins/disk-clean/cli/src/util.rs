@@ -201,6 +201,25 @@ pub fn read_lines(path: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub fn complete_lines(path: &Path) -> Vec<String> {
+    let bytes = fs::read(path).unwrap_or_default();
+    let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    String::from_utf8_lossy(&bytes[..end])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let staged = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    fs::write(&staged, contents)?;
+    fs::rename(&staged, path)
+}
+
 pub fn spawn_detached(cmd: &mut Command) -> io::Result<Child> {
     // SAFETY: setsid is async-signal-safe and only detaches the child into its own session.
     unsafe {

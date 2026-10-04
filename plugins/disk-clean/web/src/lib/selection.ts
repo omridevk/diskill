@@ -1,5 +1,5 @@
 import type {RowSelectionState} from '@tanstack/react-table'
-import {isExact, type Item, type Risk} from './data'
+import {isExact, isPickable, type Item, type Risk} from './data'
 
 export interface Group<T extends Item = Item> {
   id: string
@@ -20,7 +20,7 @@ const SHORT = 8
 const FULL = 11
 const TOKEN = /^(_[\w-]+|[0-9a-z]{8}|[0-9a-z]{11})$/
 
-const pickable = (item: Item) => !item.report
+const pickable = isPickable
 
 function cyrb53(text: string) {
   let h1 = 0xdeadbeef
@@ -33,6 +33,10 @@ function cyrb53(text: string) {
   h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
   return 4294967296 * (2097151 & h2) + (h1 >>> 0)
+}
+
+export function fingerprint(paths: readonly string[]) {
+  return cyrb53(paths.join('\n')).toString(36)
 }
 
 const hashes = new Map<string, string>()

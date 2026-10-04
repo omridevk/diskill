@@ -27,7 +27,7 @@ export interface Request {
   message: string
 }
 
-const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan']
+const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan', 'unlisted']
 const FINAL = new Set<string>(['done', 'error'])
 const CLOSED = 2
 

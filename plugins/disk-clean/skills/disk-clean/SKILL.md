@@ -24,11 +24,15 @@ It creates a run directory under `~/.cache/disk-clean/`, opens a local page in t
 right away, and scans in the background while the page fills in: a live counter during the walk
 (one to three minutes, a single parallel walk of the data volume), then the cleanup list, storage
 map and insights, then the git worktree checks and Docker/Homebrew/simulator probes. Delete
-unlocks when the scan is done. The command **blocks** until the user confirms Delete or
-Cancel. When it exits, the **first line of stdout is `RUN_DIR`**; on approval a second line is the
+works while the scan is still running: every item already on screen can be deleted. Worktree rows
+and the Docker and simulator command rows show "checking…" in place of their checkbox until their
+check answers. Confirming Delete during the scan stops it and approves what was found so far. The
+command **blocks** until the user confirms Delete or Cancel. When it exits, the **first line of stdout is `RUN_DIR`**; on approval a second line is the
 path of `$RUN_DIR/selection.json`. Read `RUN_DIR` from the background task's output before stage 3.
 
-The run directory holds `scan.tsv` (cleanable items), `map.tsv` (size tree), `disk.tsv` (volume
+The run directory holds `scan.tsv` (cleanable items, appended as each one is listed on the page,
+so an approval made mid-scan is validated against exactly what was shown; rows still being checked
+are never in it), `map.tsv` (size tree), `disk.tsv` (volume
 totals, snapshot count, and `too_deep`: folders nested too deep to read, also reported on stderr),
 `insights.json` (home files by modified day, age per folder, kind, and the largest files), and on
 approval `selection.json`.
@@ -66,15 +70,24 @@ The page has three tabs, a summary strip (disk donut, selected total, scan statu
   link all restore it: the tab and the open section or zoomed folder are the path
   (`/cleanup/<section>`, `/storage/<folder path>`, `/insights`), filters, sort, view and the
   chart shape are query parameters (default values are left out), the Delete confirm is
-  `/cleanup/confirm`, the Free confirm is `/cleanup/free`, and the progress log and the movie are
-  `?overlay=progress` / `?overlay=movie`.
-  Escape closes a dialog by going back to the address it was opened from. Which items are ticked is
-  not in the address. The local server answers every page address with the same page and token.
-- **Delete N items · X** (footer) — opens a confirm dialog (Escape or Cancel closes it and changes
+  `/cleanup/<section>/confirm`, the Free confirm is `/cleanup/<section>/free`, and the progress log
+  and the movie are `?overlay=progress` / `?overlay=movie`. The ticked items are in the address too:
+  `add` and `drop` hold only the changes from the recommended selection. Escape closes a dialog by
+  going back to the address it was opened from. The local server answers every page address with
+  the same page and token.
+- **Clear selection** and **Reset to recommended** (footer, beside the "N items selected · X"
+  count) do what the `d` and `r` shortcuts do. Each is disabled only when it would change nothing,
+  and then its name says why. They are hidden while a cleanup runs.
+- **Delete N items · X** (footer): enabled whenever at least one selected item can be deleted,
+  also while the scan runs. When it cannot be pressed its label says why: "Scanning… nothing found
+  yet", "Select items to delete", "Nothing found to delete" or "The scan failed · nothing can be
+  deleted". It opens a confirm dialog (Escape or Cancel closes it and changes
   nothing) built by the same validation code `clean` uses: the totals, then **Moved to hold (undo
   available)** with every path and its size, **Can't be undone** with the exact command lines (git
   worktree removals, freeing an earlier held run, the fixed commands), and anything the safety
-  checks rejected with the reason. Its button ("Move N items to hold", or "Delete N items" when
+  checks rejected with the reason. While the scan is still running it also says "The scan is still
+  running; confirming stops it and uses what was found so far.", and it approves exactly the list it
+  shows, even if more items arrive while it is open. Its button ("Move N items to hold", or "Delete N items" when
   nothing can be held) sends the approval; there is no countdown after it. **Cancel** (end the
   session without deleting) still has a few-second undo window.
   After approval the page stays on the review app with a progress bar at the top: first "Claude is
@@ -211,7 +224,8 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
 
 ## Safety rules
 
-- `clean` moves or deletes a path only if it appeared in that run's `scan.tsv`. The UI cannot smuggle
+- `clean` moves or deletes a path only if it appeared in that run's `scan.tsv` (the record of every
+  item the page was shown, written as each one is listed). The UI cannot smuggle
   in an arbitrary path. Duplicate selections run once.
 - Paths must be canonical: anything with `//`, a `.` or `..` component, or a trailing `/` is
   rejected, never normalised.

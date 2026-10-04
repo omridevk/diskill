@@ -12,7 +12,7 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatBytes, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
+import {formatBytes, isPickable, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
 import {useDb, type Db} from '@/lib/db'
 import type {CleanupProgress, Removal} from '@/lib/progress'
 import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
@@ -450,7 +450,7 @@ function chosen(db: Db, section: string | null, keep: Keep, wanted: Keep, old: R
   const groups = section === null ? [...db.scan.bySection.values()] : [db.scan.bySection.get(section)]
   for (const group of groups) {
     for (const entry of group?.items.values() ?? []) {
-      if (entry.report || !keep(entry)) continue
+      if (!isPickable(entry) || !keep(entry)) continue
       if (wanted(entry)) next[entry.path] = true
       else delete next[entry.path]
     }
