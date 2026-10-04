@@ -94,3 +94,18 @@ The scan reads the real per-user temp folders (`confstr`) and `/private/tmp` eve
 TMPDIR point at a sandbox. That is correct for real use, so sandboxed tests must keep asserting
 that every path in the plan is inside the sandbox before any non-dry-run step, and must never
 "select all" without that filter.
+
+## H. The scan must not starve the machine
+
+The walk runs `available_parallelism() * 2` threads (24 on a 12-core Mac) at default priority for
+the whole walk (~100 s on the user's Mac), competing with the browser that renders the page. User
+report: the page janks while scanning, "could be that the scan itself is using all the CPU".
+- Run every scan thread (the walk pool, worktree checks, probes, sizing) at
+  `QOS_CLASS_UTILITY` via `pthread_set_qos_class_self_np` (libc, already a dependency), so macOS
+  favours interactive work and schedules the scan mostly on efficiency cores. `clean` keeps its
+  current priority.
+- Measure, don't assume, the thread count: walk time and browser frame times during the walk with
+  2x, 1x and the efficiency-core count, at utility QoS. Pick the best trade-off and record the
+  numbers here.
+- The real-browser frame tests from C include a run while a real walk is going (a large sandbox
+  tree), in Firefox and Chromium.
