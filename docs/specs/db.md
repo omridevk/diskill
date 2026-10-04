@@ -197,3 +197,86 @@ experiment, filter keystrokes and the risk toggle in Firefox fell to 17 ms and o
 125 ms (its `fn.where` full load), so the rest is the `groupBy` hashing. Options for the user: (a) a local `pnpm patch` of `@tanstack/db-ivm` and
 `@tanstack/db` with PR #1645's groupBy discriminant and key-field `inArray` path (needs approval);
 (b) wait for PR #1645 to ship and upgrade; (c) accept the cost until then.
+
+### Round 2: query shapes DB serves without a graph (2026-10-04)
+
+Measured in headless Firefox (Gecko profiler, DB-only benches at 12,000 rows, and the `frames`
+project). Every cost round 1 left was a query shape, not a DB defect:
+
+**1. Totals: `groupBy` hashes a per-row values object, and re-reduces the whole group per batch.**
+Call path: `groupBy` (`db-ivm/operators/groupBy.ts`) maps each row to a new values object
+(virtual metadata, one group representative per group key whose `key` is
+`serializeValue([rowKey, identity])`, so it carries the full path string, and one field per
+aggregate) > `ReduceOperator.run` > `Index.addValue` > `ValueMap.addValue` > `hash` >
+`hashObject` > `writeByte`. The objects are new per row, so the WeakMap cache never hits, and
+slimming the `select` cannot remove the path string. `reduce` also recomputes every aggregate over
+all values of each touched group, so the always-live unfiltered totals cost about 20 ms per
+300-row batch in Firefox (O(section) per batch). Per-section single-group aggregates (no
+`groupBy`) still hash: 110 to 300 ms per filter.
+
+**2. A plain filtered live query does not hash, but compiles a graph and materializes every row.**
+Profile of `from(items).where(like(...))` at 12,000 rows: 35 to 45 ms per build in Firefox, spent in
+`maybeRunGraph`, `flushPendingChanges`, `enrichWithVirtualProps` (a copy of each row) and
+`evaluateLike` (run twice: pushdown and the D2 filter). No `hashObject`.
+
+**3. DB pools eq-filtered queries.** `resolveLiveQueryValue` (`live-query-options.ts`, used by
+`useLiveQuery` when there is no `DbProvider` and no Suspense) serves a query with no `select`,
+`join`, `groupBy`, `limit` or `fn.*`, at least one `eq(field, literal)` and optionally an
+`orderBy` on row fields, from a shared partition of the source (`query/pooled-live-query.ts`): one
+source subscription per field set and order, a sorted group per literal, and the remaining
+conjuncts evaluated as a predicate over the group. No graph, no materialization, no hashing.
+Firefox, 12,000 rows: unfiltered view 1 ms, filtered view 10 to 21 ms, a new sort's partition
+22 to 66 ms once.
+
+**4. `inArray` is O(rows x values)** (`evaluators.ts`, `array.some(valuesEqual)`, about 0.7 µs per
+comparison in Firefox): 20 values over 12,000 rows cost 176 ms, 200 cost 1.5 s. A keyed join is
+O(selected) (2,000 selected keys: 19 ms, 6,000: 59 ms), and a long-lived `items leftJoin picks`
+costs 104 ms to build and 3 ms per pick change, but needs the URL selection (tokens, whole-section
+picks, preselect) decoded inside DB, a second selection model next to the decode.
+
+**5. `getWindow()` reports the settled window.** `setWindow` returns `true` only when the load
+settles synchronously; with an index-driven ordered load it returns a promise, and `getWindow()`
+and the rows move together only when it resolves. Round 1's `useState` offset covered that gap.
+
+### What changed
+
+- Totals: three per-risk live queries, `where(and(eq(i.risk, r), ...filters))`, which DB pools,
+  plus three unfiltered ones, summed per section in a `useMemo`. No `groupBy`. A risk the filter
+  excludes is a disabled query, so the risk toggle filters nothing.
+- Section rows: one live query per open section, `where(and(eq(i.section, id), ...filters))` with
+  the sort's `orderBy` and no `limit`, served from a pooled sorted partition. The table receives
+  the virtualizer's visible slice of those rows, so `setWindow`, the window offset state and the
+  `limit`/`offset` plumbing are gone. `gcTime` 5 s keeps the previous sort's partition warm.
+- Only selected: the decoded selection filters the section's rows and the per-section sums in the
+  same `useMemo` (O(rows), about 1 ms), because DB has no O(1) membership operator in 0.11.3 and
+  the selection is not data in DB. The join above is the DB alternative if the selection moves
+  into a collection.
+- No `inArray`, `fn.where`, `groupBy`, `queryKey` or `setWindow` left in `lib/shaping.ts`.
+
+### Frames (largest frame, ms; 12,000 rows, headless; 66c7450 / now)
+
+| interaction | Firefox | Firefox reduced | Chromium | Chromium reduced |
+|---|---|---|---|---|
+| idle open section | 33 / 41 | 34 / 33 | 33 / 50 | 50 / 33 |
+| idle filter first keystrokes | 167 / 50 | 183 / 58 | 100 / 33 | 100 / 17 |
+| idle only selected | 251 / 16 | 242 / 42 | 100 / 17 | 117 / 17 |
+| idle risk toggle | 200 / 17 | 158 / 9 | 83 / 17 | 83 / 17 |
+| idle sort by name | 50 / 68 | 42 / 67 | 17 / 17 | 17 / 17 |
+| idle sort by size | 25 / 25 | 17 / 17 | 17 / 17 | 17 / 17 |
+| walking open section | 58 / 33 | 41 / 58 | 17 / 17 | 17 / 17 |
+| walking filter first keystrokes | 234 / 42 | 175 / 50 | 67 / 17 | 83 / 17 |
+| walking only selected | 400 / 17 | 242 / 9 | 100 / 17 | 100 / 17 |
+| walking risk toggle | 318 / 25 | 332 / 26 | 67 / 17 | 67 / 17 |
+| walking sort by name | 49 / 42 | 33 / 57 | 17 / 17 | 17 / 17 |
+| streaming | 34 / 33 | 50 / 25 | 17 / 33 | 17 / 17 |
+| interacting while streaming | 192 / 75 | 208 / 25 | 83 / 17 | 67 / 33 |
+| streaming to the end | 10 / 9 | 10 / 9 | 17 / 17 | 17 / 17 |
+
+Cleared/off rows stay at 9 to 34 ms. Every interaction is within budget in both browsers. Under
+a machine load average of 10 one Firefox stream run hit 75 / 133; three reruns gave 33-42 / 67-75.
+
+Remaining cost: a new search string evaluates `like` over every row of the risk and section groups
+(the pooled view runs its predicate once to seed its subscription and once per snapshot read), so
+the perf project's keystroke flatness check still fails: 27 ms at 10,000 rows vs 4 ms at 30 in
+Firefox, 19 vs 3 in Chromium (66c7450: 133 vs 11 and 72 vs 6). The first use of a sort builds its
+partition (name: 50 to 68 ms frames in Firefox).

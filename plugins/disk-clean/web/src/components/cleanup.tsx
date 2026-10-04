@@ -18,7 +18,7 @@ import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
-import {isFiltering, predicateOf, useFilteredTotals, useSectionWindow, useTotals, type SectionTotal} from '@/lib/shaping'
+import {isFiltering, predicateOf, useSectionRows, useTotals, type SectionTotal} from '@/lib/shaping'
 import {useScanState, useSections} from '@/lib/views'
 import {DataTable} from './data-table'
 
@@ -225,7 +225,7 @@ function SectionPanel({group, view}: {group: Group; view: ListState}) {
   const {category, shown} = group
   const db = useDb()
   const replay = useReveal(category.id)
-  const slice = useSectionWindow(db, category.id, view.list, view.on)
+  const rows = useSectionRows(db, category, view.list, view.on)
   return (
     <main key={category.id} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
       <div className="flex flex-col gap-2.5 border-b px-6 pt-4 pb-3">
@@ -242,8 +242,7 @@ function SectionPanel({group, view}: {group: Group; view: ListState}) {
       </div>
       <DataTable
         key={category.id}
-        slice={slice}
-        count={shown.count}
+        rows={rows}
         label={category.title}
         progress={view.progressed?.progress ?? null}
         rowSelection={view.on}
@@ -526,9 +525,8 @@ const ListContext = createContext<ListState | null>(null)
 function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep) {
   const on = selection.rowSelection
   const heads = useSections(db)
-  const all = useTotals(db)
+  const {all, shown: totals} = useTotals(db, list, on)
   const sections = useMemo(() => sectionsOf(heads, all), [heads, all])
-  const totals = useFilteredTotals(db, list, on) ?? all
   const filtering = isFiltering(list)
   const items = db.scan.items.version()
   const nests = db.scan.nests.version()
