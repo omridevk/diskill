@@ -5,7 +5,8 @@ import {memo, useMemo, useRef, type ReactNode, type Ref, type RefObject} from 'r
 import {Button} from '@/components/ui/button'
 import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/components/ui/sheet'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatBytes, plural} from '@/lib/data'
+import {counted, formatBytes, plural, tilde} from '@/lib/data'
+import {useHome} from '@/lib/page-data'
 import type {Db} from '@/lib/db'
 import {formatDuration, formatUntil, jobRunning, resultBytes, resultOf, useMovie, type CleanupProgress, type Outcome} from '@/lib/progress'
 import {useBack} from '@/lib/navigation'
@@ -39,11 +40,11 @@ function share(progress: CleanupProgress) {
   return Math.min(1, Math.max(bytes, total > 0 ? count / total : 0))
 }
 
-function counted(n: number, label: string, tone: string) {
+function problemCount(n: number, label: string, tone: string) {
   return (
     <span className={n > 0 ? tone : undefined}>
       {' · '}
-      {n} {label}
+      {counted(n)} {label}
     </span>
   )
 }
@@ -52,8 +53,8 @@ function Problems({progress}: {progress: CleanupProgress}) {
   const latest = [...progress.byKey.values()]
   return (
     <>
-      {counted(latest.filter(o => o.kind === 'kept').length, 'kept', 'text-amber-300')}
-      {counted(latest.filter(o => o.kind === 'failed').length, 'not removed', 'text-red-300')}
+      {problemCount(latest.filter(o => o.kind === 'kept').length, 'kept', 'text-amber-300')}
+      {problemCount(latest.filter(o => o.kind === 'failed').length, 'not removed', 'text-red-300')}
     </>
   )
 }
@@ -83,7 +84,7 @@ function DoneText({progress}: {progress: CleanupProgress}) {
   const removed = latest.filter(o => o.kind === 'removed' || o.kind === 'freed').length
   return (
     <>
-      Freed {formatBytes(progress.freed)} · {removed} removed
+      Freed {formatBytes(progress.freed)} · {counted(removed)} removed
       <Problems progress={progress} />
     </>
   )
@@ -123,7 +124,7 @@ export function BarText({progress}: {progress: CleanupProgress}) {
   const last = progress.outcomes.at(-1)
   return (
     <>
-      Cleaning up · {formatBytes(progress.handled)} of {formatBytes(plan.approved)} · {progress.count} of {progress.total}
+      Cleaning up · {formatBytes(progress.handled)} of {formatBytes(plan.approved)} · {counted(progress.count)} of {counted(progress.total)}
       {last && <span className="text-muted-foreground"> · {last.label}</span>}
     </>
   )
@@ -165,7 +166,7 @@ function elapsedOf(progress: CleanupProgress) {
 
 function FreeSpace({progress}: {progress: CleanupProgress}) {
   const before = progress.cleanup.started?.free
-  if (progress.freeChange !== null) return <Stat label="Free space changed by">{signedBytes(progress.freeChange)}</Stat>
+  if (progress.freeChange !== null) return <Stat label="Free space change, all apps">{signedBytes(progress.freeChange)}</Stat>
   return <Stat label="Free space">{before === undefined || progress.free === null ? 'not started' : `${formatBytes(before)} → ${formatBytes(progress.free)}`}</Stat>
 }
 
@@ -189,7 +190,7 @@ function Stats({progress}: {progress: CleanupProgress}) {
       </div>
       <div className="grid grid-cols-3 gap-3">
         <Stat label="Items done">
-          {progress.count} of {progress.total}
+          {counted(progress.count)} of {counted(progress.total)}
         </Stat>
         <Stat label="Elapsed">{formatDuration(elapsedOf(progress))}</Stat>
         <FreeSpace progress={progress} />
@@ -360,10 +361,26 @@ function footerTitle(progress: CleanupProgress) {
 
 function FooterFigures({progress}: {progress: CleanupProgress}) {
   if (progress.freeChange === null) return null
+  return <>Freed {formatBytes(progress.freed)} · </>
+}
+
+const NOT_DONE_SHOWN = 3
+
+function NotDone({progress}: {progress: CleanupProgress}) {
+  const home = useHome()
+  const problems = [...progress.byKey.values()].filter(o => o.kind === 'failed' || o.kind === 'kept')
+  if (problems.length === 0) return null
+  const shown = problems.slice(0, NOT_DONE_SHOWN)
   return (
-    <>
-      Freed {formatBytes(progress.freed)} · free space changed by {signedBytes(progress.freeChange)} ·{' '}
-    </>
+    <ul aria-label="Not done" className="flex flex-col gap-0.5 text-xs">
+      {shown.map(o => (
+        <li key={o.key} className={`truncate ${o.kind === 'failed' ? 'text-red-300' : 'text-amber-300'}`}>
+          {o.kind === 'failed' ? 'Not removed' : 'Kept'} <span className="font-mono">{tilde(o.label, home)}</span>
+          {o.reason && `: ${o.reason}`}
+        </li>
+      ))}
+      {problems.length > shown.length && <li className="text-muted-foreground">{plural(problems.length - shown.length, 'more in Details', 'more in Details')}</li>}
+    </ul>
   )
 }
 
@@ -382,6 +399,7 @@ export function ProgressFooter({progress, held}: {progress: CleanupProgress; hel
           <HoldNote progress={progress} />
           {plural(progress.plan.items.size, 'item', 'items')} · {formatBytes(progress.plan.approved)} approved · a new cleanup starts with /disk-clean
         </div>
+        <NotDone progress={progress} />
       </div>
       {held}
     </footer>

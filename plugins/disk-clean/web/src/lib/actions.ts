@@ -1,6 +1,6 @@
 import {createOptimisticAction} from '@tanstack/db'
-import {decide, heldAction, messageOf, rescan as requestRescan, type Selected} from './api'
-import {openCleanup, openScan, writeSession, type Action, type Db, type Planned} from './db'
+import {decide, heldAction, messageOf, rescan as requestRescan, httpStatusOf, type Selected} from './api'
+import {openCleanup, openScan, writeSession, type Action, type Db, type Planned, type Request} from './db'
 import {RESTART, type Entry} from './scan-feed'
 
 const plannedOf = ({path, label, bytes, section, exact}: Entry): Planned => ({path, label, bytes, section, exact})
@@ -14,7 +14,15 @@ function markPending(db: Db, action: Action) {
     })
     return
   }
-  requests.insert({id: action, status: 'pending', message: ''})
+  requests.insert({id: action, status: 'pending', message: '', retry: false})
+}
+
+const BUSY = 'Another undo or cleanup is running; this will be possible when it finishes'
+const BUSY_ACTIONS = new Set<Action>(['undo', 'free'])
+
+function failureOf(action: Action, e: unknown): Request {
+  if (BUSY_ACTIONS.has(action) && httpStatusOf(e) === 409) return {id: action, status: 'failed', message: BUSY, retry: false}
+  return {id: action, status: 'failed', message: messageOf(e), retry: true}
 }
 
 function tracked(db: Db, action: Action, apply: () => void, send: () => Promise<void>) {
@@ -32,7 +40,7 @@ function tracked(db: Db, action: Action, apply: () => void, send: () => Promise<
     .when('settled')
     .then(
       () => undefined,
-      (e: unknown) => db.requests.write(writes => writes.put({id: action, status: 'failed', message: messageOf(e)})),
+      (e: unknown) => db.requests.write(writes => writes.put(failureOf(action, e))),
     )
 }
 

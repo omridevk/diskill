@@ -12,6 +12,8 @@ export interface Plan {
 
 export const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
+export const httpStatusOf = (e: unknown) => (e instanceof Error && 'status' in e && typeof e.status === 'number' ? e.status : 0)
+
 export interface Selected {
   add: string
   drop: string

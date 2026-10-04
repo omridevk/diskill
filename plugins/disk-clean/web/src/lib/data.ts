@@ -121,11 +121,16 @@ export function formatBytes(n: number): string {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${UNITS[unit]}`
 }
 
-export function plural(n: number, one: string, many: string, format: (n: number) => string = String) {
-  return `${format(n)} ${n === 1 ? one : many}`
+export const counted = (n: number) => n.toLocaleString()
+
+export function plural(n: number, one: string, many: string) {
+  return `${counted(n)} ${n === 1 ? one : many}`
 }
 
-export const counted = (n: number) => n.toLocaleString()
+export function sizeOf(exact: number, apparent: number) {
+  if (apparent === 0) return formatBytes(exact)
+  return exact === 0 ? `≈${formatBytes(apparent)}` : `${formatBytes(exact)} + ≈${formatBytes(apparent)}`
+}
 
 export const isExact = (item: Item) => item.accuracy === 'exact'
 

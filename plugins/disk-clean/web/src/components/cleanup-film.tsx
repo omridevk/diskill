@@ -4,7 +4,7 @@ import {ChevronDown, X} from 'lucide-react'
 import {Suspense, use, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
-import {formatBytes, plural} from '@/lib/data'
+import {counted, formatBytes, plural} from '@/lib/data'
 import type {Db} from '@/lib/db'
 import {finaleOf, formatDuration, formatUntil, logFeed, useLatest, useStaged, type Cleanup, type FilmPlan, type LogFeed, type MovieFeed, type Outcome, type Totals} from '@/lib/progress'
 import {createFilm, gaugeOf, pump, type Film as FilmState, type ParticlePhase} from '@/lib/film'
@@ -386,7 +386,7 @@ function emptyHeading(totals: Totals, all: readonly Outcome[]) {
 
 function emptySummary(totals: Totals, all: readonly Outcome[]) {
   const ran = all.filter(o => o.kind === 'ran').length
-  const parts = [totals.failed.length > 0 && `${totals.failed.length} not removed`, totals.kept.length > 0 && `${totals.kept.length} kept`, ran > 0 && `${plural(ran, 'command', 'commands')} ran`]
+  const parts = [totals.failed.length > 0 && `${counted(totals.failed.length)} not removed`, totals.kept.length > 0 && `${counted(totals.kept.length)} kept`, ran > 0 && `${plural(ran, 'command', 'commands')} ran`]
   return parts.filter(Boolean).join(' · ') || 'The cleanup had nothing to do'
 }
 

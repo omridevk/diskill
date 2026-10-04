@@ -12,7 +12,7 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {formatBytes, isPickable, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
+import {counted, formatBytes, isPickable, outermost, plural, RISK_LABEL, sumBytes, type Risk} from '@/lib/data'
 import {useDb, type Db} from '@/lib/db'
 import type {CleanupProgress, Removal} from '@/lib/progress'
 import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
@@ -88,12 +88,12 @@ function planned(section: string, progressed: Progressed) {
 }
 
 function pickedLabel({category, shown}: Group, progressed: Progressed | null) {
-  if (category.risk === 'report') return `${shown.count} listed`
+  if (category.risk === 'report') return `${counted(shown.count)} listed`
   if (progressed) {
     const plan = planned(category.id, progressed)
     return plan ? sectionProgress(progressed.removals.get(category.id), plan.count) : 'not approved'
   }
-  return `${shown.picked}/${shown.selectable}`
+  return `${counted(shown.picked)}/${counted(shown.selectable)}`
 }
 
 function SectionCheckbox({group, locked, choose}: {group: Group; locked: boolean; choose: Choose}) {
@@ -150,7 +150,7 @@ function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
     <div className="flex items-center gap-1 text-xs text-muted-foreground">
       <span className="pr-1">Select:</span>
       <Button size="xs" variant="ghost" onClick={() => choose(category.id, () => true)}>
-        all {shown.selectable}
+        all {counted(shown.selectable)}
       </Button>
       {shown.aged > 0 && (
         <Button size="xs" variant="ghost" onClick={idle(90)}>
@@ -235,7 +235,7 @@ function SectionPanel({group, view}: {group: Group; view: ListState}) {
           <Badge className={RISK_BADGE[category.risk]}>{RISK_LABEL[category.risk]}</Badge>
           <span className="grow" />
           <span className="text-[13px] text-muted-foreground tabular-nums">
-            {formatBytes(shown.bytes)} · {shown.count} of {category.count} shown
+            {formatBytes(shown.bytes)} · {counted(shown.count)} of {counted(category.count)} shown
           </span>
         </div>
         <p className="text-[13px] text-muted-foreground">{category.desc}</p>
@@ -543,7 +543,10 @@ function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep
   return {groups: groupsOf(sections, {totals, shadow, picked}), hidden}
 }
 
-const inOverlay = (event: KeyboardEvent) => event.target instanceof Element && event.target.closest('[role="dialog"], [role="listbox"]') !== null
+const OPEN_LAYER = '[role="dialog"], [role="listbox"], [role="menu"], [aria-expanded="true"]'
+
+const inOverlay = (event: KeyboardEvent) =>
+  document.querySelector(OPEN_LAYER) !== null || (event.target instanceof Element && event.target.closest(OPEN_LAYER) !== null)
 
 function useShortcuts(actions: [Hotkey, () => void, boolean][]) {
   useHotkeys(

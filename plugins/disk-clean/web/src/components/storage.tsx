@@ -101,7 +101,7 @@ function FolderCard({node, parents, total, home}: {node: TreeNode | null; parent
 }
 
 function Activity({node}: {node: TreeNode}) {
-  const parts = [node.files > 0 && plural(node.files, 'file', 'files', counted), node.mtime > 0 && `changed ${changedAgo(node.mtime)}`].filter(Boolean)
+  const parts = [node.files > 0 && plural(node.files, 'file', 'files'), node.mtime > 0 && `changed ${changedAgo(node.mtime)}`].filter(Boolean)
   if (parts.length === 0) return null
   return <div className="text-muted-foreground">{parts.join(' · ')}</div>
 }

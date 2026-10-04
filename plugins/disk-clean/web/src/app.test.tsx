@@ -563,7 +563,7 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
     await expect
       .element(screen.getByRole('contentinfo'))
-      .toHaveTextContent('Cleanup finishedFreed 3.5 GB · free space changed by +3.4 GB · 4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
+      .toMatchTextContent(/^Cleanup finishedFreed 3\.5 GB · 4 items · 3\.8 GB approved · a new cleanup starts with \/disk-clean/)
     expect(source.readyState).toBe(2)
 
     await details(screen).click()
@@ -752,10 +752,10 @@ describe('cleanup in the app', () => {
     sendAll(source, cleanupEvents.slice(1, 8))
     sendRaw(source, 'done', {free_before: 50 * GB, free_after: 49 * GB, elapsed_ms: 2500})
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
-    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('Cleanup finishedFreed 3.5 GB · free space changed by −1.0 GB · 4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
+    await expect.element(screen.getByRole('contentinfo')).toMatchTextContent(/^Cleanup finishedFreed 3\.5 GB · 4 items · 3\.8 GB approved · a new cleanup starts with \/disk-cleanNot removed/)
     await details(screen).click()
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
-    await expect.element(panel.getByText('Free space changed by')).toBeVisible()
+    await expect.element(panel.getByText('Free space change, all apps')).toBeVisible()
     await expect.element(panel.getByText('−1.0 GB')).toBeVisible()
   })
 

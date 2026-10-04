@@ -25,6 +25,7 @@ export interface Request {
   id: Action
   status: 'pending' | 'failed'
   message: string
+  retry: boolean
 }
 
 const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan', 'unlisted', 'replayed']

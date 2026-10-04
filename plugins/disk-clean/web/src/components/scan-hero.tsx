@@ -31,7 +31,7 @@ export function ScanCounter({scan}: {scan: Scan}) {
   return (
     <div className="flex h-5 min-w-0 items-baseline gap-3 text-[13px] text-muted-foreground tabular-nums">
       <span className="shrink-0">
-        {plural(files, 'file', 'files', counted)} · {formatBytes(bytes)}
+        {plural(files, 'file', 'files')} · {formatBytes(bytes)}
         {scan.walked ? ' scanned' : ''}
       </span>
       <span className="truncate font-mono text-xs text-muted-foreground/70" title={dir}>

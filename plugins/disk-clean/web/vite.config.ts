@@ -15,6 +15,7 @@ const FILM = ['src/film.test.tsx']
 const ROUTER = ['src/router.test.tsx']
 const HOLD = ['src/hold.test.tsx']
 const SCANNING = ['src/scanning.test.tsx']
+const WORDS = ['src/words.test.tsx', 'src/selection.test.tsx']
 
 interface Instance {
   browser: 'chromium' | 'firefox'
@@ -66,7 +67,7 @@ export default defineConfig({
           exclude: ['src/perf.test.tsx'],
           browser: inBrowsers('app', [
             CHROMIUM,
-            {...FIREFOX, include: [...FILM, ...ROUTER, ...HOLD, ...SCANNING], provider: retina},
+            {...FIREFOX, include: [...FILM, ...ROUTER, ...HOLD, ...SCANNING, ...WORDS], provider: retina},
             {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, include: FILM, provider: retina},
           ]),
         },

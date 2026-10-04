@@ -17,9 +17,11 @@ export function RequestError({db, action, onRetry}: {db: Db; action: Action; onR
   return (
     <span role="alert" className="flex items-center gap-2 text-xs text-red-300">
       <span>{`${LABEL[action]}: ${request.message}`}</span>
-      <Button size="xs" variant="outline" onClick={onRetry}>
-        <RotateCw /> Retry
-      </Button>
+      {request.retry && (
+        <Button size="xs" variant="outline" onClick={onRetry}>
+          <RotateCw /> Retry
+        </Button>
+      )}
     </span>
   )
 }

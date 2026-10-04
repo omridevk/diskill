@@ -2,7 +2,7 @@ import {Trash2, X} from 'lucide-react'
 import {useState, type AnimationEvent, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
 import type {CleanupProgress} from '@/lib/progress'
-import {formatBytes, plural} from '@/lib/data'
+import {formatBytes, plural, sizeOf} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
 import type {Selection} from '@/lib/page-data'
 import type {ScanState} from '@/lib/scan-feed'
@@ -72,7 +72,7 @@ function hint(scan: ScanState) {
 function deleteState(selection: Selection, scan: ScanState) {
   const count = selection.selected.length
   if (scan.error !== '') return {label: 'The scan failed · nothing can be deleted', ready: false}
-  if (count > 0) return {label: `Delete ${plural(count, 'item', 'items')} · ${formatBytes(selection.exactBytes)}`, ready: true}
+  if (count > 0) return {label: `Delete ${plural(count, 'item', 'items')} · ${sizeOf(selection.exactBytes, selection.apparentBytes)}`, ready: true}
   if (selection.selectable > 0) return {label: 'Select items to delete', ready: false}
   if (!scan.done) return {label: 'Scanning… nothing found yet', ready: false}
   return {label: 'Nothing found to delete', ready: false}
@@ -113,8 +113,8 @@ export function ActionBar({
       <div className="flex min-w-0 grow flex-col gap-0.5">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <div className="text-sm font-semibold tabular-nums">
-            {plural(count, 'item', 'items')} selected · <PopBytes bytes={selection.exactBytes} />
-            {selection.apparentBytes > 0 && (
+            {plural(count, 'item', 'items')} selected · {selection.exactBytes === 0 && selection.apparentBytes > 0 ? `≈${formatBytes(selection.apparentBytes)}` : <PopBytes bytes={selection.exactBytes} />}
+            {selection.exactBytes > 0 && selection.apparentBytes > 0 && (
               <span className="font-normal text-muted-foreground"> (+≈{formatBytes(selection.apparentBytes)} apparent)</span>
             )}
           </div>
