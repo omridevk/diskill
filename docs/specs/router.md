@@ -30,10 +30,10 @@ value.
 | path | what |
 | --- | --- |
 | `/` | redirects to `/cleanup` |
-| `/cleanup` | Cleanup tab; search: `view` (list/cards), `q`, `risk[]`, `minSize`, `minAge`, `sort`, `only` (selected) |
+| `/cleanup` | Cleanup tab; redirects to the first section (`/cleanup/$section`), so the open section is always in the path; search: `view` (list/cards), `q`, `risk[]`, `minSize`, `minAge`, `sort`, `only` (selected) |
 | `/cleanup/$section` | List view with that section open (Cards: that card expanded) |
-| `/cleanup/confirm` | the Delete confirm modal over the list (hold-and-confirm spec); closing navigates back |
-| `/cleanup/free` | the "Free the space now?" confirm (hold-and-confirm spec); only while something is held, otherwise redirects to `/cleanup` |
+| `/cleanup/$section/confirm` | the Delete confirm modal over that section's list (hold-and-confirm spec); closing navigates back to `/cleanup/$section` with its search intact |
+| `/cleanup/$section/free` | the "Free the space now?" confirm over that section; only while something is held, otherwise redirects to `/cleanup/$section` |
 | `/storage` and `/storage/$` | Storage tab; the splat is the zoomed folder path; search: `shape` (sunburst/treemap) |
 | `/insights` | Insights tab |
 | any route, search `overlay=progress` | the cleanup progress panel (it layers over whichever tab is open); its log filter `log` (all/removed/problems/commands) |
@@ -50,12 +50,18 @@ down through a React context. That is routing done by hand next to the router. T
   `cleanup.$section.tsx` the open section (reading `Route.useParams()`), `storage.$.tsx` the zoomed
   folder. No `useMatch` / `useChildMatches` to decide what to show; no `useParams({strict: false})`
   inside route-owned UI.
-- Route work lives in the route: the confirm plan is fetched by the `/cleanup/confirm` loader
-  (`Route.useLoaderData()`, pending UI via `pendingComponent`), `/cleanup/free` redirects in
+- Route work lives in the route: the confirm plan is fetched by the `/cleanup/$section/confirm` loader
+  (`Route.useLoaderData()`, pending UI via `pendingComponent`), `/cleanup/$section/free` redirects in
   `beforeLoad` when nothing is held, an unknown `$section` is `notFound()`.
 - Data reaches route components through the data layer's own hooks (TanStack DB live queries,
   db.md), not through a Shell-level React context. `Shell` keeps only the chrome that is on every
   route (header, summary, tabs as `<Link>`s, footer).
+- A dialog never changes what is behind it: the dialog routes are children of the view they cover
+  (`$section/confirm`), and every search param of that view survives opening and closing them.
+- Switching tabs returns to where you were in that tab (its last URL in this session, kept in the
+  tab links); the current view is always fully described by the URL.
+- Paths are shown from the home folder the server reports (`~`), never inferred from the storage map,
+  which may be skipped.
 - Overlays that layer over any route (`overlay=progress|movie`) stay search params read by one
   root-level component.
 
