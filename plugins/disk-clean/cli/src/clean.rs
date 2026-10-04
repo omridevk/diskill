@@ -580,13 +580,24 @@ impl Events {
     }
 
     pub fn append(dir: &Path) -> Events {
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join(EVENTS));
+        let path = dir.join(EVENTS);
+        let so_far = util::read_lines(&path)
+            .iter()
+            .rev()
+            .find_map(|line| {
+                serde_json::from_str::<Value>(line)
+                    .ok()?
+                    .get("elapsed_ms")?
+                    .as_u64()
+            })
+            .unwrap_or(0);
+        let file = fs::OpenOptions::new().create(true).append(true).open(path);
+        let now = Instant::now();
         Events {
             file: file.ok().map(Mutex::new),
-            start: Instant::now(),
+            start: now
+                .checked_sub(Duration::from_millis(so_far + 1))
+                .unwrap_or(now),
         }
     }
 

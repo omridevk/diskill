@@ -336,6 +336,24 @@ struct Landed {
 }
 
 fn move_batch(paths: &[String]) -> Vec<Result<String, String>> {
+    let mut landed = call_trash(paths);
+    let again: Vec<usize> = landed
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| l.is_err() && fs::symlink_metadata(&paths[*i]).is_ok())
+        .map(|(i, _)| i)
+        .collect();
+    if again.is_empty() {
+        return landed;
+    }
+    let retry: Vec<String> = again.iter().map(|i| paths[*i].clone()).collect();
+    for (i, result) in again.into_iter().zip(call_trash(&retry)) {
+        landed[i] = result;
+    }
+    landed
+}
+
+fn call_trash(paths: &[String]) -> Vec<Result<String, String>> {
     let failed = |why: String| paths.iter().map(|_| Err(why.clone())).collect();
     let Ok(input) = serde_json::to_vec(paths) else {
         return failed("a path could not be encoded".to_string());

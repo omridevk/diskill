@@ -1,6 +1,6 @@
 ---
 name: disk-clean
-description: Find reclaimable disk space on this Mac, show a browser UI listing exactly what will be deleted, and run the approved cleanup in the background (approved items are held first, so it can be undone until they are freed). Use when the user asks to clean up disk space, free space, find what is eating the disk, or invokes /disk-clean.
+description: Find reclaimable disk space on this Mac, show a browser UI listing exactly what will be deleted, and run the approved cleanup in the background (approved items go to the macOS Trash, so they can be undone until the Trash is emptied). Use when the user asks to clean up disk space, free space, find what is eating the disk, or invokes /disk-clean.
 ---
 
 # Disk Clean
@@ -46,10 +46,9 @@ Tunable via environment variables: `DISK_CLEAN_MIN_BYTES` (default 10 MB floor p
 `DISK_CLEAN_OLD_DOWNLOAD_DAYS` (default 180), `DISK_CLEAN_MAP_DEPTH` (default 5),
 `DISK_CLEAN_MAP_MIN_BYTES` (default 200 MB), `DISK_CLEAN_NM_DEPTH` (default 9),
 `DISK_CLEAN_NM_MIN_BYTES` (default 5 MB), `DISK_CLEAN_SKIP_MAP=1` to skip the storage map
-and walk only the home and temp folders instead of the whole volume, `DISK_CLEAN_HOLD_DAYS`
-(default 7) for how long approved items stay held before they are freed automatically.
+and walk only the home and temp folders instead of the whole volume.
 
-The page has three tabs, a summary strip (disk donut, selected total, scan status) and a footer:
+The page has four tabs, a summary strip (disk donut, selected total, scan status) and a footer:
 
 - **Cleanup** — sections grouped Safe / Review first / Report only, as a **List** (sidebar of
   sections plus a table of the open section) or **Cards** (one card per section). Each section has a checkbox for all its shown items, and its size and counts follow
@@ -66,11 +65,18 @@ The page has three tabs, a summary strip (disk donut, selected total, scan statu
   *cannot* reclaim shows up.
 - **Insights** — read-only charts: bytes by last-modified day over the past year, the age of the
   largest folders under `~`, bytes by file kind, cleanup sections by idle time, and the largest files.
+- **Trash** — every item disk-clean put in the Trash, across runs, from its record after a sync:
+  path from `~`, size, when, which cleanup, and its state (in the Trash, put back by our Undo, put
+  back in Finder, emptied, or failed with the reason). Undo or Empty per item, per cleanup or for the
+  ticked items; a cleanup filter. Empty always asks first and never touches anything else in the
+  Trash.
 - **Addresses** — everything you see is in the page address, so reload, Back/Forward and a copied
   link all restore it: the tab and the open section or zoomed folder are the path
   (`/cleanup/<section>`, `/storage/<folder path>`, `/insights`), filters, sort, view and the
   chart shape are query parameters (default values are left out), the Delete confirm is
-  `/cleanup/<section>/confirm`, the Free confirm is `/cleanup/<section>/free`, and the progress log
+  `/cleanup/<section>/confirm` (`?now` for Delete immediately), the Empty confirm is
+  `/cleanup/<section>/empty` (and `/trash/empty` in the Trash tab, whose ticked items and cleanup
+  filter are query parameters too), and the progress log
   and the movie are `?overlay=progress` / `?overlay=movie`. The ticked items are in the address too:
   `add` and `drop` hold only the changes from the recommended selection. Escape closes a dialog by
   going back to the address it was opened from. The local server answers every page address with
@@ -78,44 +84,46 @@ The page has three tabs, a summary strip (disk donut, selected total, scan statu
 - **Clear selection** and **Reset to recommended** (footer, beside the "N items selected · X"
   count) do what the `d` and `r` shortcuts do. Each is disabled only when it would change nothing,
   and then its name says why. They are hidden while a cleanup runs.
-- **Delete N items · X** (footer): enabled whenever at least one selected item can be deleted,
-  also while the scan runs. When it cannot be pressed its label says why: "Scanning… nothing found
-  yet", "Select items to delete", "Nothing found to delete" or "The scan failed · nothing can be
-  deleted". It opens a confirm dialog (Escape or Cancel closes it and changes
-  nothing) built by the same validation code `clean` uses: the totals, then **Moved to hold (undo
-  available)** with every path and its size, **Can't be undone** with the exact command lines (git
-  worktree removals, freeing an earlier held run, the fixed commands), and anything the safety
-  checks rejected with the reason. While the scan is still running it also says "The scan is still
-  running; confirming stops it and uses what was found so far.", and it approves exactly the list it
-  shows, even if more items arrive while it is open. Its button ("Move N items to hold", or "Delete N items" when
-  nothing can be held) sends the approval; there is no countdown after it. **Cancel** (end the
-  session without deleting) still has a few-second undo window.
-  After approval the page stays on the review app with a progress bar at the top: first "Claude is
-  showing the commands in your terminal" (the dry run below), then the real cleanup once stage 3
-  starts (items done, current path), then the result. Held items are labelled "held, not freed yet":
-  the bar, the summary and the footer say "Held X · not freed yet · undo until <date>" and offer
-  **Undo** (puts every held item back exactly where it was) and **Free the space now** (deletes the
-  held items for good after its own confirm). Only Free, worktree removals and freeing earlier held
-  runs count as freed; the volume's free-space change is shown separately and labelled "free space
-  changed by" (other apps write to the disk too). If `clean` never runs, finds nothing that passes
-  the safety checks, or its worker dies, the bar says the cleanup did not start (or stopped) and
-  why. Clicking the bar opens a live log of every held item, removal, kept worktree, failure (with
-  its reason), command, undo and free; the cleanup list marks each approved row as it goes. A
-  "Watch the movie" button there plays the cleanup film on demand; it ends on what was held (with
-  Undo / Free) and plays its "You freed" payoff when Free completes. A reload keeps the bar and log.
-  A small helper keeps serving the page after `review` exits; its only actions are Undo and Free for
-  this run's own held items, and it stops on its own a minute after the tab is closed or the
-  cleanup finished.
+- **Delete N items · X** (footer, also ⌘⌫ or the Delete key): enabled whenever at least one
+  selected item can be deleted, also while the scan runs. When it cannot be pressed its label says
+  why: "Scanning… nothing found yet", "Select items to delete", "Nothing found to delete" or "The
+  scan failed · nothing can be deleted". It opens a confirm dialog (Escape or Cancel closes it and
+  changes nothing) built by the same validation code `clean` uses: the totals, then **Moved to the
+  Trash (undo available)** with every path and its size, **Can't be undone** with the exact lines
+  (items already inside a Trash, which are removed for good, git worktree removals, the fixed
+  commands), and anything the safety checks rejected with the reason. While the scan is still
+  running it also says so, and it approves exactly the list it shows. Its button ("Move N items to
+  the Trash") sends the approval.
+- **Delete immediately…** (beside Delete, ⌥⌘⌫ like Finder, or ⇧⌫): skips the Trash and removes
+  for good. Its confirm says "can't be undone", gives the exact counts and bytes, its button names
+  the action ("Delete N items immediately · X"), and focus starts on Cancel. Nothing deleted this
+  way is recorded or undoable.
+- **Cancel** (end the session without deleting) still has a few-second undo window.
+- After approval the page stays on the review app. One phase drives the header line, the hero, the
+  counter row, the status line and the summary, so they always agree: "Approved · waiting to start"
+  (Claude is showing the dry run), "Moving to the Trash" (or "Deleting for good"), then **"Moved to
+  Trash X · undo available"** with **Undo** (puts every item of this cleanup back exactly where it
+  was) and **Empty these from Trash** (deletes only these items from the Trash for good, after its
+  own confirm), then "Putting back" or "Emptying from the Trash" while those run. Moving to the
+  Trash frees no space, so it is never shown as freed; the free-space line says the Trash keeps the
+  space until it is emptied, and updates live while space comes back. If `clean` never runs, finds
+  nothing that passes the safety checks, or its worker dies, the page says the cleanup did not start
+  (or stopped) and why. **Details** opens a live log of every move, removal, kept worktree, failure
+  (with its reason), command, undo and empty; "Watch the movie" plays the cleanup film. A reload
+  keeps all of it. A small helper keeps serving the page after `review` exits; its only actions are
+  Undo and Empty for items in the Trash record, and it stops on its own a minute after the tab is
+  closed.
 
 Exit codes: `0` approved (`$RUN_DIR/selection.json` written), `3` nothing found,
 `4` timed out after 30 minutes, `5` cancelled or empty selection.
 On any non-zero exit, stop and report — do not delete anything.
 
-## Stage 3 — Background cleanup (hold first)
+## Stage 3 — Background cleanup (to the Trash)
 
-To print the plan without changing anything (same validation, same commands). It lists the hold
-moves (`mv -- '<path>' '<held path>'`) under `# moved to hold`, separately from the steps under
-`# can't be undone` (git worktree removals, freeing earlier held runs, fixed commands):
+To print the plan without changing anything (same validation, same commands). It lists the Trash
+moves (`trash -- '<path>'`) under `# moved to the Trash`, Delete immediately removals
+(`rm -rf -- '<path>'`) under `# deleted immediately`, and the steps under `# can't be undone`
+(git worktree removals, fixed commands):
 
 ```bash
 bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean --dry-run "$RUN_DIR"
@@ -126,13 +134,17 @@ bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean "$RUN_DI
 ```
 
 Returns immediately with a pid and a log path. The cleanup runs detached: each approved path is
-first resolved again, then moved (an instant same-volume rename that never follows symlinks) into
-`~/.cache/disk-clean/held/<run>/<n>` and recorded in that folder's `manifest.jsonl`; a path that
-cannot be moved there (another volume, permission) is reported `NOT HELD` and left where it is.
-Worktrees, earlier held runs and the fixed commands run afterwards and can't be undone. Only one `clean` runs per run directory at a time. Exit codes (the dry run uses the
-same ones): `0` queued, `2` no run directory / `selection.json` / `scan.tsv`, `3` nothing passed the
-safety checks (see `$RUN_DIR/rejected`), `4` another `clean` is already running for this run
-directory. Check progress with:
+resolved again and then moved to the macOS Trash through the system API (NSFileManager, the same
+call Finder uses; a name clash in the Trash gets a new name, and Finder's Put Back works). Each item
+is written to `~/.cache/disk-clean/trashed.jsonl` before the move and completed after it, with where
+it landed. A path the Trash refuses is reported `NOT TRASHED` with the reason and left where it is.
+When the user chose Delete immediately (`"mode": "now"` in `selection.json`), paths are removed for
+good instead and never recorded. Items that already sit in a Trash are always removed for good.
+Worktrees and the fixed commands run afterwards and can't be undone. Only one `clean` runs per run
+directory, and only one of clean, undo or empty touches the Trash record at a time. Exit codes (the
+dry run uses the same ones): `0` queued, `2` no run directory / `selection.json` / `scan.tsv`, `3`
+nothing passed the safety checks (see `$RUN_DIR/rejected`), `4` another `clean` is already running
+for this run directory. Check progress with:
 
 ```bash
 tail -20 "$RUN_DIR/clean.log"; cat "$RUN_DIR/status" 2>/dev/null
@@ -140,40 +152,43 @@ tail -20 "$RUN_DIR/clean.log"; cat "$RUN_DIR/status" 2>/dev/null
 
 `status` reads `pending` while running, `done` when finished, `interrupted` if the worker died
 before finishing, and `abandoned` when nothing passed the safety checks or `clean` was never run
-after the approval. The tail of the log reports `removed: N items, X bytes` (what was freed), `held: N items, X bytes,
-not freed yet (undo until <date>: ...)` and, separately, how much the volume's free space changed
-since the worker started. Each run starts a
-fresh `$RUN_DIR/clean.events`; the review tab shows the current run live from it, so the user can
-watch it there instead of waiting on the terminal.
+after the approval. The tail of the log reports `removed: N items, X bytes` (what was freed),
+`trashed: N items, X bytes, in the Trash until it is emptied (...)` and, separately, how much the
+volume's free space changed since the worker started. Each run starts a fresh
+`$RUN_DIR/clean.events`; the review tab shows the current run live from it.
 
-### After approval: report, undo, free, expiry
+### After approval: report, undo, empty
 
-When `status` is `done`, tell the user what happened in these words: **"held X (undo available
-until <date>)"**, plus anything removed, kept or not held, taking X and the date from the `held:`
-line of `clean.log`. Holding frees no space yet; never call held bytes freed.
+When `status` is `done`, tell the user what happened in these words: **"Moved X to the Trash (undo
+available)"**, plus anything removed, kept or not trashed, taking X from the `trashed:` line of
+`clean.log`. Moving to the Trash frees no space until the Trash is emptied; never call it freed.
 
 ```bash
 bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" undo "$RUN_DIR"
-bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" free "$RUN_DIR"
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" empty "$RUN_DIR"
 ```
 
-- `undo` moves every held item of that run back to its original path. If something exists at the
-  original path again (for example `node_modules` was reinstalled), that item stays held and the
-  output says why; it never overwrites. Undo after a partial free restores what is still held.
-- `free` deletes the held items of that run for good (four at a time) and reports what was freed.
-  Only run it when the user asks to free the space; it can't be undone.
-- Both act only on the entries of that run's manifest, re-check each held copy before touching it
-  (a held copy that was replaced, or a manifest entry outside its holding folder, is left alone and
-  reported), and print `restored:` / `freed:` and `still held: N`. Exit codes: `0` done, `2` no run
-  directory, `3` nothing is held for that run, `4` the held items are busy (another undo, free or
-  clean). The review page offers the same two actions and shows their progress live.
-- Expiry: held runs older than `DISK_CLEAN_HOLD_DAYS` (default 7) are freed automatically by the next
-  `disk-clean` command of any kind, before it does anything else; it says so on stderr.
+- `undo` moves every item of that run that is still in the Trash back to its original path (a
+  same-volume rename that never overwrites: if something exists at the original path again, for
+  example a reinstalled `node_modules`, that item stays in the Trash and the output says why).
+- `empty` deletes that run's items from the Trash for good and reports what was emptied. It never
+  empties the whole Trash and never touches items disk-clean did not put there. Only run it when
+  the user asks for it; it can't be undone.
+- `undo --all` / `empty --all` act on every recorded item still in the Trash, across runs.
+- Both act only on the record, re-check each item first (it must still be inside a Trash folder with
+  the same file identity; a replaced item or a record entry outside the Trash is left alone and
+  reported), and print `restored:` / `emptied:` and `still in the Trash: N`. Exit codes: `0` done,
+  `2` no run directory, `3` nothing of that run is still in the Trash, `4` the record is busy
+  (another clean, undo or empty). The review page offers the same actions, per item, per cleanup or
+  for a selection, in the footer and the Trash tab.
+- The record is synced on every `disk-clean` command and every page load: an item the user put back
+  in Finder becomes "put back", one that left the Trash becomes "emptied", anything ambiguous is
+  marked failed with the reason and never acted on.
+- Held runs from older versions (the `~/.cache/disk-clean/held` folder) are moved to the Trash item
+  by item on the first command after the update, recorded like any other item (so Undo still puts
+  them back), and the holding folder is removed once empty; it says so on stderr.
 
 ## What the scan covers
-
-**Held by disk-clean** is its own section: one row per held run (age and size). The holding folder
-is never part of the other sections. Selecting a run and approving frees it (can't be undone).
 
 **node_modules is its own section**, listed by project directory, with the package manager and
 days-since-install on every row, at any age (5 MB floor, searched 9 levels deep). Only entries
@@ -245,13 +260,12 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
   after a fresh re-check. A worktree that changed after the scan is kept and logged as `KEPT`.
 - The review page and its helper answer only requests addressed to `127.0.0.1:<port>` or
   `localhost:<port>`; changes also need a JSON body from the page's own origin and its token. The
-  helper's only changes are Undo and Free (`POST /undo`, `POST /free`), which also require the page's
-  `Origin` and act only on that run's held items.
+  only changes to the Trash are Undo and Empty (`POST /undo`, `POST /empty`), which also require
+  the page's `Origin` and act only on ids in the Trash record.
 - No `sudo`, ever. System-level caches under `/Library` and `/private/var` are out of scope.
-- Approved paths are moved to the holding folder first, never deleted directly, so the cleanup can
-  be undone until they are freed (by Free, or automatically after `DISK_CLEAN_HOLD_DAYS`). Freeing is
-  permanent, not to the Trash. Git worktree removals and the three fixed commands can't be held and
-  are labelled "can't be undone" everywhere.
+- Approved paths go to the macOS Trash, never deleted directly, unless the user chose Delete
+  immediately, which is labelled "can't be undone" everywhere. Git worktree removals and the three
+  fixed commands can't go to the Trash and are labelled "can't be undone" too.
 
 ## Re-running
 

@@ -159,7 +159,7 @@ function Body({plan, mode, home, selected}: {plan: Plan; mode: Mode; home: strin
         </Group>
       )}
       {(mode === 'trash' ? final : plan.final).length > 0 && (
-        <Group title="Can't be undone" note="items already in a Trash, worktree removals and fixed commands run exactly as below" tone="text-amber-300">
+        <Group title="Can't be undone" note={mode === 'trash' ? 'items already in a Trash, worktree removals and fixed commands run exactly as below' : 'worktree removals and fixed commands run exactly as below'} tone="text-amber-300">
           <Lines label="Can't be undone" lines={mode === 'trash' ? final : plan.final.map(line => tildeWords(line, home))} />
         </Group>
       )}

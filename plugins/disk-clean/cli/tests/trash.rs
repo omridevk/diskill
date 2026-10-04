@@ -89,6 +89,11 @@ fn clean(s: &Sandbox) {
         fs::read_to_string(s.run.join("status")).unwrap_or_default() == "done\n"
     });
     common::assert_record_inside_ram_disk(&s.home);
+    let log = fs::read_to_string(s.run.join("clean.log")).unwrap_or_default();
+    assert!(
+        !log.contains("NOT TRASHED") || log.contains("Caches/pinned"),
+        "{log}"
+    );
 }
 
 fn record(s: &Sandbox) -> Vec<trash::Entry> {
