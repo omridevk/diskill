@@ -23,9 +23,9 @@ const OUTCOME_TEXT: Record<Outcome['kind'], [string, string]> = {
   ran: ['ran', 'text-muted-foreground'],
   kept: ['kept', 'text-amber-300'],
   failed: ['not removed', 'text-red-300'],
-  held: ['held · not freed yet', 'text-sky-300'],
-  freed: ['freed', 'text-muted-foreground'],
-  restored: ['restored', 'text-foreground'],
+  trashed: ['in the Trash · undo available', 'text-sky-300'],
+  emptied: ['emptied from the Trash', 'text-muted-foreground'],
+  restored: ['put back', 'text-foreground'],
 }
 
 function pendingText(progress: CleanupProgress) {

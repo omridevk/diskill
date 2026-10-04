@@ -15,7 +15,7 @@ const CHROMIUM = {browser: 'chromium' as const, viewport: VIEWPORT}
 const FIREFOX = {browser: 'firefox' as const, viewport: VIEWPORT}
 const FILM = ['src/film.test.tsx']
 const ROUTER = ['src/router.test.tsx']
-const HOLD = ['src/hold.test.tsx']
+const TRASH = ['src/trash.test.tsx']
 const SCANNING = ['src/scanning.test.tsx']
 const WORDS = ['src/words.test.tsx', 'src/selection.test.tsx', 'src/empty.test.tsx', 'src/stability.test.tsx']
 const URLS = ['src/url-privacy.test.tsx']
@@ -42,7 +42,7 @@ function inBrowsers(project: string, instances: Instance[]) {
 export default defineConfig({
   plugins: [tanstackRouter({target: 'react'}), react(), tailwindcss(), viteSingleFile()],
   resolve: {alias: {'@': fileURLToPath(new URL('./src', import.meta.url))}},
-  server: {proxy: review ? {'/preview': review, '/decide': review, '/events': review, '/undo': review, '/free': review} : undefined},
+  server: {proxy: review ? {'/preview': review, '/decide': review, '/events': review, '/undo': review, '/empty': review} : undefined},
   optimizeDeps: {
     include: [
       '@base-ui/react/popover',
@@ -73,7 +73,7 @@ export default defineConfig({
           exclude: ['src/perf.test.tsx', 'src/frames.test.tsx'],
           browser: inBrowsers('app', [
             CHROMIUM,
-            {...FIREFOX, include: [...FILM, ...ROUTER, ...HOLD, ...SCANNING, ...WORDS, ...URLS, ...TOOLTIPS], provider: retina},
+            {...FIREFOX, include: [...FILM, ...ROUTER, ...TRASH, ...SCANNING, ...WORDS, ...URLS, ...TOOLTIPS], provider: retina},
             {...CHROMIUM, name: 'chromium reduced', include: TOOLTIPS, provider: reduced},
             {...FIREFOX, name: 'firefox reduced', include: TOOLTIPS, provider: reduced},
             {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, include: FILM, provider: retina},

@@ -61,12 +61,34 @@ export interface EventSourceLike extends EventTarget {
 
 export type OpenEvents = (url: string) => EventSourceLike
 
+export type TrashState = 'trashed' | 'restored' | 'put-back' | 'emptied' | 'failed'
+
+export interface TrashEntry {
+  id: string
+  run: string
+  original: string
+  trashed: string
+  bytes: number
+  at: number
+  dev: number
+  ino: number
+  state: TrashState
+  reason: string
+}
+
+interface TrashRecord {
+  trash?: TrashEntry[]
+  run?: string
+}
+
 export interface Loaded {
   data: ScanData
   token: string
   home: string
   live?: boolean
   approved?: string[]
+  trash?: TrashEntry[]
+  run?: string
   openEvents?: OpenEvents
 }
 
@@ -89,9 +111,10 @@ export async function load(): Promise<Loaded> {
   const token = metaOf('disk-clean-token')
   const home = metaOf('disk-clean-home')
   if (import.meta.env.DEV && text.trim() === '__DATA__') return loadDev()
-  const parsed: ScanData | {live: true} | (ScanData & {approved: true; selection: string[]}) = JSON.parse(text)
-  if ('live' in parsed) return {data: NO_DATA, token, home, live: true}
-  return 'approved' in parsed ? {data: parsed, token, home, approved: parsed.selection} : {data: parsed, token, home}
+  const parsed: (ScanData | {live: true} | (ScanData & {approved: true; selection: string[]})) & TrashRecord = JSON.parse(text)
+  const record = {trash: parsed.trash ?? [], run: parsed.run ?? ''}
+  if ('live' in parsed) return {data: NO_DATA, token, home, live: true, ...record}
+  return 'approved' in parsed ? {data: parsed, token, home, approved: parsed.selection, ...record} : {data: parsed, token, home, ...record}
 }
 
 export function tilde(path: string, home: string) {

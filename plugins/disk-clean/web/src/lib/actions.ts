@@ -1,6 +1,6 @@
 import {createOptimisticAction} from '@tanstack/db'
-import {decide, heldAction, messageOf, rescan as requestRescan, httpStatusOf, type Selected} from './api'
-import {openCleanup, openScan, writeSession, type Action, type Db, type Planned, type Request} from './db'
+import {decide, messageOf, rescan as requestRescan, httpStatusOf, trashAction, type Mode, type Selected} from './api'
+import {openCleanup, openScan, receiveTrash, writeSession, type Action, type Db, type Planned, type Request} from './db'
 import {RESTART, type Entry} from './scan-feed'
 
 const plannedOf = ({path, label, bytes, section, exact}: Entry): Planned => ({path, label, bytes, section, exact})
@@ -17,8 +17,8 @@ function markPending(db: Db, action: Action) {
   requests.insert({id: action, status: 'pending', message: '', retry: false})
 }
 
-const BUSY = 'Another undo or cleanup is running; this will be possible when it finishes'
-const BUSY_ACTIONS = new Set<Action>(['undo', 'free'])
+const BUSY = 'Another cleanup, undo or empty is running; try again when it finishes'
+const BUSY_ACTIONS = new Set<Action>(['undo', 'empty'])
 
 function failureOf(action: Action, e: unknown): Request {
   if (BUSY_ACTIONS.has(action) && httpStatusOf(e) === 409) return {id: action, status: 'failed', message: BUSY, retry: false}
@@ -59,9 +59,10 @@ interface Approval {
   items: readonly Entry[]
   bytes: number
   selected: Selected
+  mode: Mode
 }
 
-export function approve(db: Db, {items, bytes: approvedBytes, selected}: Approval) {
+export function approve(db: Db, {items, bytes: approvedBytes, selected, mode}: Approval) {
   const rows = items.map(plannedOf)
   const stopped = {scan: false}
   const apply = () => {
@@ -74,7 +75,7 @@ export function approve(db: Db, {items, bytes: approvedBytes, selected}: Approva
   }
   return tracked(db, 'approve', apply, async () => {
     try {
-      await decide(db.loaded.token, 'approve', selected)
+      await decide(db.loaded.token, 'approve', selected, mode)
     } catch (e) {
       if (stopped.scan) openScan(db)
       throw e
@@ -99,13 +100,13 @@ export function cancel(db: Db) {
   )
 }
 
-export function askHeld(db: Db, action: 'undo' | 'free') {
+export function askTrash(db: Db, action: 'undo' | 'empty', ids: readonly string[]) {
   return tracked(
     db,
     action,
     () => {},
     async () => {
-      await heldAction(db.loaded.token, action)
+      receiveTrash(db, await trashAction(db.loaded.token, action, ids))
     },
   )
 }

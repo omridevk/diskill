@@ -1,5 +1,5 @@
 import {createMemoryHistory} from '@tanstack/react-router'
-import type {Category, Item, Loaded, ScanData} from '@/lib/data'
+import type {Category, Item, Loaded, ScanData, TrashEntry, TrashState} from '@/lib/data'
 
 const GB = 1024 ** 3
 
@@ -84,7 +84,9 @@ const data: ScanData = {
   },
 }
 
-export const fixture: Loaded = {data, token: 'test-token', home: '/Users/you'}
+export const RUN = 'run-20261004-161542-a2ad54a5'
+
+export const fixture: Loaded = {data, token: 'test-token', home: '/Users/you', run: RUN, trash: []}
 
 export const cleanupEvents = [
   {type: 'waiting', data: {}},
@@ -107,37 +109,62 @@ export function bigSection(count: number): Category {
 
 export function withSection(extra: Category): Loaded {
   const [first, ...rest] = categories
-  return {data: {...data, categories: first ? [first, extra, ...rest] : [extra]}, token: 'test-token', home: '/Users/you'}
+  return {data: {...data, categories: first ? [first, extra, ...rest] : [extra]}, token: 'test-token', home: '/Users/you', run: RUN, trash: []}
 }
 
 const CACHES = ['app-a', 'app-b', 'app-c', 'app-d'].map((name, i) => ({path: `/Users/you/Library/Caches/${name}`, bytes: [2, 1, 0.5, 0.25][i]! * GB}))
 
-const HOLD_UNTIL = 1_800_000_000
+const IDS = ['a1', 'b2', 'c3', 'd4'].map(id => id.padStart(16, '0'))
 
-export const heldEvents = [
-  {type: 'started', data: {run: 'run-h', free: 50 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 4.75 * GB, elapsed_ms: 0}},
-  ...CACHES.map((c, i) => ({type: 'held', data: {...c, held_path: `/Users/you/.cache/disk-clean/held/run-h/${i + 1}`, elapsed_ms: 100 + i}})),
+export function entry(i: number, state: TrashState, extra: Partial<TrashEntry> = {}): TrashEntry {
+  const cache = CACHES[i]!
+  return {
+    id: IDS[i]!,
+    run: RUN,
+    original: cache.path,
+    trashed: `/Users/you/.Trash/${cache.path.split('/').at(-1)}`,
+    bytes: cache.bytes,
+    at: 1_790_000_000 + i,
+    dev: 1,
+    ino: 100 + i,
+    state,
+    reason: '',
+    ...extra,
+  }
+}
+
+const rows = (state: TrashState) => ({type: 'trash', data: {entries: CACHES.map((_, i) => entry(i, state)), elapsed_ms: 0}})
+
+export const trashedEvents = [
+  {type: 'started', data: {run: 'run-h', free: 50 * GB, paths: 4, trash: 4, worktrees: 1, commands: 0, bytes: 4.75 * GB, elapsed_ms: 0}},
+  ...CACHES.map((c, i) => ({type: 'trashed', data: {...c, id: IDS[i]!, trashed_path: entry(i, 'trashed').trashed, elapsed_ms: 100 + i}})),
+  rows('trashed'),
   {type: 'worktree', data: {path: '/Users/you/code/wt', bytes: GB, outcome: 'removed', reason: '', elapsed_ms: 900}},
-  {type: 'done', data: {removed: 1, removed_bytes: GB, held: 4, held_bytes: 3.75 * GB, hold_until: HOLD_UNTIL, free_before: 50 * GB, free_after: 51 * GB, elapsed_ms: 1000}},
+  {type: 'done', data: {removed: 1, removed_bytes: GB, trashed: 4, trashed_bytes: 3.75 * GB, free_before: 50 * GB, free_after: 51 * GB, elapsed_ms: 1000}},
 ] as const
 
-const item_of = (job: string, c: (typeof CACHES)[number], i: number, outcome: string) => ({
+const jobItem = (job: string, c: (typeof CACHES)[number], i: number, outcome: string) => ({
   job,
+  id: IDS[i]!,
   ...c,
-  held_path: `/Users/you/.cache/disk-clean/held/run-h/${i + 1}`,
+  trashed_path: entry(i, 'trashed').trashed,
   outcome,
   reason: '',
-  elapsed_ms: 10 + i,
+  elapsed_ms: 1010 + i,
 })
 
 export const undoEvents = [
-  {type: 'undo_started', data: {job: 'j-undo', count: 4, bytes: 3.75 * GB, elapsed_ms: 0}},
-  ...CACHES.map((c, i) => ({type: 'undone', data: item_of('j-undo', c, i, 'restored')})),
-  {type: 'undo_done', data: {job: 'j-undo', restored: 4, restored_bytes: 3.75 * GB, kept: 0, held: 0, held_bytes: 0, elapsed_ms: 50}},
+  {type: 'undo_started', data: {job: 'j-undo', count: 4, bytes: 3.75 * GB, elapsed_ms: 1005}},
+  ...CACHES.map((c, i) => ({type: 'undone', data: jobItem('j-undo', c, i, 'restored')})),
+  rows('restored'),
+  {type: 'undo_done', data: {job: 'j-undo', restored: 4, restored_bytes: 3.75 * GB, kept: 0, trashed: 0, trashed_bytes: 0, elapsed_ms: 1050}},
 ] as const
 
-export const freeEvents = [
-  {type: 'free_started', data: {job: 'j-free', count: 4, bytes: 3.75 * GB, free: 51 * GB, elapsed_ms: 0}},
-  ...CACHES.map((c, i) => ({type: 'freed', data: item_of('j-free', c, i, 'freed')})),
-  {type: 'free_done', data: {job: 'j-free', freed: 4, freed_bytes: 3.75 * GB, kept: 0, held: 0, held_bytes: 0, free_before: 51 * GB, free_after: 54.75 * GB, elapsed_ms: 80}},
+export const emptyEvents = [
+  {type: 'empty_started', data: {job: 'j-empty', count: 4, bytes: 3.75 * GB, free: 51 * GB, elapsed_ms: 1005}},
+  ...CACHES.slice(0, 2).map((c, i) => ({type: 'emptied', data: jobItem('j-empty', c, i, 'emptied')})),
+  {type: 'free', data: {free: 53 * GB, elapsed_ms: 1020}},
+  ...CACHES.slice(2).map((c, i) => ({type: 'emptied', data: jobItem('j-empty', c, i + 2, 'emptied')})),
+  rows('emptied'),
+  {type: 'empty_done', data: {job: 'j-empty', emptied: 4, emptied_bytes: 3.75 * GB, kept: 0, trashed: 0, trashed_bytes: 0, free_before: 51 * GB, free_after: 54.75 * GB, elapsed_ms: 1080}},
 ] as const

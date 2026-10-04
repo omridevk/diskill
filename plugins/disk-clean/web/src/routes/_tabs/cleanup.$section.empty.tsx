@@ -1,37 +1,37 @@
 import {createFileRoute, redirect} from '@tanstack/react-router'
-import {FreeDialog} from '@/components/free-dialog'
-import {freeOffer} from '@/lib/progress'
+import {EmptyDialog} from '@/components/empty-dialog'
 import {useBack, useDialogExit} from '@/lib/navigation'
 import {isApproved, useDecisions, useProgress} from '@/lib/page-data'
 
-export const Route = createFileRoute('/_tabs/cleanup/$section/free')({
+export const Route = createFileRoute('/_tabs/cleanup/$section/empty')({
   beforeLoad: ({context, params}) => {
     if (!isApproved(context.db)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
   },
-  component: Free,
+  component: Empty,
 })
 
-function Free() {
-  const {progress} = useProgress()
-  const {held} = useDecisions()
+function Empty() {
+  const {progress, phase} = useProgress()
+  const {trash} = useDecisions()
   const navigate = Route.useNavigate()
   const back = useBack()
   const {section} = Route.useParams()
   const exit = useDialogExit()
-  const offer = freeOffer(progress)
   const toSection = () => navigate({to: '/cleanup/$section', params: true, search: true, replace: true})
-  const free = () => {
-    held('free')
+  if (!progress) return null
+  const {ids, count, bytes} = progress.inTrash
+  const empty = () => {
+    trash('empty', ids)
     exit.leave(toSection)
   }
-  if (!progress) return null
   return (
-    <FreeDialog
-      progress={progress}
-      open={exit.open && offer === 'offered'}
+    <EmptyDialog
+      count={count}
+      bytes={bytes}
+      open={exit.open && phase === 'trashed'}
       onOpenChange={open => open || exit.leave(() => back({to: '/cleanup/$section', params: {section}, search: true}))}
       onClosed={() => (exit.after ?? toSection)()}
-      onFree={free}
+      onEmpty={empty}
     />
   )
 }

@@ -3,7 +3,7 @@ import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest'
 import {userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
-import {category, cleanupEvents, fixture, heldEvents, item, at, withSection} from './test/fixture'
+import {category, cleanupEvents, fixture, trashedEvents, item, at, withSection} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN, sendAll} from './test/page'
 import './index.css'
 
@@ -30,10 +30,10 @@ async function approved(events: readonly {type: string; data: object}[]) {
 
 describe('words and small UI', () => {
   test('an undo refused as busy says why and offers no Retry that cannot work', async () => {
-    const {screen} = await approved(heldEvents)
+    const {screen} = await approved(trashedEvents)
     vi.mocked(window.fetch).mockImplementation(async () => new Response('busy', {status: 409}))
     await footer(screen).getByRole('button', {name: 'Undo'}).click()
-    await expect.element(footer(screen).getByText('Undo did not start: Another undo or cleanup is running; this will be possible when it finishes')).toBeVisible()
+    await expect.element(footer(screen).getByText('Undo did not go through: Another cleanup, undo or empty is running; try again when it finishes')).toBeVisible()
     await expect.element(footer(screen).getByRole('button', {name: 'Retry'})).not.toBeInTheDocument()
   })
 

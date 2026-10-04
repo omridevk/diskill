@@ -2,7 +2,7 @@ import {createCollection} from '@tanstack/db'
 import {QueryClient} from '@tanstack/query-core'
 import {useRouteContext} from '@tanstack/react-router'
 import {CLEANUP_TYPES, createCleanupStore, type Planned, isWorkerEvent, nothingLeft, receiveCleanup, type CleanupEvent} from './cleanup-feed'
-import {outermost, sumBytes, type Loaded} from './data'
+import {outermost, sumBytes, type Loaded, type TrashEntry} from './data'
 import {ownedCollection} from './owned'
 import {createQueries} from './queries'
 import {createScanStore, receiveScan, type Entry, type ScanEvent} from './scan-feed'
@@ -19,7 +19,7 @@ export interface Session {
   cleanupLink: Link
 }
 
-export type Action = 'approve' | 'cancel' | 'undo' | 'free' | 'rescan'
+export type Action = 'approve' | 'cancel' | 'undo' | 'empty' | 'rescan'
 
 export interface Request {
   id: Action
@@ -29,6 +29,9 @@ export interface Request {
 }
 
 const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan', 'unlisted', 'replayed']
+const TRASH = 'trash'
+
+type Rows = {type: typeof TRASH; data: {entries: TrashEntry[]}}
 const FINAL = new Set<string>(['done', 'error'])
 const CLOSED = 2
 
@@ -44,10 +47,10 @@ function startSession(approved: boolean, approvedBytes: number): Session {
 
 const linkOf = (state: number): Link => (state === CLOSED ? 'lost' : 'reconnecting')
 
-function scanListener(setLink: (link: Link) => void): Listener<ScanEvent> {
+function scanListener(setLink: (link: Link) => void): Listener<ScanEvent | Rows> {
   return {
-    types: SCAN_TYPES,
-    toEvent: (type, data) => ({type, data}) as ScanEvent,
+    types: [...SCAN_TYPES, TRASH],
+    toEvent: (type, data) => ({type, data}) as ScanEvent | Rows,
     isFinal: event => FINAL.has(event.type),
     onDrop: state => {
       setLink(linkOf(state))
@@ -57,10 +60,10 @@ function scanListener(setLink: (link: Link) => void): Listener<ScanEvent> {
   }
 }
 
-function cleanupListener(setLink: (link: Link) => void): Listener<CleanupEvent> {
+function cleanupListener(setLink: (link: Link) => void): Listener<CleanupEvent | Rows> {
   return {
-    types: CLEANUP_TYPES,
-    toEvent: (type, data) => (isWorkerEvent(type, data) ? ({type, data} as CleanupEvent) : null),
+    types: [...CLEANUP_TYPES, TRASH],
+    toEvent: (type, data) => (isWorkerEvent(type, data) ? ({type, data} as CleanupEvent | Rows) : null),
     isFinal: nothingLeft,
     onDrop: state => {
       setLink(linkOf(state))
@@ -85,6 +88,7 @@ function createBase(loaded: Loaded) {
     plan: planned,
     session,
     requests: ownedCollection<Request>(r => r.id, []),
+    trash: ownedCollection<TrashEntry>(e => e.id, loaded.trash ?? []),
     queries: createQueries({items: scan.items.collection, events: cleanup.events.collection, plan: planned.collection, sections: scan.sections.collection}),
     streams: {scan: null as (() => void) | null, cleanup: null as (() => void) | null},
     queryClient: new QueryClient({defaultOptions: {queries: {retry: false, staleTime: Infinity}}}),
@@ -116,12 +120,26 @@ export type Db = ReturnType<typeof createDb>
 const url = (db: Base) => `/events?token=${encodeURIComponent(db.loaded.token)}`
 const opener = (db: Base) => () => (db.loaded.openEvents ?? openEventSource)(url(db))
 
-export function receiveScanEvents(db: Base, events: readonly ScanEvent[]) {
-  receiveScan(db.scan, events)
+const isRows = (event: {type: string}): event is Rows => event.type === TRASH
+
+export function receiveTrash(db: Base, entries: readonly TrashEntry[]) {
+  if (entries.length > 0) db.trash.write(writes => entries.forEach(writes.put))
 }
 
-export function receiveCleanupEvents(db: Base, events: readonly CleanupEvent[]) {
-  receiveCleanup(db.cleanup, db.plan.synced, events)
+function splitRows<E extends {type: string}>(db: Base, events: readonly (E | Rows)[]) {
+  receiveTrash(
+    db,
+    events.filter(isRows).flatMap(event => event.data.entries),
+  )
+  return events.filter((event): event is E => !isRows(event))
+}
+
+export function receiveScanEvents(db: Base, events: readonly (ScanEvent | Rows)[]) {
+  receiveScan(db.scan, splitRows<ScanEvent>(db, events))
+}
+
+export function receiveCleanupEvents(db: Base, events: readonly (CleanupEvent | Rows)[]) {
+  receiveCleanup(db.cleanup, db.plan.synced, splitRows<CleanupEvent>(db, events))
 }
 
 export function writeSession(db: Base, patch: Partial<Session>) {

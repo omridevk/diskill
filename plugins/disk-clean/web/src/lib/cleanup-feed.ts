@@ -1,31 +1,31 @@
 import {ownedCollection, type Writes} from './owned'
 
 type Timed<T> = T & {elapsed_ms: number}
-type HeldItem = {job: string; path: string; held_path: string; bytes: number; reason: string}
-type JobCounts = {job: string; kept: number; held: number; held_bytes: number}
+type JobItem = {job: string; id: string; path: string; trashed_path: string; bytes: number; reason: string}
+type JobCounts = {job: string; kept: number; trashed: number; trashed_bytes: number}
 
 export type CleanupEvent =
   | {type: 'waiting'; data: object}
-  | {type: 'started'; data: Timed<{run: string; free: number; paths: number; worktrees: number; frees?: number; commands: number; bytes: number}>}
+  | {type: 'started'; data: Timed<{run: string; free: number; paths: number; trash?: number; worktrees: number; commands: number; bytes: number}>}
   | {type: 'removed'; data: Timed<{path: string; bytes: number; secs: number}>}
   | {type: 'failed'; data: Timed<{path: string; bytes: number; reason: string}>}
   | {type: 'kept'; data: Timed<{path: string; bytes: number; reason: string}>}
   | {type: 'worktree'; data: Timed<{path: string; bytes: number; outcome: 'removed' | 'kept'; reason: string}>}
   | {type: 'command'; data: Timed<{id: string; label: string; status: 'ok' | 'failed'}>}
   | {type: 'free'; data: Timed<{free: number}>}
-  | {type: 'held'; data: Timed<{path: string; bytes: number; held_path: string}>}
-  | {type: 'done'; data: Timed<{free_before: number; free_after: number; held?: number; held_bytes?: number; hold_until?: number | null}>}
+  | {type: 'trashed'; data: Timed<{id: string; path: string; bytes: number; trashed_path: string}>}
+  | {type: 'done'; data: Timed<{free_before: number; free_after: number; trashed?: number; trashed_bytes?: number}>}
   | {type: 'abandoned'; data: {reason: string}}
-  | {type: 'freed'; data: Timed<HeldItem & {outcome: 'freed' | 'kept'}>}
-  | {type: 'undone'; data: Timed<HeldItem & {outcome: 'restored' | 'kept' | 'gone'}>}
-  | {type: 'free_started'; data: Timed<{job: string; count: number; bytes: number; free: number}>}
-  | {type: 'free_done'; data: Timed<JobCounts & {freed: number; freed_bytes: number; free_before: number; free_after: number}>}
+  | {type: 'emptied'; data: Timed<JobItem & {outcome: 'emptied' | 'kept'}>}
+  | {type: 'undone'; data: Timed<JobItem & {outcome: 'restored' | 'kept'}>}
+  | {type: 'empty_started'; data: Timed<{job: string; count: number; bytes: number; free: number}>}
+  | {type: 'empty_done'; data: Timed<JobCounts & {emptied: number; emptied_bytes: number; free_before: number; free_after: number}>}
   | {type: 'undo_started'; data: Timed<{job: string; count: number; bytes: number}>}
   | {type: 'undo_done'; data: Timed<JobCounts & {restored: number; restored_bytes: number}>}
 
 export type Of<K extends CleanupEvent['type']> = Extract<CleanupEvent, {type: K}>['data']
 
-export type OutcomeKind = 'removed' | 'failed' | 'kept' | 'ran' | 'held' | 'freed' | 'restored'
+export type OutcomeKind = 'removed' | 'failed' | 'kept' | 'ran' | 'trashed' | 'emptied' | 'restored'
 
 export interface Planned {
   path: string
@@ -62,7 +62,7 @@ export const CLEANUP_TYPES: CleanupEvent['type'][] = [
   'waiting',
   'started',
   'removed',
-  'held',
+  'trashed',
   'failed',
   'kept',
   'worktree',
@@ -70,23 +70,21 @@ export const CLEANUP_TYPES: CleanupEvent['type'][] = [
   'free',
   'done',
   'abandoned',
-  'freed',
+  'emptied',
   'undone',
-  'free_started',
-  'free_done',
+  'empty_started',
+  'empty_done',
   'undo_started',
   'undo_done',
 ]
 
-const SETTLING = new Set<CleanupEvent['type']>(['done', 'free_done', 'undo_done'])
 
 export function isWorkerEvent(type: string, data: object) {
   return type !== 'done' || 'free_after' in data
 }
 
-export function nothingLeft({type, data}: CleanupEvent) {
-  if (type === 'abandoned') return true
-  return SETTLING.has(type) && !('held' in data && typeof data.held === 'number' && data.held > 0)
+export function nothingLeft({type}: {type: string}) {
+  return type === 'abandoned'
 }
 
 function idOf(event: CleanupEvent) {
@@ -101,13 +99,11 @@ function idOf(event: CleanupEvent) {
 type Described = Pick<EventRow, 'kind' | 'label' | 'reason'> & {path: string}
 
 const NOTHING: Described = {kind: null, path: '', label: '', reason: ''}
-const HELD_OUTCOME: Record<'freed' | 'restored' | 'kept', OutcomeKind> = {freed: 'freed', restored: 'restored', kept: 'kept'}
-const PATH_KINDS: Partial<Record<CleanupEvent['type'], OutcomeKind>> = {removed: 'removed', held: 'held', failed: 'failed', kept: 'kept'}
+const PATH_KINDS: Partial<Record<CleanupEvent['type'], OutcomeKind>> = {removed: 'removed', trashed: 'trashed', failed: 'failed', kept: 'kept'}
 
-function heldOutcome(event: Extract<CleanupEvent, {type: 'freed' | 'undone'}>): Described {
+function jobOutcome(event: Extract<CleanupEvent, {type: 'emptied' | 'undone'}>): Described {
   const {outcome, path, reason} = event.data
-  if (outcome === 'gone') return NOTHING
-  return {kind: HELD_OUTCOME[outcome], path, label: path, reason}
+  return {kind: outcome, path, label: path, reason}
 }
 
 function commandOutcome(event: Extract<CleanupEvent, {type: 'command'}>): Described {
@@ -116,7 +112,7 @@ function commandOutcome(event: Extract<CleanupEvent, {type: 'command'}>): Descri
 }
 
 function describe(event: CleanupEvent): Described {
-  if (event.type === 'freed' || event.type === 'undone') return heldOutcome(event)
+  if (event.type === 'emptied' || event.type === 'undone') return jobOutcome(event)
   if (event.type === 'command') return commandOutcome(event)
   const kind = event.type === 'worktree' ? (event.data.outcome === 'kept' ? 'kept' : 'removed') : PATH_KINDS[event.type]
   const data = event.data
@@ -136,7 +132,7 @@ function plannedOf(planned: Planned | undefined, label: string, bytes: number) {
 
 function rowOf(run: string, seq: number, event: CleanupEvent, plan: ReadonlyMap<string, Planned>): EventRow {
   const {data} = event
-  const jobId = event.type === 'freed' || event.type === 'undone' ? event.data.job : ''
+  const jobId = event.type === 'emptied' || event.type === 'undone' ? event.data.job : ''
   const {path, ...described} = describe(event)
   return {
     id: `${run}|${event.type}|${idOf(event)}`,

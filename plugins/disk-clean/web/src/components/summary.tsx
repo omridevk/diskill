@@ -1,6 +1,7 @@
 import {useState, type AnimationEvent, type ReactNode} from 'react'
 import {formatBytes, plural} from '@/lib/data'
-import {resultOf, type CleanupProgress} from '@/lib/progress'
+import {isPutBack, type CleanupProgress, type Job, type Phase} from '@/lib/progress'
+import {HERO_LABEL} from './cleanup-progress'
 import type {Disk} from '@/lib/scan-feed'
 import {useReducedMotion} from '@/lib/motion'
 import type {Selection} from '@/lib/page-data'
@@ -32,29 +33,79 @@ function LoadingBackdrop({scanning}: {scanning: boolean}) {
   )
 }
 
-function diskFigures(data: Disk, selection: Selection, progress: CleanupProgress | null) {
-  if (!progress) return {used: data.used, pending: selection.exactBytes, before: data.free, after: data.free + selection.exactBytes, free: data.free}
-  const {started, done, abandoned} = progress.cleanup
-  const free = progress.free ?? data.free
-  const pending = done || abandoned ? progress.held : Math.max(0, progress.plan.approved - progress.freed)
-  return {used: Math.max(0, data.total - free), pending, before: done?.free_before ?? started?.free ?? data.free, after: free, free}
+interface Figures {
+  used: number
+  pending: number
+  before: number
+  after: number
+  free: number
 }
 
-function FreeSpace({before, after, total, live}: {before: number; after: number; total: number; live: boolean}) {
+function jobFreeOf(job: Job | null) {
+  if (!job) return undefined
+  if (job.done && 'free_before' in job.done) return job.done.free_before
+  return job.free ?? undefined
+}
+
+function beforeOf(progress: CleanupProgress, fallback: number) {
+  const {job, started, done} = progress.cleanup
+  return [jobFreeOf(job), done?.free_before, started?.free].find(n => n !== undefined) ?? fallback
+}
+
+function pendingOf(phase: Phase, selection: Selection, progress: CleanupProgress | null) {
+  if (!progress) return selection.exactBytes
+  if (phase === 'trashing' || phase === 'deleting') return Math.max(0, progress.plan.approved - progress.freed)
+  return progress.inTrash.bytes
+}
+
+function diskFigures(data: Disk, selection: Selection, progress: CleanupProgress | null, phase: Phase): Figures {
+  const pending = pendingOf(phase, selection, progress)
+  if (!progress) return {used: data.used, pending, before: data.free, after: data.free + selection.exactBytes, free: data.free}
+  const free = progress.free ?? data.free
+  return {used: Math.max(0, data.total - free), pending, before: beforeOf(progress, data.free), after: free, free}
+}
+
+const KEEPS_SPACE = new Set<Phase>(['waiting', 'trashing', 'trashed', 'undoing'])
+const FREES_SPACE = new Set<Phase>(['deleting', 'emptying'])
+
+function Bold({bytes}: {bytes: number}) {
+  return <b className="font-medium text-foreground">{formatBytes(bytes)}</b>
+}
+
+function FreeSpace({phase, disk, total}: {phase: Phase; disk: Figures; total: number}) {
+  if (phase === 'scanning' || phase === 'reviewing') {
+    return (
+      <>
+        free space goes from <Bold bytes={disk.before} /> to <Bold bytes={disk.after} /> of {formatBytes(total)}
+      </>
+    )
+  }
+  const moved = disk.after !== disk.before
+  if (KEEPS_SPACE.has(phase) && !moved) {
+    return (
+      <>
+        free space <Bold bytes={disk.free} /> of {formatBytes(total)} · the Trash keeps the space until it is emptied
+      </>
+    )
+  }
+  if (!moved) {
+    return (
+      <>
+        free space <Bold bytes={disk.free} /> of {formatBytes(total)}
+        {FREES_SPACE.has(phase) && ' · updates as space comes back'}
+      </>
+    )
+  }
   return (
     <>
-      free space {live ? 'was' : 'goes from'} <b className="font-medium text-foreground">{formatBytes(before)}</b>
-      {live ? ', now' : ' to'} <b className="font-medium text-foreground">{formatBytes(after)}</b> of {formatBytes(total)}
+      free space was <Bold bytes={disk.before} />, now <Bold bytes={disk.after} /> of {formatBytes(total)}
     </>
   )
 }
 
-function progressLabel(progress: CleanupProgress | null) {
-  if (!progress) return 'Selected to free'
-  const result = resultOf(progress)
-  if (result === 'held') return 'Held, not freed yet'
-  if (result === 'freed') return 'Freed'
-  return progress.freed > 0 ? `Restored · nothing is held · freed ${formatBytes(progress.freed)}` : 'Restored · nothing is held'
+function heroLabel(phase: Phase, progress: CleanupProgress | null) {
+  if (progress && isPutBack(phase, progress)) return 'Put back'
+  return HERO_LABEL[phase]
 }
 
 export function Summary({
@@ -65,6 +116,7 @@ export function Summary({
   counter,
   status,
   scanning,
+  phase,
   progress = null,
 }: {
   disk: Disk
@@ -74,15 +126,16 @@ export function Summary({
   counter: ReactNode
   status: ReactNode
   scanning: boolean
+  phase: Phase
   progress?: CleanupProgress | null
 }) {
-  const disk = diskFigures(data, selection, progress)
+  const disk = diskFigures(data, selection, progress, phase)
   return (
     <section className="relative isolate flex items-center gap-7 border-b px-7 py-5">
       <LoadingBackdrop scanning={scanning} />
       <DiskDonut used={disk.used} selected={disk.pending} free={disk.free} total={data.total} size={132} />
       <div className="flex grow flex-col gap-2">
-        <div className="text-xs text-muted-foreground">{progressLabel(progress)}</div>
+        <div className="text-xs text-muted-foreground">{heroLabel(phase, progress)}</div>
         <div className="relative h-12 text-5xl leading-none font-bold tracking-tighter tabular-nums">
           <div className={overlay ? 'invisible w-fit' : 'w-fit'}>
             <SpinningBytes bytes={bytes} />
@@ -92,7 +145,7 @@ export function Summary({
         {counter}
         <div className="text-[13px] text-muted-foreground">
           {plural(selection.selected.length, 'item', 'items')} in {plural(selection.sections, 'section', 'sections')} ·{' '}
-          <FreeSpace before={disk.before} after={disk.after} total={data.total} live={progress !== null} />
+          <FreeSpace phase={phase} disk={disk} total={data.total} />
         </div>
         <div className="flex h-5 items-center gap-3">{status}</div>
       </div>

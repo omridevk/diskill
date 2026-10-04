@@ -6,7 +6,7 @@ import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {NO_DATA, type Loaded} from './lib/data'
 import {fullToken, NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
-import {at, cleanupEvents, fixture, heldEvents} from './test/fixture'
+import {at, cleanupEvents, fixture, trashedEvents} from './test/fixture'
 import {PLAN} from './test/page'
 import {address, fakeEventSource, mockServer, query, ringPoints, sendAll, zoomed} from './test/page'
 import './index.css'
@@ -165,16 +165,16 @@ describe('the URL', () => {
     expect(cold.history.location.href).toBe(address('/cleanup/node', {q: 'you'}))
   })
 
-  test('the Free confirm has its own URL over a held run: Escape goes back, forward and a reload reopen it', async () => {
+  test('the Empty confirm has its own URL over a Trash run: Escape goes back, forward and a reload reopen it', async () => {
     mockServer()
     const {source} = fakeEventSource()
     const loaded = {...fixture, approved: APPROVED, openEvents: () => source}
     const {history, screen} = await open(address('/cleanup', {q: 'you'}), loaded)
-    sendAll(source, heldEvents)
-    await screen.getByRole('contentinfo').getByRole('button', {name: 'Free the space now'}).click()
-    const dialog = screen.getByRole('dialog', {name: 'Free the space now?'})
+    sendAll(source, trashedEvents)
+    await screen.getByRole('contentinfo').getByRole('button', {name: 'Empty these from Trash'}).click()
+    const dialog = screen.getByRole('dialog', {name: 'Empty these from the Trash?'})
     await expect.element(dialog).toBeVisible()
-    expect(history.location.href).toBe(address('/cleanup/caches/free', {q: 'you'}))
+    expect(history.location.href).toBe(address('/cleanup/caches/empty', {q: 'you'}))
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
     expect(history.location.href).toBe(address('/cleanup/caches', {q: 'you'}))
@@ -182,11 +182,11 @@ describe('the URL', () => {
     await expect.element(dialog).toBeVisible()
 
     const again = await reload(screen, history, loaded)
-    sendAll(source, heldEvents)
-    await expect.element(again.screen.getByRole('dialog', {name: 'Free the space now?'})).toBeVisible()
-    expect(again.history.location.href).toBe(address('/cleanup/caches/free', {q: 'you'}))
+    sendAll(source, trashedEvents)
+    await expect.element(again.screen.getByRole('dialog', {name: 'Empty these from the Trash?'})).toBeVisible()
+    expect(again.history.location.href).toBe(address('/cleanup/caches/empty', {q: 'you'}))
     await again.screen.unmount()
-    const refused = await open(address('/cleanup/caches/free', {q: 'you'}))
+    const refused = await open(address('/cleanup/caches/empty', {q: 'you'}))
     await expect.poll(() => refused.history.location.href).toBe(address('/cleanup/caches', {q: 'you'}))
   })
 
@@ -244,8 +244,8 @@ describe('the URL', () => {
     await expect.element(screen.getByRole('tablist')).not.toBeInTheDocument()
   })
 
-  test('a /cleanup/free deep link with nothing held redirects to the list', async () => {
-    const {history, screen} = await open('/cleanup/caches/free')
+  test('a /cleanup/empty deep link with nothing in the Trash redirects to the list', async () => {
+    const {history, screen} = await open('/cleanup/caches/empty')
     await expect.poll(() => history.location.href).toBe('/cleanup/caches')
     await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
     await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
@@ -255,9 +255,9 @@ describe('the URL', () => {
     let answer: (plan: Response) => void = () => {}
     vi.spyOn(window, 'fetch').mockImplementation(() => new Promise(resolve => (answer = resolve)))
     const {screen} = await open('/cleanup/caches/confirm')
-    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    const dialog = screen.getByRole('dialog', {name: 'Move to the Trash'})
     await expect.element(dialog.getByText('Checking the selection…')).toBeVisible()
-    await expect.element(dialog.getByRole('button', {name: 'Delete'})).toBeDisabled()
+    await expect.element(dialog.getByRole('button', {name: 'Move to the Trash'})).toBeDisabled()
     await expect.poll(() => vi.mocked(window.fetch).mock.calls.length).toBe(1)
     answer(new Response(JSON.stringify(PLAN)))
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
@@ -360,7 +360,7 @@ describe('errors are shown, never swallowed', () => {
     await expect.element(failed.getByText(/disk-clean answered 500 to \/preview: the selection changed on disk/)).toBeVisible()
     recover()
     await failed.getByRole('button', {name: 'Retry'}).click()
-    await expect.element(screen.getByRole('dialog', {name: 'Confirm the cleanup'}).getByText('6 items in total')).toBeVisible()
+    await expect.element(screen.getByRole('dialog', {name: 'Move to the Trash'}).getByText('6 items in total')).toBeVisible()
   })
 
   test('an unreachable server says so, and Retry works once it is back', async () => {
@@ -370,14 +370,14 @@ describe('errors are shown, never swallowed', () => {
     await expect.element(failed.getByText(/Can't reach disk-clean/)).toBeVisible()
     recover()
     await failed.getByRole('button', {name: 'Retry'}).click()
-    await expect.element(screen.getByRole('dialog', {name: 'Confirm the cleanup'}).getByText('6 items in total')).toBeVisible()
+    await expect.element(screen.getByRole('dialog', {name: 'Move to the Trash'}).getByText('6 items in total')).toBeVisible()
   })
 
   test('a preview that never answers shows the pending dialog, and Escape leaves it', async () => {
     vi.spyOn(window, 'fetch').mockImplementation(() => new Promise(() => {}))
     const {history, screen} = await open('/cleanup')
     await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
-    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    const dialog = screen.getByRole('dialog', {name: 'Move to the Trash'})
     await expect.element(dialog.getByText('Checking the selection…')).toBeVisible()
     await userEvent.keyboard('{Escape}')
     await expect.element(dialog).not.toBeInTheDocument()
@@ -415,7 +415,7 @@ describe('dialogs and tabs keep your place', () => {
     const {history, screen} = await open(url)
     await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
     await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
-    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    const dialog = screen.getByRole('dialog', {name: 'Move to the Trash'})
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
     expect(history.location.href).toBe(address('/cleanup/node/confirm', {q: 'web', sort: 'name-asc'}))
     expect(sectionTitle()).toBe('node_modules')
@@ -453,7 +453,7 @@ describe('dialogs and tabs keep your place', () => {
   test('paths read from the home folder the server reports when the storage map is skipped', async () => {
     mockServer()
     const {screen} = await open('/cleanup/caches/confirm', {...fixture, data: {...fixture.data, tree: null}})
-    const held = screen.getByRole('dialog', {name: 'Confirm the cleanup'}).getByRole('list', {name: 'Moved to hold'})
+    const held = screen.getByRole('dialog', {name: 'Move to the Trash'}).getByRole('list', {name: 'Moved to the Trash'})
     await expect.element(held.getByRole('listitem').first()).toHaveTextContent('~/Library/Caches/app-a2.0 GB')
     await expect.element(held.getByText('/Users/you', {exact: false})).not.toBeInTheDocument()
   })
@@ -462,7 +462,7 @@ describe('dialogs and tabs keep your place', () => {
     mockServer()
     const {history, screen} = await open('/cleanup/caches')
     await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
-    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    const dialog = screen.getByRole('dialog', {name: 'Move to the Trash'})
     await expect.element(dialog.getByText('6 items in total')).toBeVisible()
     const popup = dialog.element()
     const order: string[] = []
@@ -504,7 +504,7 @@ describe('route guards wait for the scan to catch up', () => {
   test('a reload of the open confirm dialog reopens it once the replay has caught up', async () => {
     mockServer()
     const {source, catchUp, history, screen} = await cold('/cleanup/caches/confirm')
-    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    const dialog = screen.getByRole('dialog', {name: 'Move to the Trash'})
     await expect.element(screen.getByText('Loading the scan…')).toBeVisible()
     await sendAll(source, backlog)
     await expect.element(screen.getByText('Loading the scan…')).toBeVisible()
@@ -585,6 +585,6 @@ describe('URL hygiene', () => {
     await screen.getByRole('tab', {name: 'Storage'}).click()
     await expect.element(screen.getByLabelText('Storage sunburst of /Users/you')).toBeVisible()
     const hrefs = [...document.querySelectorAll('[role="tab"]')].map(tab => tab.getAttribute('href') ?? '')
-    expect(hrefs).toEqual(['/cleanup/node', '/storage', '/insights'])
+    expect(hrefs).toEqual(['/cleanup/node', '/storage', '/insights', '/trash'])
   })
 })

@@ -3,11 +3,11 @@ import {createCollection, useLiveQuery} from '@tanstack/react-db'
 import {getRouteApi, useNavigate} from '@tanstack/react-router'
 import {functionalUpdate, type RowSelectionState, type Updater} from '@tanstack/react-table'
 import {useCallback, useDeferredValue, useMemo} from 'react'
-import {approve as approveItems, askHeld, cancel as cancelRun, restartScan} from './actions'
-import {preview, type Plan, type Selected} from './api'
+import {approve as approveItems, askTrash, cancel as cancelRun, restartScan} from './actions'
+import {preview, type Mode, type Plan, type Selected} from './api'
 import {firstSection, isPickable, sumBytes} from './data'
 import {useDb, type Db} from './db'
-import {useCleanupProgress} from './progress'
+import {phaseOf, useCleanupProgress} from './progress'
 import type {CategoryHead, Entry, Nest, ScanState} from './scan-feed'
 import {createSelector, fingerprint, NO_PICKS, picksOf, type Decoded, type Fragment, type Picks, type Selector} from './selection'
 import {useScanState, useSession, useVersion} from './views'
@@ -347,26 +347,36 @@ export function useStreaming() {
 }
 
 export function useProgress() {
-  return {progress: useCleanupProgress(useDb())}
+  const db = useDb()
+  const scan = useScanState(db)
+  const progress = useCleanupProgress(db)
+  const scanning = !scan.done && scan.error === '' && !scan.stopped
+  return {progress, phase: phaseOf(scanning, progress)}
 }
 
-const attempts = new WeakMap<Db, Preview>()
+const attempts = new WeakMap<Db, Preview & {mode: Mode}>()
+const trashAttempts = new WeakMap<Db, Map<'undo' | 'empty', readonly string[]>>()
 
 export function useDecisions() {
   const db = useDb()
   const session = useSession(db)
-  const approve = (preview: Preview) => {
+  const approve = (preview: Preview, mode: Mode) => {
     if (preview.items.length === 0) return
-    attempts.set(db, preview)
-    void approveItems(db, preview)
+    attempts.set(db, {...preview, mode})
+    void approveItems(db, {...preview, mode})
   }
   const retry = () => {
     const last = attempts.get(db)
-    if (last) approve(last)
+    if (last) approve(last, last.mode)
   }
   const cancel = () => void cancelRun(db)
-  const held = (action: 'undo' | 'free') => void askHeld(db, action)
-  return {approved: session.approved, done: session.cancelled ? CANCELLED : null, approve, retry, cancel, held}
+  const trash = (action: 'undo' | 'empty', ids: readonly string[]) => {
+    const tried = trashAttempts.get(db) ?? new Map<'undo' | 'empty', readonly string[]>()
+    trashAttempts.set(db, tried.set(action, ids))
+    void askTrash(db, action, ids)
+  }
+  const retryTrash = (action: 'undo' | 'empty') => trash(action, trashAttempts.get(db)?.get(action) ?? [])
+  return {approved: session.approved, done: session.cancelled ? CANCELLED : null, approve, retry, cancel, trash, retryTrash}
 }
 
 export function useConnection() {
