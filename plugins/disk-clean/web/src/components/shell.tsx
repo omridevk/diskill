@@ -8,7 +8,7 @@ import {useShownOnMount} from '@/lib/motion'
 import {firstSectionNow, useDecisions, useProgress, useScan, useSelection, type Ending, type Selection} from '@/lib/page-data'
 import {heroBytes, type CleanupProgress, type Phase} from '@/lib/progress'
 import {useDisk, usePending, useSession} from '@/lib/views'
-import {ActionBar} from './action-bar'
+import {ActionBar, DeleteReady, deleteState, useOpenConfirm} from './action-bar'
 import {BarText, CleanupCounter, CleanupStatus, CleanupTracker, DetailsButton, ProgressTrack, TrashActions} from './cleanup-progress'
 import {RequestError} from './request-error'
 import {ScanCounter, useScanHero} from './scan-hero'
@@ -194,6 +194,7 @@ export function Shell() {
   const detailsRef = useRef<HTMLButtonElement>(null)
   const sectionOf = (params: {section?: string}) => params.section ?? firstSectionNow(db) ?? ''
   const actions = useTrashActions(db, progress, phase, decisions.trash, sectionOf)
+  const openConfirm = useOpenConfirm()
 
   if (decisions.done) return <Finished {...decisions.done} />
 
@@ -203,7 +204,9 @@ export function Shell() {
       <Header items={selection.count} progress={progress} phase={phase} link={session.scanLink} onDetails={() => navigate({to: '.', search: prev => ({...prev, overlay: 'progress'})})} detailsRef={detailsRef} />
       <ScanSummary db={db} scan={scan} selection={selection} progress={progress} phase={phase} approved={decisions.approved} />
       <div className="relative flex min-h-0 flex-1 flex-col text-sm">
-        <Outlet />
+        <DeleteReady value={deleteState(selection, scan.scan).ready && !progress}>
+          <Outlet />
+        </DeleteReady>
         <ScanProblem error={scan.scan.error} />
       </div>
       <ActionBar
@@ -215,7 +218,7 @@ export function Shell() {
         actions={actions}
         failure={<Failures db={db} onApprove={decisions.retry} onCancel={decisions.cancel} />}
         onCancel={decisions.cancel}
-        onDelete={now => navigate({to: '/cleanup/$section/confirm', params: prev => ({section: sectionOf(prev)}), search: prev => ({...prev, now})})}
+        onDelete={openConfirm}
       />
     </div>
   )

@@ -1,6 +1,7 @@
+import {useNavigate} from '@tanstack/react-router'
 import {useHotkeys} from '@tanstack/react-hotkeys'
 import {Eraser, Info, RotateCcw, Trash2, X} from 'lucide-react'
-import {useState, type AnimationEvent, type ReactNode} from 'react'
+import {createContext, use, useState, type AnimationEvent, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Kbd} from '@/components/ui/kbd'
 import {Popover, PopoverContent, PopoverTitle, PopoverTrigger} from '@/components/ui/popover'
@@ -8,7 +9,8 @@ import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
 import type {CleanupProgress, Phase} from '@/lib/progress'
 import {formatBytes, plural, sizeOf} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
-import type {Selection} from '@/lib/page-data'
+import {useDb} from '@/lib/db'
+import {firstSectionNow, type Selection} from '@/lib/page-data'
 import type {ScanState} from '@/lib/scan-feed'
 import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
@@ -96,7 +98,7 @@ function HelpLine({scan}: {scan: ScanState}) {
   )
 }
 
-function deleteState(selection: Selection, scan: ScanState) {
+export function deleteState(selection: Selection, scan: ScanState) {
   const count = selection.selected.length
   if (scan.error !== '') return {label: 'The scan failed · nothing can be deleted', ready: false}
   if (count > 0) return {label: `Delete ${plural(count, 'item', 'items')} · ${sizeOf(selection.exactBytes, selection.apparentBytes)}`, ready: true}
@@ -133,11 +135,32 @@ function useDeleteShortcuts(enabled: boolean, onDelete: (now: boolean) => void) 
   const options = {enabled, ignoreInputs: true}
   useHotkeys([
     {hotkey: 'Mod+Backspace', callback: press(false), options},
-    {hotkey: 'Backspace', callback: press(false), options},
-    {hotkey: 'Delete', callback: press(false), options},
     {hotkey: 'Mod+Alt+Backspace', callback: press(true), options},
     {hotkey: 'Shift+Backspace', callback: press(true), options},
   ])
+}
+
+export function useOpenConfirm() {
+  const db = useDb()
+  const navigate = useNavigate()
+  return (now: boolean) => navigate({to: '/cleanup/$section/confirm', params: prev => ({section: prev.section ?? firstSectionNow(db) ?? ''}), search: prev => ({...prev, now})})
+}
+
+export const DeleteReady = createContext(false)
+
+export function useTableDeleteKeys(table: RefObject<HTMLElement | null>) {
+  const ready = use(DeleteReady)
+  const open = useOpenConfirm()
+  const press = () => {
+    if (!dialogOpen()) open(false)
+  }
+  useHotkeys(
+    [
+      {hotkey: 'Backspace', callback: press},
+      {hotkey: 'Delete', callback: press},
+    ],
+    {enabled: ready, ignoreInputs: true, target: table},
+  )
 }
 
 export function ActionBar({

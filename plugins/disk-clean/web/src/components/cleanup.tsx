@@ -515,7 +515,7 @@ function useShortcuts(actions: [Hotkey, () => void, boolean][]) {
       },
       options: {enabled},
     })),
-    {preventDefault: false, stopPropagation: false},
+    {preventDefault: false, stopPropagation: false, ignoreInputs: true},
   )
 }
 

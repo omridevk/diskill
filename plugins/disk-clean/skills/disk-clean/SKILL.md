@@ -84,7 +84,8 @@ The page has four tabs, a summary strip (disk donut, selected total, scan status
 - **Clear selection** and **Reset to recommended** (footer, beside the "N items selected · X"
   count) do what the `d` and `r` shortcuts do. Each is disabled only when it would change nothing,
   and then its name says why. They are hidden while a cleanup runs.
-- **Delete N items · X** (footer, also ⌘⌫ or the Delete key): enabled whenever at least one
+- **Delete N items · X** (footer, also ⌘⌫ anywhere but a text field, or ⌫ / Delete while focus is
+  in the item table): enabled whenever at least one
   selected item can be deleted, also while the scan runs. When it cannot be pressed its label says
   why: "Scanning… nothing found yet", "Select items to delete", "Nothing found to delete" or "The
   scan failed · nothing can be deleted". It opens a confirm dialog (Escape or Cancel closes it and
@@ -94,7 +95,7 @@ The page has four tabs, a summary strip (disk donut, selected total, scan status
   commands), and anything the safety checks rejected with the reason. While the scan is still
   running it also says so, and it approves exactly the list it shows. Its button ("Move N items to
   the Trash") sends the approval.
-- **Delete immediately…** (beside Delete, ⌥⌘⌫ like Finder, or ⇧⌫): skips the Trash and removes
+- **Delete immediately…** (beside Delete, ⌥⌘⌫ like Finder, or ⇧⌫, never in a text field): skips the Trash and removes
   for good. Its confirm says "can't be undone", gives the exact counts and bytes, its button names
   the action ("Delete N items immediately · X"), and focus starts on Cancel. Nothing deleted this
   way is recorded or undoable.

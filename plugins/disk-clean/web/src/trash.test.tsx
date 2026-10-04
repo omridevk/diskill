@@ -122,7 +122,7 @@ describe('Delete moves to the Trash, Delete immediately skips it', () => {
     expect(bodyOf('/decide').mode).toBe('now')
   })
 
-  test('the Finder shortcuts open the right confirm, and never fire while typing', async () => {
+  test('the Finder shortcuts open the right confirm anywhere but a text field, and plain Delete only inside the item table', async () => {
     const {screen, history} = await openApp()
     await screen.getByRole('textbox', {name: 'Filter paths'}).click()
     await userEvent.keyboard('ab{Shift>}{Backspace}{/Shift}{Meta>}{Backspace}{/Meta}')
@@ -140,9 +140,22 @@ describe('Delete moves to the Trash, Delete immediately skips it', () => {
     await userEvent.keyboard('{Escape}')
     await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
 
+    await userEvent.keyboard('{Backspace}{Delete}')
+    expect(history.location.pathname).toBe('/cleanup/caches')
+
     await userEvent.keyboard('{Meta>}{Backspace}{/Meta}')
     await expect.element(screen.getByRole('dialog', {name: 'Move to the Trash'})).toBeVisible()
     expect(query(history).now).toBeUndefined()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+
+    for (const key of ['{Backspace}', '{Delete}']) {
+      screen.getByRole('table', {name: 'Application caches'}).getByRole('checkbox').first().element().focus()
+      await userEvent.keyboard(key)
+      await expect.element(screen.getByRole('dialog', {name: 'Move to the Trash'})).toBeVisible()
+      await userEvent.keyboard('{Escape}')
+      await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+    }
   })
 
   test('paths read from the home folder, a long path keeps its name, and items already in a Trash are listed as gone for good', async () => {
