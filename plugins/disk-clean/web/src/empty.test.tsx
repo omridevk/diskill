@@ -235,3 +235,48 @@ describe('the empty state sits in the middle of the content area', () => {
     })
   }
 })
+
+const tooltipText = () => document.querySelector('[data-slot="tooltip-content"][data-open]')?.textContent ?? ''
+
+describe('the action bar and toolbar fit on one line at every width', () => {
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await page.viewport(1440, 960)
+  })
+
+  for (const width of WIDTHS) {
+    test(`at ${width} px the toolbar is one row, the help line is whole, and the icon tools explain themselves`, async () => {
+      await page.viewport(width, 960)
+      const screen = await render(<App loaded={fixture} history={at('/cleanup/docker')} />)
+      await expect.element(screen.getByText('docker system prune -f')).toBeVisible()
+      const bar = screen.getByRole('contentinfo').element().getBoundingClientRect().height
+      await screen.getByText('docker system prune -f').click()
+      await expect.element(screen.getByRole('contentinfo').getByRole('button', {name: '1 review item'})).toBeVisible()
+      await settled()
+
+      const toolbar = screen.getByRole('textbox', {name: 'Filter paths'}).element().closest('.border-b')
+      if (!(toolbar instanceof HTMLElement)) throw new Error('no toolbar')
+      const search = screen.getByRole('textbox', {name: 'Filter paths'}).element().getBoundingClientRect()
+      const cards = screen.getByRole('button', {name: 'Card view'}).element().getBoundingClientRect()
+      expect(Math.abs(cards.top + cards.height / 2 - (search.top + search.height / 2))).toBeLessThan(2)
+      expect(toolbar.scrollWidth).toBeLessThanOrEqual(toolbar.clientWidth)
+
+      const help = screen.getByText('Delete moves files to a holding folder first, so you can undo').element()
+      if (!(help instanceof HTMLElement)) throw new Error('no help line')
+      expect(help.scrollWidth).toBeLessThanOrEqual(help.clientWidth)
+      expect(help.getBoundingClientRect().right).toBeLessThanOrEqual(screen.getByRole('button', {name: 'Cancel'}).element().getBoundingClientRect().left)
+      expect(screen.getByRole('contentinfo').element().getBoundingClientRect().height).toBe(bar)
+      await shot(`10-action-bar-${width}`)
+
+      await screen.getByRole('button', {name: 'Clear selection'}).hover()
+      await expect.poll(tooltipText).toBe('Clear selectionD')
+      await settled()
+      await shot(`11-clear-tooltip-${width}`)
+      await screen.getByRole('contentinfo').getByRole('button', {name: '1 review item'}).hover()
+      await expect.poll(tooltipText).toBe('Review items are slow or costly to rebuild · click for details')
+
+      await screen.getByRole('button', {name: 'About deleting'}).click()
+      await expect.element(screen.getByText("Worktrees and commands can't be undone.")).toBeVisible()
+    })
+  }
+})

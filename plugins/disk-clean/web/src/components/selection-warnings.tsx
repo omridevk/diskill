@@ -2,6 +2,7 @@ import {useSearch} from '@tanstack/react-router'
 import {TriangleAlert} from 'lucide-react'
 import {badgeVariants} from '@/components/ui/badge'
 import {Popover, PopoverContent, PopoverTitle, PopoverTrigger} from '@/components/ui/popover'
+import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
 import {counted, formatBytes, outermost, plural, sumBytes} from '@/lib/data'
 import type {Selection} from '@/lib/page-data'
 import type {Entry} from '@/lib/scan-feed'
@@ -39,14 +40,26 @@ function chipText({hidden, risky}: SelectionWarnings) {
   return parts.filter(part => part !== false).join(' · ')
 }
 
+function previewOf({hidden, risky}: SelectionWarnings) {
+  const parts = [risky > 0 && 'review items are slow or costly to rebuild', hidden.length > 0 && 'hidden items will still be deleted']
+  const text = parts.filter(part => part !== false).join('; ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
 export function WarningChip({warnings}: {warnings: SelectionWarnings}) {
   const text = chipText(warnings)
   if (text === '') return null
   return (
     <Popover>
-      <PopoverTrigger openOnHover delay={80} className={badgeVariants({variant: 'outline', className: 'h-6 max-w-full cursor-pointer border-amber-500/30 bg-amber-500/10 text-amber-300'})}>
-        <TriangleAlert /> {text}
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger
+          delay={80}
+          render={<PopoverTrigger className={badgeVariants({variant: 'outline', className: 'h-6 max-w-full cursor-pointer border-amber-500/30 bg-amber-500/10 text-amber-300'})} />}
+        >
+          <TriangleAlert /> {text}
+        </TooltipTrigger>
+        <TooltipContent>{previewOf(warnings)} · click for details</TooltipContent>
+      </Tooltip>
       <PopoverContent side="top" className="w-80 text-xs">
         <PopoverTitle className="text-sm">Check before deleting</PopoverTitle>
         <WarningLines warnings={warnings} />

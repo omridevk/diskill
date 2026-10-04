@@ -96,12 +96,9 @@ function watchShifts() {
   return {shifts, stop: () => observer.disconnect()}
 }
 
-describe('nothing moves unless the user moved it', () => {
-  afterEach(() => vi.restoreAllMocks())
-
-  test('a streaming session with selection, filters and the apparent note keeps every landmark in place', async () => {
+async function session(url: string) {
     const {source, send} = fakeEventSource()
-    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} history={at('/cleanup/caches')} />)
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} history={at(url)} />)
     await document.fonts.ready
     const layout = watchShifts()
     const first = new Map<string, Box>()
@@ -116,6 +113,17 @@ describe('nothing moves unless the user moved it', () => {
       for (const shift of layout.shifts.splice(0)) caught.push(`layout-shift at "${step}": ${shift}`)
     }
 
+    return {screen, send, check, finish: () => {
+      layout.stop()
+      return caught
+    }}
+}
+
+describe('nothing moves unless the user moved it', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  test('a streaming session with selection, filters and the apparent note keeps every landmark in place', async () => {
+    const {screen, send, check, finish} = await session('/cleanup/caches')
     send({type: 'disk', data: {total: 500 * GB, used: 400 * GB, free: 50 * GB, snapshots: 0, elapsed_ms: 10}})
     send({type: 'progress', data: {files: 1234, bytes: 5 * GB, dir: '/Users/you/Library/Caches', elapsed_ms: 50}})
     send(listed(CACHES, caches[0]!, 60))
@@ -166,7 +174,18 @@ describe('nothing moves unless the user moved it', () => {
     await expect.element(screen.getByText('Scan complete')).toBeVisible()
     await check('scan finishes')
 
-    layout.stop()
-    expect(caught).toEqual([])
+    expect(finish()).toEqual([])
   }, 30_000)
+
+  test('a scan failure shows its notice over the page without pushing anything', async () => {
+    const {screen, send, check, finish} = await session('/cleanup/caches')
+    send({type: 'disk', data: {total: 500 * GB, used: 400 * GB, free: 50 * GB, snapshots: 0, elapsed_ms: 10}})
+    for (const [i, entry] of caches.entries()) send(listed(CACHES, entry, 100 + i))
+    await expect.element(screen.getByText('~/Library/Caches/app-e')).toBeVisible()
+    await check('items listed')
+    send({type: 'error', data: {message: 'permission denied', elapsed_ms: 300}})
+    await expect.element(screen.getByRole('alert')).toHaveTextContent('The scan failed: permission denied. Nothing can be approved.')
+    await check('the scan fails')
+    expect(finish()).toEqual([])
+  })
 })

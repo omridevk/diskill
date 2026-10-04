@@ -345,7 +345,7 @@ function SearchBox({value, onChange, inputRef}: {value: string; onChange: (q: st
   }
   const later = useDebouncer(send, {wait: SEARCH_WAIT})
   return (
-    <div className="relative w-72">
+    <div className="relative w-44 shrink xl:w-72">
       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
       <Input
         ref={inputRef}
@@ -382,7 +382,7 @@ function Toggle({on, label, onClick}: {on: boolean; label: string; onClick: () =
 function Toolbar({list, onList, onSearch, searchRef}: {list: CleanupSearch; onList: ChangeList; onSearch: (q: string) => void; searchRef: RefObject<HTMLInputElement | null>}) {
   const toggleRisk = (risk: Risk) => onList({risk: list.risk.includes(risk) ? list.risk.filter(r => r !== risk) : [...list.risk, risk]})
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b px-7 py-3">
+    <div className="flex items-center gap-2 border-b px-7 py-3">
       <SearchBox value={list.q} onChange={onSearch} inputRef={searchRef} />
       {RISKS.map(risk => (
         <Toggle key={risk} on={list.risk.includes(risk)} label={RISK_LABEL[risk]} onClick={() => toggleRisk(risk)} />

@@ -44,6 +44,7 @@ export default defineConfig({
   optimizeDeps: {
     include: [
       '@base-ui/react/popover',
+      '@base-ui/react/tooltip',
       'gsap',
       'gsap/CustomEase',
       'gsap/DrawSVGPlugin',
