@@ -11,6 +11,7 @@ export interface Item {
   accuracy: string
   preselect: boolean
   report: boolean
+  checking?: boolean
 }
 
 export interface Category {
@@ -126,6 +127,8 @@ export function plural(n: number, one: string, many: string, format: (n: number)
 export const counted = (n: number) => n.toLocaleString()
 
 export const isExact = (item: Item) => item.accuracy === 'exact'
+
+export const isPickable = (item: Item) => !item.report && item.checking !== true
 
 const RISK_ORDER: Risk[] = ['safe', 'review', 'report']
 

@@ -367,7 +367,7 @@ fn review_without_run_dir_streams_the_scan() {
             "/preview",
             &format!(r#"{{"token": "{token}", "items": []}}"#)
         ),
-        409
+        200
     );
     assert_eq!(
         post_to(
@@ -385,6 +385,27 @@ fn review_without_run_dir_streams_the_scan() {
         "a new connection replays from the start"
     );
     first = rest;
+
+    let docker_rows: Vec<&(String, Value)> = first
+        .iter()
+        .filter(|(n, d)| {
+            d["item"]["path"] == "cmd:docker-prune"
+                || (n == "unlisted" && d["path"] == "cmd:docker-prune")
+        })
+        .collect();
+    assert_eq!(docker_rows.len(), 2, "{docker_rows:?}");
+    assert_eq!(docker_rows[0].1["item"]["checking"], true);
+    assert_eq!(docker_rows[1].0, "unlisted", "docker answered nothing");
+    let wt = home.join("code/wt");
+    let wt_rows: Vec<&Value> = first
+        .iter()
+        .filter(|(n, d)| n == "item" && d["item"]["path"] == wt.to_str().unwrap())
+        .map(|(_, d)| d)
+        .collect();
+    assert_eq!(wt_rows[0]["item"]["checking"], true, "{wt_rows:?}");
+    assert!(wt_rows.last().unwrap()["item"].get("checking").is_none());
+    let whole = first.clone();
+    first.retain(|(n, d)| n != "unlisted" && d["item"]["checking"] != true);
 
     let names: Vec<&str> = first.iter().map(|(n, _)| n.as_str()).collect();
     let walked = names.iter().position(|n| *n == "walked").unwrap();
@@ -431,7 +452,7 @@ fn review_without_run_dir_streams_the_scan() {
     assert_eq!(first[item(&cache)].1["item"]["preselect"], true);
 
     let second = events(port, &token, "done");
-    assert_eq!(second, first, "a reconnect replays every event");
+    assert_eq!(second, whole, "a reconnect replays every event");
 
     assert_eq!(
         post_to(
@@ -499,7 +520,10 @@ fn spawn_live(home: &Path, bin: &Path) -> (std::process::Child, u16, String) {
         .and_then(|(_, rest)| rest.split_once('"'))
         .map(|(home, _)| home.to_string())
         .expect("home meta");
-    assert_eq!(Path::new(&reported).canonicalize().unwrap(), home.canonicalize().unwrap());
+    assert_eq!(
+        Path::new(&reported).canonicalize().unwrap(),
+        home.canonicalize().unwrap()
+    );
     let token = page
         .split_once(r#"<meta name="disk-clean-token" content=""#)
         .and_then(|(_, rest)| rest.split_once('"'))
@@ -563,7 +587,7 @@ fn rescan_restarts_the_scan_in_place() {
         "nothing of the old scan is sent again: {head:?}"
     );
     assert_eq!(head[0].1["elapsed_ms"], 0);
-    assert_eq!(preview(), 409);
+    assert_eq!(preview(), 200);
     assert_eq!(
         post_to(
             port,
@@ -808,4 +832,160 @@ fn oversized_slow_and_excess_requests_are_turned_away() {
         200
     );
     assert_eq!(child.wait().unwrap().code(), Some(5));
+}
+
+fn post_reply(port: u16, route: &str, body: &str) -> (u16, String) {
+    let raw = format!(
+        "POST {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    request(port, raw)
+}
+
+fn blocking_docker(bin: &Path, gate: &Path) {
+    fs::create_dir_all(bin).unwrap();
+    let docker = bin.join("docker");
+    fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nwhile [ ! -e '{}' ]; do sleep 0.05; done\nexit 1\n",
+            gate.display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod")
+        .arg("+x")
+        .arg(&docker)
+        .status()
+        .unwrap();
+}
+
+fn listed_paths(reader: &mut BufReader<TcpStream>, wanted: &[&Path]) {
+    let mut missing: Vec<String> = wanted.iter().map(|p| p.display().to_string()).collect();
+    while !missing.is_empty() {
+        for (_, data) in read_until(reader, "item") {
+            if data["item"]["checking"] != true {
+                missing.retain(|p| data["item"]["path"] != p.as_str());
+            }
+        }
+    }
+}
+
+fn items_body(token: &str, decision: &str, paths: &[&Path]) -> String {
+    let items: Vec<Value> = paths
+        .iter()
+        .map(|p| serde_json::json!({"path": p.to_str().unwrap(), "category": "caches"}))
+        .collect();
+    serde_json::json!({"token": token, "decision": decision, "items": items}).to_string()
+}
+
+#[test]
+fn approving_while_the_scan_runs_uses_what_was_listed() {
+    let t = common::temp_dir("midscan");
+    let home = t.0.join("home");
+    let (bin, gate) = (t.0.join("bin"), t.0.join("gate"));
+    let take = home.join("Library/Caches/take");
+    let keep = home.join("Library/Caches/keep");
+    let never = home.join("never-listed");
+    for dir in [&take, &keep, &never] {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("blob"), vec![7u8; 64 * 1024]).unwrap();
+    }
+    blocking_docker(&bin, &gate);
+    let (mut child, port, token) = spawn_live(&home, &bin);
+    let mut stream = open_events(port, &token);
+    listed_paths(&mut stream, &[&take, &keep]);
+
+    let (status, body) = post_reply(port, "/preview", &items_body(&token, "", &[&take, &never]));
+    assert_eq!(status, 200, "{body}");
+    let plan: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(plan["count"], 1, "{plan}");
+    assert_eq!(plan["hold"][0]["path"], take.to_str().unwrap());
+    assert_eq!(
+        post_reply(port, "/decide", &items_body(&token, "approve", &[&never])).0,
+        409,
+        "a path the scan never listed is refused"
+    );
+    assert!(child.try_wait().unwrap().is_none(), "still scanning");
+
+    assert_eq!(
+        post_reply(
+            port,
+            "/decide",
+            &items_body(&token, "approve", &[&take, &never])
+        )
+        .0,
+        200
+    );
+    let code = child.wait().unwrap().code();
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    fs::write(&gate, "").unwrap();
+    assert_eq!(code, Some(0), "{stdout}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    let run = Path::new(lines[0]);
+    assert_eq!(Path::new(lines[1]), run.join("selection.json"));
+
+    let scan = fs::read_to_string(run.join("scan.tsv")).unwrap();
+    assert!(scan.ends_with('\n'), "{scan}");
+    let recorded: Vec<&str> = scan
+        .lines()
+        .map(|l| {
+            let cols: Vec<&str> = l.split('\t').collect();
+            assert_eq!(cols.len(), 13, "{l}");
+            cols[8]
+        })
+        .collect();
+    assert!(recorded.contains(&take.to_str().unwrap()));
+    assert!(recorded.contains(&keep.to_str().unwrap()));
+    assert!(
+        !recorded.contains(&"cmd:docker-prune"),
+        "rows still being checked are never recorded"
+    );
+    let sel: Value =
+        serde_json::from_str(&fs::read_to_string(run.join("selection.json")).unwrap()).unwrap();
+    let chosen: Vec<&str> = sel["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(chosen, [take.to_str().unwrap()]);
+
+    let dry = common::cli(&["clean", "--dry-run", run.to_str().unwrap()], &home, &[]);
+    assert_eq!(dry.status.code(), Some(0));
+    let dry = String::from_utf8_lossy(&dry.stdout).into_owned();
+    assert!(dry.contains(&format!("mv -- {} ", take.display())), "{dry}");
+    assert!(!dry.contains(keep.to_str().unwrap()), "{dry}");
+
+    let real = common::cli(&["clean", run.to_str().unwrap()], &home, &[]);
+    assert_eq!(
+        real.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&real.stderr)
+    );
+    common::wait_for("the cleanup", std::time::Duration::from_secs(20), || {
+        fs::read_to_string(run.join("status")).is_ok_and(|s| s.trim() == "done")
+    });
+    assert!(
+        !take.exists(),
+        "the approved, listed path was moved to hold"
+    );
+    assert!(
+        keep.join("blob").is_file(),
+        "a listed but unapproved path stays"
+    );
+    assert!(never.join("blob").is_file(), "a path never listed stays");
+    let held: Vec<Value> = common::events_of(run)
+        .into_iter()
+        .filter(|e| e["event"] == "held")
+        .collect();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["path"], take.to_str().unwrap());
 }

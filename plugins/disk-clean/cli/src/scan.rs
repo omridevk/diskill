@@ -257,8 +257,12 @@ fn probe_docker() -> Option<u64> {
     Some(parse_docker_bytes(out.lines().next().unwrap_or("")))
 }
 
+fn has_sims(home: &str) -> bool {
+    util::which("xcrun") && Path::new(&format!("{home}/{SIM_DEVICES}")).is_dir()
+}
+
 fn probe_sims(home: &str) -> usize {
-    if !util::which("xcrun") || !Path::new(&format!("{home}/{SIM_DEVICES}")).is_dir() {
+    if !has_sims(home) {
         return 0;
     }
     util::output("xcrun", &["simctl", "list", "devices"])
@@ -407,6 +411,9 @@ struct Published {
     shown: HashMap<String, Row>,
     order: Vec<Row>,
     settled: HashSet<String>,
+    checking: HashSet<String>,
+    record: fs::File,
+    cancel: Arc<AtomicBool>,
     started: Instant,
 }
 
@@ -415,18 +422,61 @@ fn valid(rows: &[Row]) -> impl Iterator<Item = &Row> {
 }
 
 fn show(out: &mut Published, row: &Row, sink: &dyn Sink) {
-    if out.shown.get(&row[8]) == Some(row) {
+    if out.cancel.load(Ordering::Relaxed) || out.shown.get(&row[8]) == Some(row) {
         return;
     }
     out.shown.insert(row[8].clone(), row.clone());
+    out.checking.remove(&row[8]);
     let fields: Vec<&str> = row.iter().map(String::as_str).collect();
-    if let Some((category, item)) = review::parse_row(&fields) {
-        emit(
-            sink,
-            out.started,
-            "item",
-            json!({"category": category, "item": item}),
-        );
+    let Some((category, item)) = review::parse_row(&fields) else {
+        return;
+    };
+    if let Err(e) = out
+        .record
+        .write_all(format!("{}\n", row.join("\t")).as_bytes())
+    {
+        eprintln!("  could not record {} in scan.tsv: {e}", row[8]);
+        return;
+    }
+    emit(
+        sink,
+        out.started,
+        "item",
+        json!({"category": category, "item": item}),
+    );
+}
+
+fn pend(rows: &[Row], out: &Mutex<Published>, sink: &dyn Sink) {
+    let mut out = out.lock().unwrap_or_else(PoisonError::into_inner);
+    if out.cancel.load(Ordering::Relaxed) {
+        return;
+    }
+    for r in valid(rows) {
+        if out.shown.contains_key(&r[8]) || out.settled.contains(&r[8]) {
+            continue;
+        }
+        if !out.checking.insert(r[8].clone()) {
+            continue;
+        }
+        let fields: Vec<&str> = r.iter().map(String::as_str).collect();
+        if let Some((category, mut item)) = review::parse_row(&fields) {
+            item.checking = true;
+            emit(
+                sink,
+                out.started,
+                "item",
+                json!({"category": category, "item": item}),
+            );
+        }
+    }
+}
+
+fn unpend(paths: impl IntoIterator<Item = String>, out: &Mutex<Published>, sink: &dyn Sink) {
+    let mut out = out.lock().unwrap_or_else(PoisonError::into_inner);
+    for path in paths {
+        if out.checking.remove(&path) && !out.cancel.load(Ordering::Relaxed) {
+            emit(sink, out.started, "unlisted", json!({"path": path}));
+        }
     }
 }
 
@@ -503,6 +553,9 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         shown: HashMap::new(),
         order: Vec::new(),
         settled: HashSet::new(),
+        checking: HashSet::new(),
+        record: fs::File::create(run_dir.join("scan.tsv"))?,
+        cancel: Arc::clone(&cancel),
         started,
     });
     let progress = |w: &Walk, dir: &Path| {
@@ -519,6 +572,16 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     let show_worktrees = |ctx: &Ctx, checked: &[worktrees::Checked]| {
         let rows = worktrees::rows(checked, &home, |p| size_bytes(ctx, p).unwrap_or(0));
         preview(&rows, &out, sink);
+        unpend(
+            checked
+                .iter()
+                .filter_map(|c| c.entry.get("worktree").cloned()),
+            &out,
+            sink,
+        );
+    };
+    let on_listed = |entries: &[worktrees::Entry]| {
+        pend(&worktrees::checking_rows(entries, &home), &out, sink);
     };
     let on_checked = |c: &worktrees::Checked| {
         checked_so_far.fetch_add(1, Ordering::Relaxed);
@@ -535,21 +598,30 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     std::thread::scope(|s| {
         let (out, cfg, home) = (&out, &cfg, &home);
         let docker = s.spawn(move || {
+            if util::which("docker") {
+                pend(&[docker_row(0)], out, sink);
+            }
             let bytes = probe_docker();
             let mut rows = Vec::new();
             scan_docker(&mut rows, cfg, bytes);
             preview(&rows, out, sink);
+            unpend([DOCKER_KEY.to_string()], out, sink);
             bytes
         });
         let sims = s.spawn(move || {
+            if has_sims(home) {
+                pend(&[sims_row("xcrun simctl delete unavailable", 0)], out, sink);
+            }
             let sims = probe_sims(home);
             let mut rows = Vec::new();
             scan_sims(&early(home, now, true), &mut rows, sims);
             preview(&rows, out, sink);
+            unpend([SIMS_KEY.to_string()], out, sink);
             sims
         });
-        let on_checked = &on_checked;
-        let checks = s.spawn(move || worktrees::check_repos(repo_rx, listed_tx, on_checked));
+        let (on_listed, on_checked) = (&on_listed, &on_checked);
+        let checks =
+            s.spawn(move || worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked));
 
         let brew_cache = probe_brew();
         let fixed = early(home, now, true);
@@ -619,8 +691,11 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
                 }
             }
         }
-        fs::write(run_dir.join("map.tsv"), &map)?;
-        fs::write(run_dir.join("insights.json"), insights.to_string())?;
+        util::write_atomic(&run_dir.join("map.tsv"), map.as_bytes())?;
+        util::write_atomic(
+            &run_dir.join("insights.json"),
+            insights.to_string().as_bytes(),
+        )?;
         let home_bytes = size_bytes(ctx, Path::new(home)).unwrap_or(0);
         let listed = listed_rx.recv().unwrap_or(0);
         let running = listed.saturating_sub(checked_so_far.load(Ordering::Relaxed));
@@ -651,6 +726,14 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         if cancel.load(Ordering::Relaxed) {
             return Err(interrupted());
         }
+        let leftover: Vec<String> = out
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .checking
+            .iter()
+            .cloned()
+            .collect();
+        unpend(leftover, out, sink);
 
         let out = out.lock().unwrap_or_else(PoisonError::into_inner);
         let mut scan = String::new();
@@ -666,17 +749,18 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
                 reclaimable += item.bytes;
             }
         }
-        fs::write(run_dir.join("scan.tsv"), &scan)?;
+        util::write_atomic(&run_dir.join("scan.tsv"), scan.as_bytes())?;
         let stats = util::volume_stats(&mount);
         let (total, used, free) = stats
             .as_ref()
             .map(|s| (s.total, s.used, s.avail))
             .unwrap_or((0, 0, 0));
-        fs::write(
-            run_dir.join("disk.tsv"),
+        util::write_atomic(
+            &run_dir.join("disk.tsv"),
             format!(
                 "total\t{total}\nused\t{used}\nfree\t{free}\nhome\t{home_bytes}\nsnapshots\t{snapshots}\ntoo_deep\t{too_deep}\n"
-            ),
+            )
+            .as_bytes(),
         )?;
         eprintln!("  found {} items", out.order.len());
         emit(sink, started, "done", json!({"reclaimable": reclaimable}));
@@ -862,26 +946,36 @@ fn scan_xcode(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
     );
 }
 
+const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
+const DOCKER_KEY: &str = "cmd:docker-prune";
+
+fn sims_row(label: &str, bytes: u64) -> Row {
+    let cat = Cat {
+        id: "xcode-sims",
+        title: "Unavailable simulators",
+        desc: "Simulator devices whose runtime is no longer installed.",
+        risk: "safe",
+        pre: "1",
+    };
+    row(
+        &cat,
+        "cmd",
+        "xcode-unavailable-sims",
+        label,
+        SIMS_KEY,
+        bytes,
+        "Rough estimate. Removes only devices macOS already marks unavailable.",
+        "-",
+        "estimate",
+    )
+}
+
 fn scan_sims(ctx: &Ctx, rows: &mut Vec<Row>, sims: usize) {
     if sims > 0 {
         let bytes = size_bytes(ctx, &h(ctx, SIM_DEVICES)).unwrap_or(0) / 3;
-        let cat = Cat {
-            id: "xcode-sims",
-            title: "Unavailable simulators",
-            desc: "Simulator devices whose runtime is no longer installed.",
-            risk: "safe",
-            pre: "1",
-        };
-        rows.push(row(
-            &cat,
-            "cmd",
-            "xcode-unavailable-sims",
+        rows.push(sims_row(
             &format!("xcrun simctl delete unavailable ({sims} devices)"),
-            "cmd:xcode-unavailable-sims",
             bytes,
-            "Rough estimate. Removes only devices macOS already marks unavailable.",
-            "-",
-            "estimate",
         ));
     }
 }
@@ -990,9 +1084,12 @@ fn scan_ios_backups(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
 }
 
 fn scan_docker(rows: &mut Vec<Row>, cfg: &Config, bytes: Option<u64>) {
-    let Some(bytes) = bytes.filter(|b| *b >= cfg.min_bytes) else {
-        return;
-    };
+    if let Some(bytes) = bytes.filter(|b| *b >= cfg.min_bytes) {
+        rows.push(docker_row(bytes));
+    }
+}
+
+fn docker_row(bytes: u64) -> Row {
     let cat = Cat {
         id: "docker",
         title: "Docker",
@@ -1000,17 +1097,17 @@ fn scan_docker(rows: &mut Vec<Row>, cfg: &Config, bytes: Option<u64>) {
         risk: "review",
         pre: "0",
     };
-    rows.push(row(
+    row(
         &cat,
         "cmd",
         "docker-prune",
         "docker system prune -f",
-        "cmd:docker-prune",
+        DOCKER_KEY,
         bytes,
         "Frees space INSIDE Docker's sparse VM disk image, which does not shrink — macOS gets little or none of it back. Reclaim it on the host by resetting the Docker VM disk in Docker Desktop. Named volumes are never touched.",
         "-",
         "vm",
-    ));
+    )
 }
 
 fn scan_big_files(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {

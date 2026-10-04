@@ -169,7 +169,9 @@ interface Exit {
   onClosed: () => void
 }
 
-export function ConfirmDialog({plan, home, open, onClose, onClosed, onConfirm}: Exit & {plan: Plan | null; home: string; onConfirm: () => void}) {
+const SCAN_RUNNING = 'The scan is still running; confirming stops it and uses what was found so far.'
+
+export function ConfirmDialog({plan, home, scanning = false, open, onClose, onClosed, onConfirm}: Exit & {plan: Plan | null; home: string; scanning?: boolean; onConfirm: () => void}) {
   return (
     <Dialog open={open} onOpenChange={next => next || onClose()} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-3xl">
@@ -180,6 +182,7 @@ export function ConfirmDialog({plan, home, open, onClose, onClosed, onConfirm}: 
             elsewhere; a symlink is moved itself, never followed. Worktrees are re-checked and git refuses any that changed.
           </DialogDescription>
         </DialogHeader>
+        {scanning && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{SCAN_RUNNING}</p>}
         <Decision plan={plan} home={home} onCancel={onClose} onConfirm={onConfirm} />
       </DialogContent>
     </Dialog>

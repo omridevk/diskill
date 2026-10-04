@@ -33,6 +33,8 @@ pub struct Item {
     pub accuracy: String,
     pub preselect: bool,
     pub report: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub checking: bool,
 }
 
 #[derive(Serialize)]
@@ -96,6 +98,7 @@ pub fn parse_row(f: &[&str]) -> Option<(Value, Item)> {
         },
         preselect: *pre == "1" && *risk != "report",
         report: *risk == "report",
+        checking: false,
     };
     Some((
         json!({"id": id, "title": title, "desc": desc, "risk": risk}),
@@ -104,19 +107,30 @@ pub fn parse_row(f: &[&str]) -> Option<(Value, Item)> {
 }
 
 pub fn load_scan(run_dir: &Path) -> Vec<Category> {
-    let mut cats: Vec<Category> = Vec::new();
-    for line in util::read_lines(&run_dir.join("scan.tsv")) {
+    let mut latest: HashMap<String, ([String; 4], Item)> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for line in util::complete_lines(&run_dir.join("scan.tsv")) {
         let f: Vec<&str> = line.split('\t').collect();
         let Some((_, item)) = parse_row(&f) else {
             continue;
         };
-        match cats.iter_mut().find(|c| c.id == f[0]) {
+        let head = [f[0], f[1], f[2], f[3]].map(str::to_string);
+        if latest.insert(item.path.clone(), (head, item)).is_none() {
+            order.push(f[8].to_string());
+        }
+    }
+    let mut cats: Vec<Category> = Vec::new();
+    for path in &order {
+        let Some(([id, title, desc, risk], item)) = latest.remove(path) else {
+            continue;
+        };
+        match cats.iter_mut().find(|c| c.id == id) {
             Some(c) => c.items.push(item),
             None => cats.push(Category {
-                id: f[0].to_string(),
-                title: f[1].to_string(),
-                desc: f[2].to_string(),
-                risk: f[3].to_string(),
+                id,
+                title,
+                desc,
+                risk,
                 items: vec![item],
                 bytes: 0,
             }),
@@ -296,6 +310,13 @@ struct Finished {
     index: clean::ScanIndex,
 }
 
+fn listed_in(dir: &Path) -> Finished {
+    Finished {
+        categories: load_scan(dir),
+        index: clean::index_scan(&util::complete_lines(&dir.join("scan.tsv"))),
+    }
+}
+
 #[derive(Default)]
 struct Log {
     generation: u64,
@@ -333,8 +354,16 @@ impl Live {
         lock(&self.finished).clone()
     }
 
+    fn listed(&self) -> Arc<Finished> {
+        self.finished()
+            .unwrap_or_else(|| Arc::new(listed_in(&self.dir)))
+    }
+
     fn restart(&self) {
         *lock(&self.finished) = None;
+        if let Err(e) = std::fs::write(self.dir.join("scan.tsv"), "") {
+            eprintln!("could not reset scan.tsv for the rescan: {e}");
+        }
         *lock(&self.last_progress) = None;
         let mut log = lock(&self.log);
         log.generation += 1;
@@ -356,10 +385,7 @@ impl Sink for Live {
             *last = Some(Instant::now());
         }
         if event == "done" {
-            *lock(&self.finished) = Some(Arc::new(Finished {
-                categories: load_scan(&self.dir),
-                index: clean::index_scan(&util::read_lines(&self.dir.join("scan.tsv"))),
-            }));
+            *lock(&self.finished) = Some(Arc::new(listed_in(&self.dir)));
         }
         let mut log = lock(&self.log);
         log.events.push(format!("event: {event}\ndata: {data}\n\n"));
@@ -502,22 +528,29 @@ fn handle(
                 return;
             }
             let approve = payload.get("decision").and_then(Value::as_str) == Some("approve");
-            let finished = live.finished();
-            if finished.is_none() && (target == "/preview" || approve) {
-                respond(&mut stream, "409 Conflict", "text/plain", b"scan not done");
-                return;
-            }
-            if let (Some(f), "/preview") = (&finished, target) {
-                let items = payload
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let body = preview(&f.categories, &f.index, &items, &live.dir).to_string();
+            let items = payload
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if target == "/preview" {
+                let listed = live.listed();
+                let body =
+                    preview(&listed.categories, &listed.index, &items, &live.dir).to_string();
                 respond(&mut stream, "200 OK", "application/json", body.as_bytes());
                 return;
             }
-            if !approve {
+            let scanning = live.finished().is_none();
+            if approve && scanning && selection(&live.listed().categories, &items).is_none() {
+                respond(
+                    &mut stream,
+                    "409 Conflict",
+                    "text/plain",
+                    b"nothing selected has been listed by the scan yet",
+                );
+                return;
+            }
+            if !approve || scanning {
                 live.cancel.store(true, Ordering::Relaxed);
             }
             respond(&mut stream, "200 OK", "application/json", b"{}");
@@ -755,10 +788,7 @@ fn decide(rx: &mpsc::Receiver<Value>, live: &Live) -> io::Result<(i32, Option<Pa
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let Some(selection) = live
-        .finished()
-        .and_then(|f| selection(&f.categories, &items))
-    else {
+    let Some(selection) = selection(&live.listed().categories, &items) else {
         eprintln!("no deletable items were selected");
         return Ok((5, None));
     };

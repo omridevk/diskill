@@ -8,7 +8,7 @@ import LatticeLoader from './react-bits/lattice-loader'
 
 function statusOf(scan: Scan) {
   if (scan.error) return 'error'
-  return scan.done ? 'done' : 'working'
+  return scan.done || scan.stopped ? 'done' : 'working'
 }
 
 function phaseOf(scan: Scan) {
@@ -32,7 +32,7 @@ export function ScanStatus({scan}: {scan: Scan}) {
     <LatticeLoader
       key={phase}
       label={phase}
-      doneLabel="Scan complete"
+      doneLabel={scan.stopped && !scan.done ? 'Scan stopped at approval' : 'Scan complete'}
       errorLabel="Scan failed"
       status={status}
       elapsed={(clock - phaseStart) / 1000}

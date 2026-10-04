@@ -328,7 +328,7 @@ describe('live page', () => {
   beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
   afterEach(() => document.documentElement.style.removeProperty('--fuse-window'))
 
-  test('streams items during the walk, reveals storage on walked, unlocks on done and undoes an approve', async () => {
+  test('streams items during the walk, reveals storage on walked, Delete stays live while scanning and undoes an approve', async () => {
     const {source, send} = fakeEventSource()
     const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} history={at()} />)
     await expect.element(screen.getByText('Scanning your disk…').first().first()).toBeInTheDocument()
@@ -346,8 +346,8 @@ describe('live page', () => {
     await expect.element(screen.getByText('Where your 500 GB went')).toBeVisible()
     await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
     await screen.getByRole('tab', {name: 'Cleanup'}).click()
-    await expect.element(screen.getByText(/Delete unlocks when the scan finishes/)).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
+    await expect.element(screen.getByText(/you can delete what is listed while the scan runs/)).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeEnabled()
     for (const event of items.slice(5)) send(event)
     await expect.element(screen.getByRole('link', {name: /^Docker/})).toBeVisible()
     send(done)
@@ -377,7 +377,7 @@ describe('live page', () => {
     await screen.getByRole('button', {name: 'Rescan'}).click()
     await expect.element(screen.getByText('Rescanning')).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Rescan'})).toBeDisabled()
-    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeEnabled()
     await expect.element(screen.getByText('Scanning your disk…')).not.toBeInTheDocument()
     expect(window.fetch).toHaveBeenCalledWith('/rescan', expect.objectContaining({body: JSON.stringify({token: 'test-token'})}))
     await expect.poll(() => sources.length).toBe(2)
@@ -386,7 +386,7 @@ describe('live page', () => {
     send({type: 'rescan', data: {elapsed_ms: 0}})
     for (const event of [disk, ...rescanned, {type: 'item', data: {category: categoryOf(fixture.data.categories[0]!.items[0]!.path), item: appE, elapsed_ms: 900}} as const, walked]) send(event)
     await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeEnabled()
     send(done)
     await expect.element(screen.getByText('Scan complete')).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Card view'})).toHaveAttribute('aria-pressed', 'true')
@@ -417,7 +417,7 @@ describe('live page', () => {
     send({type: 'error', data: {message: 'permission denied', elapsed_ms: 40}})
     await expect.element(screen.getByText(/The scan failed: permission denied/)).toBeVisible()
     await expect.element(screen.getByText('Scan failed')).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: 'The scan failed · nothing can be deleted'})).toBeDisabled()
   })
 })
 
@@ -863,7 +863,7 @@ describe('list fixes from QA', () => {
     const screen = await render(<App loaded={fixture} history={at()} />)
     press('d')
     await expect.element(screen.getByText('0 items selected · 0 B')).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: DELETE})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: 'Select items to delete'})).toBeDisabled()
     expect(window.fetch).not.toHaveBeenCalled()
   })
 

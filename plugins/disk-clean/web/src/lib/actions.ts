@@ -1,7 +1,7 @@
 import {createOptimisticAction} from '@tanstack/db'
 import {decide, heldAction, messageOf, rescan as requestRescan} from './api'
 import {openCleanup, openScan, writeSession, type Action, type Db, type Planned} from './db'
-import type {Entry} from './scan-feed'
+import {RESTART, type Entry} from './scan-feed'
 
 const plannedOf = ({path, label, bytes, section, exact}: Entry): Planned => ({path, label, bytes, section, exact})
 
@@ -36,17 +36,37 @@ function tracked(db: Db, action: Action, apply: () => void, send: () => Promise<
     )
 }
 
+function stopScan(db: Db) {
+  const scan = db.scan.scan.synced.get('scan')
+  if (!scan || scan.done || scan.error !== '') return false
+  db.streams.scan?.()
+  db.streams.scan = null
+  db.scan.scan.collection.update('scan', draft => {
+    draft.stopped = true
+  })
+  return true
+}
+
 export function approve(db: Db, items: readonly Entry[], approvedBytes: number) {
   const rows = items.map(plannedOf)
+  const stopped = {scan: false}
   const apply = () => {
     db.plan.collection.insert(rows)
     db.session.collection.update('session', draft => {
       draft.approved = true
       draft.approvedBytes = approvedBytes
     })
+    stopped.scan = stopScan(db)
   }
   return tracked(db, 'approve', apply, async () => {
-    await decide(db.loaded.token, 'approve', items)
+    try {
+      await decide(db.loaded.token, 'approve', items)
+    } catch (e) {
+      if (stopped.scan) openScan(db)
+      throw e
+    }
+    const scan = db.scan.scan.synced.get('scan')
+    if (stopped.scan && scan) db.scan.scan.write(writes => writes.put({...scan, stopped: true}))
     db.plan.write(writes => rows.forEach(writes.put))
     writeSession(db, {approved: true, approvedBytes})
     openCleanup(db)
@@ -82,7 +102,7 @@ function restarted(db: Db) {
 
 function restartOptimistically(db: Db) {
   db.scan.scan.collection.update('scan', draft => {
-    Object.assign(draft, {walked: false, done: false, error: '', worktrees: 0, elapsed: 0, walkedAt: 0, rescans: draft.rescans + 1})
+    Object.assign(draft, {...RESTART, rescans: draft.rescans + 1})
   })
   db.scan.progress.collection.update('progress', draft => Object.assign(draft, {files: 0, bytes: 0, dir: ''}))
 }

@@ -4,7 +4,8 @@ import {ConfirmDialog, ConfirmFailed} from '@/components/confirm-dialog'
 import {messageOf} from '@/lib/api'
 import {useDb} from '@/lib/db'
 import {useBack, useDialogExit} from '@/lib/navigation'
-import {canConfirm, loadPreview, previewOf, useDecisions, useHome} from '@/lib/page-data'
+import {canConfirm, loadPreview, previewAt, useDecisions, useHome} from '@/lib/page-data'
+import {useScanState} from '@/lib/views'
 
 export const Route = createFileRoute('/_tabs/cleanup/$section/confirm')({
   loaderDeps: ({search}) => ({add: search.add, drop: search.drop}),
@@ -26,10 +27,15 @@ function useExit() {
   return {dialog: {open: exit.open, onClose: () => exit.leave(leave), onClosed: () => exit.after?.()}, leave: exit.leave}
 }
 
+function useScanning() {
+  return !useScanState(useDb()).done
+}
+
 function Checking() {
   const home = useHome()
+  const scanning = useScanning()
   const {dialog} = useExit()
-  return <ConfirmDialog plan={null} home={home} {...dialog} onConfirm={dialog.onClose} />
+  return <ConfirmDialog plan={null} home={home} scanning={scanning} {...dialog} onConfirm={dialog.onClose} />
 }
 
 function Failed({error}: ErrorComponentProps) {
@@ -39,15 +45,17 @@ function Failed({error}: ErrorComponentProps) {
 }
 
 function Confirm() {
-  const picks = Route.useLoaderDeps()
-  const {data} = useLiveSuspenseQuery(previewOf(useDb(), picks))
+  const db = useDb()
+  const preview = previewAt(db, Route.useLoaderData())
+  const {data} = useLiveSuspenseQuery(preview.collection)
+  const scanning = useScanning()
   const {approve} = useDecisions()
   const navigate = Route.useNavigate()
   const home = useHome()
   const {dialog, leave} = useExit()
   const confirm = () => {
-    approve(picks)
+    approve(preview)
     leave(() => navigate({to: '/cleanup/$section', params: true, search: true, replace: true}))
   }
-  return <ConfirmDialog plan={data[0] ?? null} home={home} {...dialog} onConfirm={confirm} />
+  return <ConfirmDialog plan={data[0] ?? null} home={home} scanning={scanning} {...dialog} onConfirm={confirm} />
 }

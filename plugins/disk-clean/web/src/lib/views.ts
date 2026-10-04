@@ -14,7 +14,7 @@ export function useScanState(db: Db): ScanState {
   return first(data, db.scan.scan.synced.get('scan') ?? NO_SCAN)
 }
 
-const NO_SCAN: ScanState = {id: 'scan', walked: true, done: true, error: '', worktrees: 0, elapsed: 0, walkedAt: 0, rescans: 0, home: 0, reclaimable: 0, tree: null, insights: null}
+const NO_SCAN: ScanState = {id: 'scan', walked: true, done: true, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0, rescans: 0, home: 0, reclaimable: 0, tree: null, insights: null}
 const NO_DISK: Disk = {id: 'disk', total: 0, used: 0, free: 0, snapshots: 0}
 const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
 const NO_SESSION: Session = {id: 'session', approved: false, approvedBytes: 0, cancelled: false, scanLink: 'live', cleanupLink: 'live'}

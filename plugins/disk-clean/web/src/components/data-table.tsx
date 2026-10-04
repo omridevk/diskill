@@ -16,7 +16,7 @@ const PADDING = 18
 
 function heightOf(row: EntryRow | undefined, planned: boolean) {
   if (!row) return LINE + PADDING
-  return PADDING + LINE * (1 + Number(row.original.note !== '') + Number(planned))
+  return PADDING + LINE * (1 + Number(row.original.note !== '' || row.original.checking === true) + Number(planned))
 }
 
 function rowTone(planned: boolean, outcome: Outcome | undefined, locked: boolean) {

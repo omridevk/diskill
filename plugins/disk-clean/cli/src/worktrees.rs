@@ -460,6 +460,7 @@ fn check_entries(
 pub fn check_repos(
     repos: Receiver<PathBuf>,
     listed: Sender<usize>,
+    on_listed: &(dyn Fn(&[Entry]) + Sync),
     on_checked: &(dyn Fn(&Checked) + Sync),
 ) -> Vec<Checked> {
     let real = real_cwds(&process_cwds());
@@ -478,6 +479,7 @@ pub fn check_repos(
         {
             let entries = listed_worktrees(&repo);
             total += entries.len();
+            on_listed(&entries);
             let (real, done) = (&real, &done);
             s.spawn(move |_| {
                 let checked = check_entries(entries, real, on_checked);
@@ -493,14 +495,51 @@ pub fn check_repos(
     done.into_iter().flat_map(|(_, c)| c).collect()
 }
 
+const CLEAN_TITLE: &str = "Git worktrees with no leftover work";
+const CLEAN_DESC: &str = "Clean worktrees: no uncommitted, untracked or local-only ignored files, no process inside, nothing that exists only in the worktree. Only the folder goes; the branch and every commit stay. Every check is repeated right before removal.";
+
+pub fn checking_rows(entries: &[Entry], home: &str) -> Vec<Row> {
+    entries
+        .iter()
+        .filter_map(|e| {
+            let path = e.get("worktree")?;
+            let label = if home.is_empty() {
+                path.clone()
+            } else {
+                path.replacen(home, "~", 1)
+            };
+            emit(
+                "worktrees",
+                CLEAN_TITLE,
+                CLEAN_DESC,
+                "safe",
+                "0",
+                &label,
+                path,
+                0,
+                "Checking that nothing in this worktree would be lost.",
+                "-",
+            )
+        })
+        .collect()
+}
+
 pub fn rows(checked: &[Checked], home: &str, size_of: impl Fn(&Path) -> u64 + Sync) -> Vec<Row> {
     let idle_limit = idle_days();
     checked
         .par_iter()
         .filter_map(|c| {
             let path = c.entry.get("worktree")?;
-            let label = if home.is_empty() { path.clone() } else { path.replacen(home, "~", 1) };
-            let age = c.info.as_ref().map(|i| (i.idle as i64).to_string()).unwrap_or_else(|| "-".to_string());
+            let label = if home.is_empty() {
+                path.clone()
+            } else {
+                path.replacen(home, "~", 1)
+            };
+            let age = c
+                .info
+                .as_ref()
+                .map(|i| (i.idle as i64).to_string())
+                .unwrap_or_else(|| "-".to_string());
             let size = size_of(Path::new(path));
             let info = match &c.info {
                 Some(info) if c.blockers.is_empty() => info,
@@ -534,8 +573,8 @@ pub fn rows(checked: &[Checked], home: &str, size_of: impl Fn(&Path) -> u64 + Sy
             }
             emit(
                 "worktrees",
-                "Git worktrees with no leftover work",
-                "Clean worktrees: no uncommitted, untracked or local-only ignored files, no process inside, nothing that exists only in the worktree. Only the folder goes; the branch and every commit stay. Every check is repeated right before removal.",
+                CLEAN_TITLE,
+                CLEAN_DESC,
                 "safe",
                 if idle { "1" } else { "0" },
                 &label,

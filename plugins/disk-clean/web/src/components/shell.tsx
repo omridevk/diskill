@@ -7,7 +7,6 @@ import {useDb, type Action, type Db, type Link as StreamLink} from '@/lib/db'
 import {useShownOnMount} from '@/lib/motion'
 import {firstSectionNow, useDecisions, useProgress, useScan, useSelection, type Ending, type Selection} from '@/lib/page-data'
 import {resultBytes, type CleanupProgress} from '@/lib/progress'
-import type {ScanState} from '@/lib/scan-feed'
 import {useDisk, usePending, useSession} from '@/lib/views'
 import {ActionBar} from './action-bar'
 import {BarText, CleanupTracker, DetailsButton, HeldActions, ProgressTrack} from './cleanup-progress'
@@ -120,10 +119,6 @@ function ScanSummary({db, scan, selection, progress, approved}: {db: Db; scan: R
   )
 }
 
-function isLocked(scan: ScanState) {
-  return !scan.done || scan.error !== ''
-}
-
 const HELD: readonly Action[] = ['undo', 'free']
 
 function useHeld(db: Db, progress: CleanupProgress | null, held: (action: 'undo' | 'free') => void, sectionOf: (params: {section?: string}) => string) {
@@ -186,7 +181,7 @@ export function Shell() {
       <ActionBar
         key={scan.scan.rescans}
         selection={selection}
-        locked={isLocked(scan.scan)}
+        scan={scan.scan}
         progress={progress}
         held={held}
         failure={<Failures db={db} onApprove={decisions.retry} onCancel={decisions.cancel} />}
