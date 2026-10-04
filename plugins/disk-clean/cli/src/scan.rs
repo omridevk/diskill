@@ -526,6 +526,10 @@ fn interrupted() -> io::Error {
 }
 
 pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Result<()> {
+    util::utility_qos();
+    let _ = rayon::ThreadPoolBuilder::new()
+        .start_handler(|_| util::utility_qos())
+        .build_global();
     let cfg = Config::from_env();
     let home = util::home();
     let now = util::now();
@@ -603,6 +607,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     std::thread::scope(|s| {
         let (out, cfg, home) = (&out, &cfg, &home);
         let docker = s.spawn(move || {
+            util::utility_qos();
             if util::which("docker") {
                 pend(&[docker_row(0)], out, sink);
             }
@@ -614,6 +619,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             bytes
         });
         let sims = s.spawn(move || {
+            util::utility_qos();
             if has_sims(home) {
                 pend(&[sims_row("xcrun simctl delete unavailable", 0)], out, sink);
             }
@@ -625,8 +631,10 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             sims
         });
         let (on_listed, on_checked) = (&on_listed, &on_checked);
-        let checks =
-            s.spawn(move || worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked));
+        let checks = s.spawn(move || {
+            util::utility_qos();
+            worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked)
+        });
 
         let brew_cache = probe_brew();
         let fixed = early(home, now, true);
