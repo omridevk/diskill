@@ -25,6 +25,7 @@ export interface Entry extends Item {
   risk: Category['risk']
   search: string
   exact: boolean
+  selectable: number
   scan: number
 }
 
@@ -64,7 +65,7 @@ export interface ScanState {
 const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
 
 function entryOf(item: Item, head: CategoryHead, scan: number): Entry {
-  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), scan}
+  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), selectable: item.report ? 0 : 1, scan}
 }
 
 function startState(loaded: Loaded): ScanState {

@@ -82,7 +82,8 @@ export interface Decoded<T extends Item = Item> {
 
 export function createSelector<T extends Item = Item>() {
   const counts = new Map<string, number>()
-  const counted = new Map<string, readonly T[]>()
+  const counted = new Map<string, Set<string>>()
+  const seen = new Map<string, readonly T[]>()
   const owners = new Map<string, string>()
   const paths = new Map<string, string>()
   const fragments = new Map<string, Fragment<T>>()
@@ -93,35 +94,43 @@ export function createSelector<T extends Item = Item>() {
     return counts.get(short) === 1 ? short : hashOf(path)
   }
 
-  const count = (items: readonly T[], section: string, by: number) => {
+  const enter = (path: string, section: string) => {
+    const short = shortOf(path)
+    counts.set(short, (counts.get(short) ?? 0) + 1)
+    owners.set(short, section)
+    owners.set(hashOf(path), section)
+    paths.set(short, path)
+    paths.set(hashOf(path), path)
+  }
+
+  const leave = (path: string) => {
+    const short = shortOf(path)
+    counts.set(short, (counts.get(short) ?? 1) - 1)
+  }
+
+  const recount = (section: string, items: readonly T[]) => {
+    const before = counted.get(section) ?? new Set<string>()
+    const after = new Set<string>()
     for (const item of items) {
       if (!pickable(item)) continue
-      const short = shortOf(item.path)
-      counts.set(short, (counts.get(short) ?? 0) + by)
-      if (by > 0) {
-        owners.set(short, section)
-        owners.set(hashOf(item.path), section)
-        paths.set(short, item.path)
-        paths.set(hashOf(item.path), item.path)
-      }
+      after.add(item.path)
+      if (!before.has(item.path)) enter(item.path, section)
     }
+    for (const path of before) if (!after.has(path)) leave(path)
+    counted.set(section, after)
+    seen.set(section, items)
   }
 
   const sync = (categories: readonly Group<T>[]) => {
     const live = new Set(categories.map(c => c.id))
-    for (const [section, items] of counted) {
+    for (const [section, before] of counted) {
       if (live.has(section)) continue
-      count(items, section, -1)
+      for (const path of before) leave(path)
       counted.delete(section)
+      seen.delete(section)
       fragments.delete(section)
     }
-    for (const category of categories) {
-      const known = counted.get(category.id)
-      if (known === category.items) continue
-      if (known) count(known, category.id, -1)
-      count(category.items, category.id, 1)
-      counted.set(category.id, category.items)
-    }
+    for (const category of categories) if (seen.get(category.id) !== category.items) recount(category.id, category.items)
   }
 
   const pathOf = (token: string) => {

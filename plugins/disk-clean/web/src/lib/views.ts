@@ -1,10 +1,9 @@
-import {eq, useLiveQuery, type Collection, type InitialQueryBuilder} from '@tanstack/react-db'
+import {eq, useLiveQuery, type Collection} from '@tanstack/react-db'
 import type {RowSelectionState} from '@tanstack/react-table'
 import {useCallback, useMemo, useSyncExternalStore} from 'react'
 import {outermost, sumBytes, type Category} from './data'
 import type {Action, Db, Request, Session} from './db'
 import type {CategoryHead, Disk, Entry, ScanProgress, ScanState} from './scan-feed'
-import type {Sort} from './search'
 
 function first<T>(rows: readonly T[], fallback: T) {
   return rows[0] ?? fallback
@@ -123,27 +122,4 @@ export function useInside(db: Db, path: string, on: RowSelectionState) {
     }),
     [data, on],
   )
-}
-
-const naturally = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'})
-
-function sorted(q: InitialQueryBuilder, items: Db['scan']['items']['collection'], sort: Sort) {
-  const from = q.from({i: items})
-  const byKey = {
-    'size-desc': () => from.orderBy(({i}) => i.bytes, 'desc'),
-    'size-asc': () => from.orderBy(({i}) => i.bytes, 'asc'),
-    'name-asc': () => from.orderBy(({i}) => i.label, {stringSort: 'custom', compare: naturally.compare}),
-    'age-desc': () => from.orderBy(({i}) => i.age, {direction: 'desc', nulls: 'last'}),
-    'age-asc': () => from.orderBy(({i}) => i.age, {direction: 'asc', nulls: 'last'}),
-  }
-  return byKey[sort]()
-    .orderBy(({i}) => i.bytes, 'desc')
-    .orderBy(({i}) => i.path)
-}
-
-export function useSortedEntries(db: Db, sort: Sort): Entry[] {
-  const items = db.scan.items.collection
-  const {collection} = useLiveQuery({queryKey: ['entries', items.id, sort], query: q => sorted(q, items, sort)})
-  const version = useVersion(collection)
-  return useMemo(() => collection.toArray, [collection, version])
 }

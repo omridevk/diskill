@@ -1,19 +1,21 @@
-import {FlexRender, type ReactTable} from '@tanstack/react-table'
+import {useTable, type ReactTable, type RowSelectionState, type Updater} from '@tanstack/react-table'
 import {useVirtualizer} from '@tanstack/react-virtual'
 import {memo, useRef, type MouseEvent} from 'react'
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table'
 import type {CleanupProgress, Outcome} from '@/lib/progress'
 import {STATE_MOTION} from '@/lib/motion'
-import {toggleRow, type Entry, type EntryRow, type features} from './cleanup-columns'
+import {moveWindow, type SectionWindow} from '@/lib/shaping'
+import {columns, enableRowSelection, toggleRow, type Entry, type EntryRow, features} from './cleanup-columns'
 
-type CleanupTable = ReactTable<typeof features, Entry>
+type CleanupTable = ReactTable<typeof features, Entry, null>
 
 const GRID = 'grid grid-cols-[36px_minmax(0,1fr)_80px_96px] items-center gap-x-3 px-3'
 const OVERSCAN = 6
 const LINE = 18
 const PADDING = 18
 
-function heightOf(row: EntryRow, planned: boolean) {
+function heightOf(row: EntryRow | undefined, planned: boolean) {
+  if (!row) return LINE + PADDING
   return PADDING + LINE * (1 + Number(row.original.note !== '') + Number(planned))
 }
 
@@ -29,62 +31,90 @@ function clickRow(row: EntryRow, event: MouseEvent<HTMLTableRowElement>) {
 }
 
 interface RowProps {
+  table: CleanupTable
   row: EntryRow
   index: number
   start: number
-  selected: boolean
   locked: boolean
   planned: boolean
   outcome: Outcome | undefined
-  pending: string
   measure: (node: Element | null) => void
 }
 
-const VirtualRow = memo(function VirtualRow({row, index, start, selected, locked, planned, outcome, measure}: RowProps) {
+const VirtualRow = memo(function VirtualRow({table, row, index, start, locked, planned, outcome, measure}: RowProps) {
   return (
-    <TableRow
-      ref={measure}
-      data-index={index}
-      data-state={!locked && selected ? 'selected' : undefined}
-      role="row"
-      aria-rowindex={index + 2}
-      onClick={locked || !row.getCanSelect() ? undefined : event => clickRow(row, event)}
-      className={`absolute top-0 left-0 w-full rounded-lg border-0 py-2 ${GRID} ${locked ? '' : 'cursor-pointer'} ${STATE_MOTION} ${rowTone(planned, outcome, locked)}`}
-      style={{transform: `translateY(${start}px)`}}
-    >
-      {row.getVisibleCells().map(cell => (
-        <TableCell key={cell.id} role="cell" className="min-w-0 p-0 whitespace-normal">
-          <FlexRender cell={cell} />
-        </TableCell>
-      ))}
-    </TableRow>
+    <table.Subscribe selector={state => state.rowSelection[row.id] === true}>
+      {selected => (
+        <TableRow
+          ref={measure}
+          data-index={index}
+          data-state={!locked && selected ? 'selected' : undefined}
+          role="row"
+          aria-rowindex={index + 2}
+          onClick={locked || !row.getCanSelect() ? undefined : event => clickRow(row, event)}
+          className={`absolute top-0 left-0 w-full rounded-lg border-0 py-2 ${GRID} ${locked ? '' : 'cursor-pointer'} ${STATE_MOTION} ${rowTone(planned, outcome, locked)}`}
+          style={{transform: `translateY(${start}px)`}}
+        >
+          {row.getAllCells().map(cell => (
+            <TableCell key={cell.id} role="cell" className="min-w-0 p-0 whitespace-normal">
+              <table.FlexRender cell={cell} />
+            </TableCell>
+          ))}
+        </TableRow>
+      )}
+    </table.Subscribe>
   )
 })
 
-function pendingOf(progress: CleanupProgress | null) {
-  if (!progress) return ''
-  if (progress.cleanup.done || progress.cleanup.abandoned) return 'not run'
-  return progress.cleanup.started ? 'deleting' : 'queued'
+interface DataTableProps {
+  slice: SectionWindow
+  count: number
+  label: string
+  progress: CleanupProgress | null
+  rowSelection: RowSelectionState
+  onRowSelectionChange: (update: Updater<RowSelectionState>) => void
 }
 
-export function DataTable({table, rows, label}: {table: CleanupTable; rows: readonly EntryRow[]; label: string}) {
+function useCleanupTable({slice, progress, rowSelection, onRowSelectionChange}: DataTableProps) {
+  return useTable(
+    {
+      features,
+      columns,
+      data: slice.rows,
+      getRowId: row => row.path,
+      enableRowSelection,
+      state: {rowSelection},
+      onRowSelectionChange,
+      meta: {progress},
+    },
+    () => null,
+  )
+}
+
+export function DataTable(props: DataTableProps) {
+  const {slice, count, label, progress} = props
   const scroller = useRef<HTMLDivElement>(null)
-  const progress = table.options.meta?.progress ?? null
+  const table = useCleanupTable(props)
+  const rows = table.getRowModel().rows
+  const rowAt = (index: number) => rows[index - slice.offset]
   const plan = progress?.plan.items
   const virtualizer = useVirtualizer({
-    count: rows.length,
+    count,
     getScrollElement: () => scroller.current,
     estimateSize: index => {
-      const row = rows[index]
-      return row ? heightOf(row, plan?.has(row.id) ?? false) : LINE + PADDING
+      const row = rowAt(index)
+      return heightOf(row, row ? (plan?.has(row.id) ?? false) : false)
     },
-    getItemKey: index => rows[index]?.id ?? index,
+    getItemKey: index => rowAt(index)?.id ?? index,
     overscan: OVERSCAN,
+    onChange: instance => {
+      const range = instance.range
+      if (range) moveWindow(slice, range.startIndex, range.endIndex + 1)
+    },
   })
-  const pending = pendingOf(progress)
   return (
     <div ref={scroller} className="min-h-0 grow overflow-auto px-3 py-1">
-      <Table aria-label={label} aria-rowcount={rows.length + 1} role="table" className="grid">
+      <Table aria-label={label} aria-rowcount={count + 1} role="table" className="grid">
         <TableHeader role="rowgroup" className="grid [&_tr]:border-0">
           {table.getHeaderGroups().map(group => (
             <TableRow key={group.id} role="row" aria-rowindex={1} className={`${GRID} hover:bg-transparent`}>
@@ -98,20 +128,18 @@ export function DataTable({table, rows, label}: {table: CleanupTable; rows: read
         </TableHeader>
         <TableBody role="rowgroup" className="relative grid" style={{height: virtualizer.getTotalSize()}}>
           {virtualizer.getVirtualItems().map(virtual => {
-            const row = rows[virtual.index]
+            const row = rowAt(virtual.index)
             if (!row) return null
-            const planned = plan?.has(row.id) ?? false
             return (
               <VirtualRow
                 key={row.id}
+                table={table}
                 row={row}
                 index={virtual.index}
                 start={virtual.start}
-                selected={row.getIsSelected()}
                 locked={progress !== null}
-                planned={planned}
+                planned={plan?.has(row.id) ?? false}
                 outcome={progress?.byKey.get(row.id)}
-                pending={planned ? pending : ''}
                 measure={virtualizer.measureElement}
               />
             )

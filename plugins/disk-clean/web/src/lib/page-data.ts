@@ -2,7 +2,7 @@ import {queryCollectionOptions} from '@tanstack/query-db-collection'
 import {createCollection, useLiveQuery} from '@tanstack/react-db'
 import {getRouteApi, useNavigate} from '@tanstack/react-router'
 import {functionalUpdate, type RowSelectionState, type Updater} from '@tanstack/react-table'
-import {useCallback, useMemo} from 'react'
+import {useCallback, useDeferredValue, useMemo} from 'react'
 import {approve as approveItems, askHeld, cancel as cancelRun, restartScan} from './actions'
 import {preview, type Plan} from './api'
 import {firstSection, sumBytes} from './data'
@@ -18,6 +18,7 @@ export interface Ending {
 }
 
 export interface Selection {
+  picked: ReadonlyMap<string, number>
   count: number
   nests: Nest[]
   rowSelection: RowSelectionState
@@ -58,7 +59,7 @@ function sectionNow(db: Db, head: CategoryHead, known: Cached | undefined): Cach
   const group = db.scan.bySection.get(head.id)
   if (!group || group.items.size === 0) return null
   if (known?.version === group.version && known.head === head) return known
-  const items = [...group.items.values()].toSorted((a, b) => b.bytes - a.bytes)
+  const items = [...group.items.values()]
   return {version: group.version, head, section: {...head, items, bytes: sumBytes(items)}}
 }
 
@@ -137,6 +138,7 @@ interface Derived {
   apparentBytes: number
   risky: number
   sections: number
+  picked: ReadonlyMap<string, number>
 }
 
 const derivations = new WeakMap<Decoded<Entry>, {nests: number; derived: Derived}>()
@@ -152,6 +154,7 @@ function derive(db: Db, decoded: Decoded<Entry>): Derived {
     apparentBytes: parts.reduce((sum, part) => sum + part.apparentBytes, 0) - shadow.apparent,
     risky: parts.reduce((sum, part) => sum + (part.risk === 'review' ? part.selected.length : 0), 0),
     sections: parts.length,
+    picked: new Map(parts.map(part => [part.selected[0]?.section ?? '', part.selected.length])),
   }
 }
 
@@ -249,7 +252,7 @@ export function useSelection(): Selection {
   const categories = useCategoriesNow(db)
   const decoded = decodedNow(db, picks)
   const on = decoded.on
-  const derived = derivedOf(db, decoded)
+  const derived = derivedOf(db, useDeferredValue(decoded))
   const setRowSelection = useCallback(
     (update: Updater<RowSelectionState>) =>
       navigate({

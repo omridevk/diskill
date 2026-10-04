@@ -1,40 +1,15 @@
-import {
-  columnFilteringFeature,
-  columnGroupingFeature,
-  columnVisibilityFeature,
-  createColumnHelper,
-  createFilteredRowModel,
-  createGroupedRowModel,
-  globalFilteringFeature,
-  metaHelper,
-  rowSelectionFeature,
-  rowSortingFeature,
-  tableFeatures,
-  type ColumnFiltersState,
-  type Row,
-  type RowSelectionState,
-  type SortingState,
-} from '@tanstack/react-table'
+import {createColumnHelper, metaHelper, rowSelectionFeature, tableFeatures, type Row} from '@tanstack/react-table'
 import {Checkbox} from '@/components/ui/checkbox'
-import {formatBytes, isExact, type Risk} from '@/lib/data'
+import {formatBytes, isExact} from '@/lib/data'
 import type {CleanupProgress, Outcome} from '@/lib/progress'
-import type {Entry, Nest} from '@/lib/scan-feed'
-import type {CleanupSearch, Sort} from '@/lib/search'
+import type {Entry} from '@/lib/scan-feed'
 
 interface CleanupMeta {
   progress: CleanupProgress | null
-  nests: readonly Nest[]
 }
 
 export const features = tableFeatures({
-  columnFilteringFeature,
-  globalFilteringFeature,
-  filteredRowModel: createFilteredRowModel(),
-  columnGroupingFeature,
-  groupedRowModel: createGroupedRowModel(),
-  rowSortingFeature,
   rowSelectionFeature,
-  columnVisibilityFeature,
   tableMeta: metaHelper<CleanupMeta>(),
 })
 
@@ -116,7 +91,6 @@ export const columns = helper.columns([
   helper.accessor(row => row.age ?? undefined, {
     id: 'age',
     header: () => <span className="block text-right">Idle</span>,
-    filterFn: (row, id, min: number) => (row.getValue<number | undefined>(id) ?? -1) >= min,
     cell: ({getValue}) => {
       const age = getValue()
       return <span className={`block text-right text-xs tabular-nums ${age !== undefined && age >= 90 ? 'text-amber-300' : 'text-muted-foreground'}`}>{idleText(age)}</span>
@@ -124,7 +98,6 @@ export const columns = helper.columns([
   }),
   helper.accessor('bytes', {
     header: () => <span className="block text-right">Size</span>,
-    filterFn: (row, id, min: number) => row.getValue<number>(id) >= min,
     cell: ({row}) => (
       <span className="block text-right text-[13px] font-medium tabular-nums">
         {isExact(row.original) ? '' : '≈'}
@@ -132,52 +105,6 @@ export const columns = helper.columns([
       </span>
     ),
   }),
-  helper.accessor('section', {}),
-  helper.accessor('risk', {filterFn: (row, id, risks: Risk[]) => risks.includes(row.getValue<Risk>(id))}),
-  helper.accessor('search', {}),
-  helper.accessor('path', {id: 'selected', filterFn: (row, _id, selection: RowSelectionState) => selection[row.id] === true}),
 ])
 
-export const HIDDEN_COLUMNS = {section: false, risk: false, search: false, selected: false}
-
-export const enableRowSelection = (row: EntryRow) => !row.getIsGrouped() && !row.original.report
-
-export const searchFilter = (row: EntryRow, id: string, q: string) => row.getValue<string>(id).includes(q.toLowerCase())
-
-export const SORTING: Record<Sort, SortingState> = {
-  'size-desc': [{id: 'bytes', desc: true}],
-  'size-asc': [{id: 'bytes', desc: false}],
-  'name-asc': [{id: 'label', desc: false}],
-  'age-desc': [{id: 'age', desc: true}],
-  'age-asc': [{id: 'age', desc: false}],
-}
-
-export function sortOf(sorting: SortingState): Sort {
-  const [first] = sorting
-  const found = (Object.keys(SORTING) as Sort[]).find(sort => SORTING[sort][0]?.id === first?.id && SORTING[sort][0]?.desc === first?.desc)
-  return found ?? 'size-desc'
-}
-
-type Filters = Pick<CleanupSearch, 'risk' | 'minSize' | 'minAge' | 'only'>
-
-export function filtersOf({risk, minSize, minAge, only}: Filters, selection: RowSelectionState): ColumnFiltersState {
-  return [
-    ...(risk.length > 0 ? [{id: 'risk', value: risk}] : []),
-    ...(minSize > 0 ? [{id: 'bytes', value: minSize}] : []),
-    ...(minAge >= 0 ? [{id: 'age', value: minAge}] : []),
-    ...(only ? [{id: 'selected', value: selection}] : []),
-  ]
-}
-
-export function listOf(filters: ColumnFiltersState): Filters {
-  const value = (id: string) => filters.find(f => f.id === id)?.value
-  const risk = value('risk')
-  const minSize = value('bytes')
-  const minAge = value('age')
-  return {
-    risk: Array.isArray(risk) ? risk : [],
-    minSize: typeof minSize === 'number' ? minSize : 0,
-    minAge: typeof minAge === 'number' ? minAge : -1,
-    only: value('selected') !== undefined,
-  }
-}
+export const enableRowSelection = (row: EntryRow) => !row.original.report
