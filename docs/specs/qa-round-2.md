@@ -46,6 +46,35 @@ off the interaction path (incremental live-query updates, smaller commits, `star
 real-browser frame tests (rAF gaps on the built page in Firefox and Chromium) for exactly these
 interactions; the existing React-work tests stay.
 
+### Outcome (measured 2026-10-04)
+
+Firefox profile (Gecko profiler on the built page, 12,000 rows): every new filter key, sort or
+only-selected value built a new TanStack DB live query whose first graph run hashed every row
+(`hashObject` / `writeByte` / `isBinaryValue` in db-ivm), 140 to 340 ms per query, synchronously on
+the interaction; while streaming, each typed key added another live query that every later batch
+flowed through (4.2 s of graph runs in a 10 s window). The open section and per-section totals now
+come from an incremental index (db.md, "QA round 2"), and at most 300 streamed events are applied
+per frame.
+
+Largest frame (ms), real binary, 12,000-row node_modules section, headless, before (858b272) /
+after:
+
+| interaction | Firefox | Chromium |
+|---|---|---|
+| open the section | 99 / 34 | 33 / 17 |
+| filter, first keystrokes | 891 / 33 | 50 / 33 |
+| only selected | 41 / 10 | 17 / 17 |
+| risk toggle | 500 / 25 | 167 / 17 |
+| sort by name | 358 / 33 | 133 / 17 |
+| sort by size | 142 / 34 | 17 / 17 |
+| rescan streaming 12k items | 41 / 42 | 17 / 17 |
+| typing and toggling while it streams | 3,117 / 18 | 200 / 17 |
+| end of the rescan (settled rows re-sent) | 10 / 68 | 17 / 33 |
+
+The end-of-rescan phase in Firefox still has 3 of 830 frames over 50 ms (per-batch React render of
+the chrome, about 30 ms, is the floor). The `frames` test project asserts these budgets in
+Chromium and Firefox, with and without reduced motion, idle and during a real walk (section H).
+
 ## D. Never silent about the connection
 
 After approval (waiting, cleaning, done, held, restored) a dropped stream must show

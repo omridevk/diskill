@@ -1119,6 +1119,7 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
         .args(["review", &run.to_string_lossy()])
         .env("HOME", &home)
         .env("DISK_CLEAN_NO_BROWSER", "1")
+        .env("DISK_CLEAN_WATCH_START", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
