@@ -17,7 +17,7 @@ const FILM = ['src/film.test.tsx']
 const ROUTER = ['src/router.test.tsx']
 const HOLD = ['src/hold.test.tsx']
 const SCANNING = ['src/scanning.test.tsx']
-const WORDS = ['src/words.test.tsx', 'src/selection.test.tsx']
+const WORDS = ['src/words.test.tsx', 'src/selection.test.tsx', 'src/empty.test.tsx', 'src/stability.test.tsx']
 const URLS = ['src/url-privacy.test.tsx']
 const TOOLTIPS = ['src/chart-tooltips.test.tsx']
 
@@ -46,6 +46,7 @@ export default defineConfig({
   optimizeDeps: {
     include: [
       '@base-ui/react/popover',
+      '@base-ui/react/tooltip',
       'gsap',
       'gsap/CustomEase',
       'gsap/DrawSVGPlugin',

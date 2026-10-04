@@ -6,6 +6,7 @@ import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, Di
 import type {Plan} from '@/lib/api'
 import {formatUntil} from '@/lib/progress'
 import {counted, formatBytes, plural, tilde, tildeWords} from '@/lib/data'
+import {WarningLines, type SelectionWarnings} from './selection-warnings'
 
 const ROW = 28
 
@@ -181,7 +182,10 @@ interface Exit {
 
 const SCAN_RUNNING = 'The scan is still running; confirming stops it and uses what was found so far.'
 
-export function ConfirmDialog({plan, home, selected = 0, scanning = false, open, onClose, onClosed, onConfirm}: Exit & {plan: Plan | null; home: string; selected?: number; scanning?: boolean; onConfirm: () => void}) {
+const NO_WARNINGS: SelectionWarnings = {hidden: [], risky: 0}
+
+export function ConfirmDialog({plan, home, selected = 0, scanning = false, warnings = NO_WARNINGS, open, onClose, onClosed, onConfirm}: Exit & {plan: Plan | null; home: string; selected?: number; scanning?: boolean; warnings?: SelectionWarnings; onConfirm: () => void}) {
+  const warned = warnings.hidden.length > 0 || warnings.risky > 0
   return (
     <Dialog open={open} onOpenChange={next => next || onClose()} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-3xl">
@@ -193,6 +197,7 @@ export function ConfirmDialog({plan, home, selected = 0, scanning = false, open,
           </DialogDescription>
         </DialogHeader>
         {scanning && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{SCAN_RUNNING}</p>}
+        {warned && <WarningLines warnings={warnings} className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm" />}
         <Decision plan={plan} home={home} selected={selected} onCancel={onClose} onConfirm={onConfirm} />
       </DialogContent>
     </Dialog>

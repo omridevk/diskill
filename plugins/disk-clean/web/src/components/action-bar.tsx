@@ -1,6 +1,9 @@
-import {Trash2, X} from 'lucide-react'
+import {Eraser, Info, RotateCcw, Trash2, X} from 'lucide-react'
 import {useState, type AnimationEvent, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
+import {Kbd} from '@/components/ui/kbd'
+import {Popover, PopoverContent, PopoverTitle, PopoverTrigger} from '@/components/ui/popover'
+import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
 import type {CleanupProgress} from '@/lib/progress'
 import {formatBytes, plural, sizeOf} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
@@ -9,6 +12,7 @@ import type {ScanState} from '@/lib/scan-feed'
 import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
 import FuseButton from './react-bits/fuse-button'
+import {useSelectionWarnings, WarningChip} from './selection-warnings'
 
 function UndoCountdown({ms}: {ms: number}) {
   const steps = Math.ceil(ms / 1000)
@@ -66,7 +70,26 @@ function FuseAction({label, doneLabel, icon, background, color, onCommit}: FuseA
 }
 
 function hint(scan: ScanState) {
-  return !scan.done && scan.error === '' ? ' · you can delete what is listed while the scan runs' : ' · Cancel gives you a few seconds to undo'
+  return !scan.done && scan.error === '' ? 'You can delete what is listed while the scan runs.' : 'Cancel gives you a few seconds to undo.'
+}
+
+function HelpLine({scan}: {scan: ScanState}) {
+  return (
+    <div className="flex h-5 items-center gap-1 text-xs whitespace-nowrap text-muted-foreground">
+      Delete moves files to a holding folder first, so you can undo
+      <Popover>
+        <PopoverTrigger render={<Button variant="ghost" size="icon-xs" aria-label="About deleting" />}>
+          <Info />
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" className="w-80 text-xs">
+          <PopoverTitle className="text-sm">How Delete works</PopoverTitle>
+          <p className="text-muted-foreground">Delete moves files to a holding folder first, so you can undo or free the space afterwards.</p>
+          <p className="text-muted-foreground">Worktrees and commands can't be undone.</p>
+          <p className="text-muted-foreground">{hint(scan)}</p>
+        </PopoverContent>
+      </Popover>
+    </div>
+  )
 }
 
 function deleteState(selection: Selection, scan: ScanState) {
@@ -78,12 +101,20 @@ function deleteState(selection: Selection, scan: ScanState) {
   return {label: 'Nothing found to delete', ready: false}
 }
 
-function SelectionButton({label, reason, onClick}: {label: string; reason: string; onClick: () => void}) {
+function SelectionButton({label, icon, shortcut, reason, onClick}: {label: string; icon: ReactNode; shortcut: string; reason: string; onClick: () => void}) {
   const described = reason ? `${label}: ${reason}` : label
   return (
-    <Button variant="ghost" size="xs" disabled={reason !== ''} aria-label={described} title={reason ? described : undefined} onClick={onClick}>
-      {label}
-    </Button>
+    <Tooltip>
+      <TooltipTrigger delay={80} render={<span className="inline-flex" />}>
+        <Button variant="ghost" size="icon-xs" disabled={reason !== ''} aria-label={described} onClick={onClick}>
+          {icon}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
+        {described}
+        <Kbd>{shortcut}</Kbd>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -104,6 +135,7 @@ export function ActionBar({
   onCancel: () => void
   onDelete: () => void
 }) {
+  const warnings = useSelectionWarnings(selection)
   if (progress) return <ProgressFooter progress={progress} held={held} />
   const count = selection.selected.length
   const action = deleteState(selection, scan)
@@ -111,24 +143,21 @@ export function ActionBar({
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex min-w-0 grow flex-col gap-0.5">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <div className="text-sm font-semibold tabular-nums">
+        <div className="flex h-6 items-center gap-1">
+          <div className="w-64 shrink-0 truncate text-sm font-semibold tabular-nums">
             {plural(count, 'item', 'items')} selected · {selection.exactBytes === 0 && selection.apparentBytes > 0 ? `≈${formatBytes(selection.apparentBytes)}` : <PopBytes bytes={selection.exactBytes} />}
-            {selection.exactBytes > 0 && selection.apparentBytes > 0 && (
-              <span className="font-normal text-muted-foreground"> (+≈{formatBytes(selection.apparentBytes)} apparent)</span>
-            )}
           </div>
-          <SelectionButton label="Clear selection" reason={count === 0 ? 'nothing is selected' : ''} onClick={selection.clear} />
-          <SelectionButton label="Reset to recommended" reason={selection.recommended ? 'already the recommended selection' : ''} onClick={selection.reset} />
+          <SelectionButton label="Clear selection" icon={<Eraser />} shortcut="D" reason={count === 0 ? 'nothing is selected' : ''} onClick={selection.clear} />
+          <SelectionButton label="Reset to recommended" icon={<RotateCcw />} shortcut="R" reason={selection.recommended ? 'already the recommended selection' : ''} onClick={selection.reset} />
+          <div className="flex min-w-0 grow pl-2">
+            <WarningChip warnings={warnings} />
+          </div>
         </div>
-        <div className="text-xs text-muted-foreground">
-          Delete moves files to a holding folder first, so you can undo or free the space afterwards · worktrees and commands can't be undone
-          {hint(scan)}
-        </div>
+        <HelpLine scan={scan} />
         {failure}
       </div>
       <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />
-      <Button size="lg" className="shrink-0" disabled={!action.ready} aria-haspopup="dialog" onClick={onDelete}>
+      <Button size="lg" className="w-80 shrink-0 justify-start" disabled={!action.ready} aria-haspopup="dialog" onClick={onDelete}>
         <Trash2 /> {action.label}
       </Button>
     </footer>

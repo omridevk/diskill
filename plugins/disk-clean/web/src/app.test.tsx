@@ -80,6 +80,7 @@ describe('cleanup', () => {
   test('filtering hides selected items and warns about them', async () => {
     const screen = await render(<App loaded={fixture} history={at()} />)
     await screen.getByRole('textbox', {name: 'Filter paths'}).fill('app-a')
+    await screen.getByRole('contentinfo').getByRole('button', {name: '3 hidden'}).click()
     await expect.element(screen.getByText(/3 selected items are hidden by the filters/)).toBeVisible()
     await expect.element(screen.getByText('~/Library/Caches/app-b')).not.toBeInTheDocument()
   })
@@ -379,7 +380,9 @@ describe('live page', () => {
     await expect.element(screen.getByText('Where your 500 GB went')).toBeVisible()
     await expect.element(screen.getByText('Checking 3 worktrees')).toBeVisible()
     await screen.getByRole('tab', {name: 'Cleanup'}).click()
-    await expect.element(screen.getByText(/you can delete what is listed while the scan runs/)).toBeVisible()
+    await screen.getByRole('button', {name: 'About deleting'}).click()
+    await expect.element(screen.getByText(/You can delete what is listed while the scan runs/)).toBeVisible()
+    await userEvent.keyboard('{Escape}')
     await expect.element(screen.getByRole('button', {name: DELETE})).toBeEnabled()
     for (const event of items.slice(5)) send(event)
     await expect.element(screen.getByRole('link', {name: /^Docker/})).toBeVisible()

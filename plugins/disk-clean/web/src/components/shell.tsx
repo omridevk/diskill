@@ -29,7 +29,13 @@ function Finished({title, body}: Ending) {
 
 function ScanProblem({error}: {error: string}) {
   if (!error) return null
-  return <div className="border-b bg-red-500/10 px-7 py-2 text-xs text-red-300">The scan failed: {error}. Nothing can be approved.</div>
+  return (
+    <div role="alert" className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center px-7">
+      <p className="pointer-events-auto max-w-2xl rounded-lg border border-destructive/40 bg-card px-4 py-2 text-xs text-destructive shadow-md">
+        The scan failed: {error}. Nothing can be approved.
+      </p>
+    </div>
+  )
 }
 
 const SCAN_LINK: Record<StreamLink, string> = {
@@ -108,7 +114,7 @@ function ScanSummary({db, scan, selection, progress, approved}: {db: Db; scan: R
       counter={scan.tracking && <ScanCounter scan={scan.scan} />}
       status={
         <>
-          {scan.tracking && <ScanStatus scan={scan.scan} />}
+          {scan.tracking && <span className="w-56 shrink-0"><ScanStatus scan={scan.scan} /></span>}
           <RescanButton scan={scan.scan} approved={approved} onRescan={scan.rescan} />
           <RequestError db={db} action="rescan" onRetry={scan.rescan} />
         </>
@@ -174,9 +180,9 @@ export function Shell() {
       <Tracker db={db} progress={progress} returnFocus={detailsRef} held={held} />
       <Header items={selection.count} progress={progress} link={session.scanLink} onDetails={() => navigate({to: '.', search: prev => ({...prev, overlay: 'progress'})})} detailsRef={detailsRef} />
       <ScanSummary db={db} scan={scan} selection={selection} progress={progress} approved={decisions.approved} />
-      <ScanProblem error={scan.scan.error} />
-      <div className="flex min-h-0 flex-1 flex-col text-sm">
+      <div className="relative flex min-h-0 flex-1 flex-col text-sm">
         <Outlet />
+        <ScanProblem error={scan.scan.error} />
       </div>
       <ActionBar
         key={scan.scan.rescans}

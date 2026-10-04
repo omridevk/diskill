@@ -1,10 +1,11 @@
 import {useLiveSuspenseQuery} from '@tanstack/react-db'
 import {createFileRoute, redirect, useRouter, type ErrorComponentProps} from '@tanstack/react-router'
 import {ConfirmDialog, ConfirmFailed} from '@/components/confirm-dialog'
+import {useSelectionWarnings} from '@/components/selection-warnings'
 import {messageOf} from '@/lib/api'
 import {useDb} from '@/lib/db'
 import {useBack, useDialogExit} from '@/lib/navigation'
-import {canConfirm, loadPreview, previewAt, scanReady, useDecisions, useHome} from '@/lib/page-data'
+import {canConfirm, loadPreview, previewAt, scanReady, useDecisions, useHome, useSelection} from '@/lib/page-data'
 import {useScanState} from '@/lib/views'
 
 export const Route = createFileRoute('/_tabs/cleanup/$section/confirm')({
@@ -54,9 +55,10 @@ function Confirm() {
   const navigate = Route.useNavigate()
   const home = useHome()
   const {dialog, leave} = useExit()
+  const warnings = useSelectionWarnings(useSelection())
   const confirm = () => {
     approve(preview)
     leave(() => navigate({to: '/cleanup/$section', params: true, search: true, replace: true}))
   }
-  return <ConfirmDialog plan={data[0] ?? null} home={home} selected={preview.items.length} scanning={scanning} {...dialog} onConfirm={confirm} />
+  return <ConfirmDialog plan={data[0] ?? null} home={home} selected={preview.items.length} scanning={scanning} warnings={warnings} {...dialog} onConfirm={confirm} />
 }

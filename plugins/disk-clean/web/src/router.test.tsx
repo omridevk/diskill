@@ -527,7 +527,7 @@ describe('route guards wait for the scan to catch up', () => {
     const {source, catchUp, history, screen} = await cold('/cleanup/nope')
     await sendAll(source, backlog)
     catchUp()
-    await expect.element(screen.getByText('Nothing is listed in “nope” yet; the scan is still running.')).toBeVisible()
+    await expect.element(screen.getByText("Scanning… items appear here as they're found.")).toBeVisible()
     await expect.element(screen.getByRole('heading', {name: 'Application caches'})).not.toBeInTheDocument()
     await sendAll(source, [{type: 'done', data: {reclaimable: GB, elapsed_ms: 50}}])
     await expect.element(screen.getByText('There is no section called “nope” in this scan.')).toBeVisible()

@@ -96,13 +96,13 @@ export function Summary({
         </div>
         <div className="flex h-5 items-center gap-3">{status}</div>
       </div>
-      <div className="flex flex-col gap-2 self-end text-xs text-muted-foreground">
+      <div className="flex w-60 shrink-0 flex-col gap-2 self-start text-xs text-muted-foreground">
         <Legend color={DISK_COLORS.used} label="Used" />
         <Legend color={DISK_COLORS.selected} label="Selected" />
         <Legend color={DISK_COLORS.free} label="Free" outlined />
-        {selection.apparentBytes > 0 && (
-          <div>+ ≈{formatBytes(selection.apparentBytes)} apparent (Docker VM, clones), not counted</div>
-        )}
+        <div className={`line-clamp-2 h-8 ${selection.apparentBytes > 0 ? '' : 'invisible'}`} aria-hidden={selection.apparentBytes === 0}>
+          + ≈{formatBytes(selection.apparentBytes)} apparent (Docker VM, clones), not counted
+        </div>
       </div>
     </section>
   )
