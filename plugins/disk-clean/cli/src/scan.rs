@@ -322,6 +322,7 @@ fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
     Plan {
         home: PathBuf::from(home),
         map_depth: (!cfg.skip_map).then_some(cfg.map_depth),
+        map_min_kb: cfg.map_min_bytes / 1024,
         nm_depth: cfg.nm_depth,
         dev_depth: 7,
         big_depth: 6,

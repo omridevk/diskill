@@ -131,10 +131,11 @@ fn fixture(root: &Path) {
     }
 }
 
-fn fixture_plan(root: &Path, now: i64) -> walk::Plan {
+fn fixture_plan(root: &Path, now: i64, map_min_kb: u64) -> walk::Plan {
     walk::Plan {
         home: root.to_path_buf(),
         map_depth: Some(3),
+        map_min_kb,
         nm_depth: 9,
         dev_depth: 7,
         big_depth: 6,
@@ -185,8 +186,9 @@ fn bounded_parallel_walk_matches_the_serial_walk() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let (serial, serial_total, serial_repos) = walked(&root, fixture_plan(&root, now), false);
-    let (parallel, parallel_total, parallel_repos) = walked(&root, fixture_plan(&root, now), true);
+    let (serial, serial_total, serial_repos) = walked(&root, fixture_plan(&root, now, 0), false);
+    let (parallel, parallel_total, parallel_repos) =
+        walked(&root, fixture_plan(&root, now, 0), true);
     assert_eq!(parallel_total, serial_total);
     assert_eq!(parallel.files, serial.files);
     assert_eq!(parallel.bytes, serial.bytes);
@@ -205,5 +207,32 @@ fn bounded_parallel_walk_matches_the_serial_walk() {
     assert_eq!(
         disk_clean::insights::to_json(parallel.insights, &days, now, &home),
         disk_clean::insights::to_json(serial.insights, &days, now, &home)
+    );
+}
+
+#[test]
+fn map_keeps_only_directories_at_or_above_the_threshold() {
+    let t = common::temp_dir("map-threshold");
+    let root = t.0.join("tree");
+    fixture(&root);
+    fs::write(root.join("p7/src/a/big.bin"), vec![b'y'; 1200 * 1024]).unwrap();
+    let (all, ..) = walked(&root, fixture_plan(&root, 0, 0), true);
+    let (kept, ..) = walked(&root, fixture_plan(&root, 0, 1000), true);
+    let expected: Vec<_> = all
+        .map
+        .iter()
+        .filter(|(p, blocks, ..)| p == &root || blocks.div_ceil(2) >= 1000)
+        .cloned()
+        .collect();
+    assert_eq!(kept.map, expected);
+    let paths: Vec<_> = kept.map.iter().map(|(p, ..)| p.clone()).collect();
+    assert!(paths.contains(&root.join("p7/src")), "{paths:?}");
+    assert!(paths.contains(&root.join("p7")), "{paths:?}");
+    assert!(!paths.contains(&root.join("p6")), "{paths:?}");
+    assert!(
+        all.map.len() > 4 * kept.map.len(),
+        "{} vs {}",
+        all.map.len(),
+        kept.map.len()
     );
 }

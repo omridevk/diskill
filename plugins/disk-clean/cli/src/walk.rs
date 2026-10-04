@@ -56,6 +56,7 @@ pub fn meta_of(m: &fs::Metadata) -> Meta {
 pub struct Plan {
     pub home: PathBuf,
     pub map_depth: Option<usize>,
+    pub map_min_kb: u64,
     pub nm_depth: usize,
     pub dev_depth: usize,
     pub big_depth: usize,
@@ -298,7 +299,8 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     if f.track {
         out.sizes.insert(f.path.clone(), f.blocks);
     }
-    if plan.map_depth.is_some_and(|m| f.depth <= m) {
+    let mapped = f.depth == 0 || f.blocks.div_ceil(2) >= plan.map_min_kb;
+    if mapped && plan.map_depth.is_some_and(|m| f.depth <= m) {
         out.map.push((f.path, f.blocks, f.files, f.mtime));
     }
     f.blocks
