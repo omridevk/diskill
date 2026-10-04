@@ -68,3 +68,32 @@ ours until proven otherwise.
 - Functions, not classes; no IIFEs; no code comments; no em dashes.
 - TanStack packages may be upgraded if a newer version fixes the cost (check the CHANGELOG);
   anything else needs the user's approval first.
+
+## Round 2: query shapes that avoid DB's slow paths (decided 2026-10-04)
+
+Round 1 (66c7450) found our cost (full-source window loads from `fn.where`, a custom comparator
+and extra tie-break sorts) and fixed it with expression `where` and one indexed `orderBy`. Two DB
+costs remain, both diagnosed in the unreleased TanStack/db PR #1645 (sections 4 and 6):
+- a filtered `groupBy` hashes every row's values object on build (about 150 ms in Firefox at 12,000
+  rows), which hits every filter keystroke and the risk toggle;
+- `inArray(i.path, paths)` is O(rows times selected), which hits only-selected.
+The user chose to look for query shapes that avoid these paths before patching DB. Measure each
+candidate in the `frames` project (Firefox first) and keep what wins:
+1. **Filtered totals without `groupBy`.** Some options:
+   - one filtered live query with no `groupBy`, `orderBy` or `limit`, summed per section in a
+     `useMemo` over its rows (one O(n) pass in JS, about 1 ms at 12,000);
+   - per-section aggregates without `groupBy`;
+   - totals only for sections in view.
+   Profile what the plain filtered query costs to build (does a `where` without `groupBy` hash
+   rows?).
+2. **Only-selected as a join, not `inArray`.** The selection decoded from the URL feeds a small DB
+   collection of selected keys (derived state, written in event handlers or by the decode, never in
+   render or an effect), and the rows query inner-joins on `path`. Check that a keyed join costs
+   O(selected), not O(rows times selected).
+3. **Sort index first use** (about 50 ms once in Firefox): check whether `autoIndex` can build the
+   indexes for every sort up front, when the section first loads, instead of on the first click.
+4. **The window offset** is now `useState` in `useSectionWindow`, a workaround for `getWindow()`
+   lagging `setWindow`. Check the docs and source for the intended way to read the current window
+   (or the `setWindow` promise) and use it. If local state is still needed, say why.
+If a budget still can't be met without patching DB, report the numbers and stop. The user decides
+on a patch.
