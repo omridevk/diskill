@@ -113,3 +113,33 @@ The user's position: "no way the answer is patch and bug upstream". Assume our u
 wrong until the docs, source and profiles show otherwise. A DB patch is not an outcome of this
 lane. If after all of the above a budget is still missed, report the numbers, the profile call
 paths and what was tried, and stop.
+
+## Round 3: flat search, and the first open during a walk (decided 2026-10-04)
+
+Round 2 (8366bbc) moved shaping onto DB's pooled live queries (`eq` + `orderBy`, served from a
+shared sorted partition). It meets the interaction budgets, but two checks still fail on the
+orchestrator's run:
+- **Keystroke flatness** (`perf` project): React work per filter keystroke at 10,000 rows against
+  30 rows was 20.1 ms vs 2.3 ms in Chromium and 31.5 ms vs 5.4 ms in Firefox (bounds about 11 and
+  20 ms). The user wants it flat: "keep flatness, keep digging". A substring `like` has to visit
+  every row in the section and risk groups, so the fix must change the shape of search, not
+  loosen the test.
+- **`frames firefox reduced`, "open section" while a real scan walks:** one 359 ms frame (p95 9 ms).
+  Profile it. Likely the first build of the section's sorted partition, but don't assume.
+
+Directions to measure, all inside TanStack DB:
+1. **Narrowing as you type.** When the new query string extends the previous one, query the
+   previous filtered live query collection instead of all items (a live query collection can be
+   the source of another), so each keystroke visits only the rows that still match. Keep the
+   chain bounded (rebase onto the full source when the text shrinks or after a few levels).
+2. **An index DB can use for search.** Check whether DB's index API (`createIndex`, the index
+   types and the `IndexInterface` it accepts) supports a token or n-gram index on the `search`
+   field, so `like` or an equivalent operator is served from it. Only DB's own extension points,
+   with no parallel structure outside DB.
+3. **The selection-dependent sums.** Check whether the per-keystroke cost includes re-summing the
+   unfiltered totals, and keep those stable while typing.
+4. **First partition build during a walk:** build the open section's partition earlier, when the
+   section first appears, not on the click, or find what else costs 359 ms.
+Fast loop, as before: iterate on a DB-only bench or `perf firefox` / one `frames` project
+filtered with `-t`. Run the full matrix once, at the end. Report the numbers. Don't loosen any
+bound.
