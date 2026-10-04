@@ -413,6 +413,7 @@ struct Published {
     settled: HashSet<String>,
     checking: HashSet<String>,
     record: fs::File,
+    lines: usize,
     cancel: Arc<AtomicBool>,
     started: Instant,
 }
@@ -428,7 +429,7 @@ fn show(out: &mut Published, row: &Row, sink: &dyn Sink) {
     out.shown.insert(row[8].clone(), row.clone());
     out.checking.remove(&row[8]);
     let fields: Vec<&str> = row.iter().map(String::as_str).collect();
-    let Some((category, item)) = review::parse_row(&fields) else {
+    let Some((category, mut item)) = review::parse_row(&fields) else {
         return;
     };
     if let Err(e) = out
@@ -438,6 +439,8 @@ fn show(out: &mut Published, row: &Row, sink: &dyn Sink) {
         eprintln!("  could not record {} in scan.tsv: {e}", row[8]);
         return;
     }
+    out.lines += 1;
+    item.line = Some(out.lines);
     emit(
         sink,
         out.started,
@@ -555,6 +558,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         settled: HashSet::new(),
         checking: HashSet::new(),
         record: fs::File::create(run_dir.join("scan.tsv"))?,
+        lines: 0,
         cancel: Arc::clone(&cancel),
         started,
     });

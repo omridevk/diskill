@@ -1,5 +1,6 @@
 mod common;
 
+use disk_clean::selection::{Listed, decode, fingerprint, short_token};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -149,19 +150,20 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(
         request(
             port,
-            raw_preview(r#"{"token": "wrong", "items": []}"#.to_string())
+            raw_preview(r#"{"token": "wrong", "add": "", "drop": ""}"#.to_string())
         )
         .0,
         403
     );
+    let (a, iso) = (format!("{h}/Library/Caches/a"), format!("{h}/big.iso"));
     let (status, body) = request(
         port,
-        raw_preview(format!(
-            r#"{{"token": "{token}", "items": [
-                {{"path": "{h}/Library/Caches/a"}},
-                {{"path": "{h}/big.iso"}},
-                {{"path": "cmd:docker-prune"}}
-            ]}}"#
+        raw_preview(picks_body(
+            &token,
+            "",
+            &run,
+            &[&a, &iso, "cmd:docker-prune"],
+            None,
         )),
     );
     assert_eq!(status, 200);
@@ -174,14 +176,21 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(plan["count"], 1);
     assert!(!run.join("selection.json").exists());
 
-    let approve = format!(
-        r#"{{"token": "{token}", "decision": "approve", "items": [
-            {{"path": "{h}/Library/Caches/a", "category": "caches"}},
-            {{"path": "{h}/big.iso", "category": "big-files"}},
-            {{"path": "/etc/passwd", "category": "caches"}},
-            {{"path": "cmd:docker-prune", "category": "docker"}}
-        ]}}"#
+    let approve = picks_body(
+        &token,
+        "approve",
+        &run,
+        &[&a, &iso, "/etc/passwd", "cmd:docker-prune"],
+        None,
     );
+    let mut stale: Value = serde_json::from_str(&approve).unwrap();
+    stale["fingerprint"] = Value::from("0");
+    let (status, reason) = post_reply(port, "/decide", &stale.to_string());
+    assert_eq!(
+        status, 409,
+        "a selection decoded differently from the page is refused"
+    );
+    assert!(reason.contains("the list changed"), "{reason}");
     assert_eq!(post(port, &approve), 200);
     let status = child.wait().unwrap();
     assert_eq!(status.code(), Some(0));
@@ -208,6 +217,8 @@ fn review_serves_page_and_writes_selection() {
     );
     assert_eq!(sel["items"][1]["cmd_id"], "docker-prune");
     assert_eq!(sel["items"][1]["action"], "cmd");
+    assert_eq!(sel["items"][0]["category"], "caches");
+    assert_eq!(sel["items"][1]["category"], "docker");
     assert_eq!(sel["total_bytes"], 3048);
 
     assert!(
@@ -300,7 +311,9 @@ fn read_until(reader: &mut BufReader<TcpStream>, until: &str) -> Vec<(String, Va
         if let Some(n) = line.strip_prefix("event: ") {
             name = n.to_string();
         } else if let Some(d) = line.strip_prefix("data: ") {
-            out.push((name.clone(), serde_json::from_str(d).unwrap()));
+            if name != "replayed" {
+                out.push((name.clone(), serde_json::from_str(d).unwrap()));
+            }
             if name == until {
                 return out;
             }
@@ -361,19 +374,22 @@ fn review_without_run_dir_streams_the_scan() {
     assert_eq!(get(port, "/events?token=wrong").0, 403);
 
     let mut first = events(port, &token, "walked");
+    let run = live_run(&home);
+    let caught_up = events(port, &token, "replayed");
+    assert!(
+        caught_up.len() >= first.len() - 1 && caught_up.iter().all(|(n, _)| n != "replayed"),
+        "a connection replays its backlog, then says it has caught up"
+    );
+    let listed = Some(lines_in(&run));
     assert_eq!(
-        post_to(
-            port,
-            "/preview",
-            &format!(r#"{{"token": "{token}", "items": []}}"#)
-        ),
+        post_to(port, "/preview", &picks_body(&token, "", &run, &[], listed)),
         200
     );
     assert_eq!(
         post_to(
             port,
             "/decide",
-            &format!(r#"{{"token": "{token}", "decision": "approve", "items": []}}"#)
+            &picks_body(&token, "approve", &run, &[], listed)
         ),
         409
     );
@@ -454,18 +470,20 @@ fn review_without_run_dir_streams_the_scan() {
     let second = events(port, &token, "done");
     assert_eq!(second, whole, "a reconnect replays every event");
 
+    let lines: Vec<u64> = first
+        .iter()
+        .filter_map(|(_, d)| d["item"]["line"].as_u64())
+        .collect();
     assert_eq!(
-        post_to(
-            port,
-            "/preview",
-            &format!(r#"{{"token": "{token}", "items": []}}"#)
-        ),
+        lines,
+        (1..=lines.len() as u64).collect::<Vec<_>>(),
+        "every recorded item carries its line in scan.tsv"
+    );
+    assert_eq!(
+        post_to(port, "/preview", &picks_body(&token, "", &run, &[], None)),
         200
     );
-    let approve = format!(
-        r#"{{"token": "{token}", "decision": "approve", "items": [{{"path": "{}", "category": "caches"}}]}}"#,
-        cache.display()
-    );
+    let approve = picks_body(&token, "approve", &run, &[cache.to_str().unwrap()], None);
     assert_eq!(post_to(port, "/decide", &approve), 200);
     assert_eq!(child.wait().unwrap().code(), Some(0));
     let mut stdout = String::new();
@@ -560,11 +578,9 @@ fn rescan_restarts_the_scan_in_place() {
     let (mut child, port, token) = spawn_live(&home, &bin);
     let rescan = |token: &str| post_to(port, "/rescan", &format!(r#"{{"token": "{token}"}}"#));
     let preview = || {
-        post_to(
-            port,
-            "/preview",
-            &format!(r#"{{"token": "{token}", "items": []}}"#),
-        )
+        let run = live_run(&home);
+        let listed = Some(lines_in(&run));
+        post_to(port, "/preview", &picks_body(&token, "", &run, &[], listed))
     };
 
     assert_eq!(rescan("wrong"), 403);
@@ -588,11 +604,12 @@ fn rescan_restarts_the_scan_in_place() {
     );
     assert_eq!(head[0].1["elapsed_ms"], 0);
     assert_eq!(preview(), 200);
+    let run = live_run(&home);
     assert_eq!(
         post_to(
             port,
             "/decide",
-            &format!(r#"{{"token": "{token}", "decision": "approve", "items": []}}"#)
+            &picks_body(&token, "approve", &run, &[], Some(lines_in(&run)))
         ),
         409
     );
@@ -625,10 +642,12 @@ fn rescan_restarts_the_scan_in_place() {
     assert_eq!(replay[1..], second[..]);
     assert_eq!(preview(), 200);
 
-    let approve = format!(
-        r#"{{"token": "{token}", "decision": "approve", "items": [{{"path": "{}", "category": "caches"}}, {{"path": "{}", "category": "caches"}}]}}"#,
-        old.display(),
-        new.display()
+    let approve = picks_body(
+        &token,
+        "approve",
+        &run,
+        &[old.to_str().unwrap(), new.to_str().unwrap()],
+        None,
     );
     assert_eq!(post_to(port, "/decide", &approve), 200);
     assert_eq!(child.wait().unwrap().code(), Some(0));
@@ -741,7 +760,7 @@ fn deep_links_get_the_page_and_api_routes_are_unchanged() {
 
 #[test]
 fn a_foreign_host_or_origin_is_refused_everywhere() {
-    let (_t, mut child, port, token) = finished_review("rebind");
+    let (t, mut child, port, token) = finished_review("rebind");
     let body = format!(r#"{{"token": "{token}", "decision": "cancel", "items": []}}"#);
     let json = "Content-Type: application/json\r\n";
     for host in [
@@ -768,7 +787,7 @@ fn a_foreign_host_or_origin_is_refused_everywhere() {
         }
     }
     let local = format!("Host: 127.0.0.1:{port}\r\n");
-    let preview = format!(r#"{{"token": "{token}", "items": []}}"#);
+    let preview = picks_body(&token, "", &t.0.join("run"), &[], None);
     let plain = format!("{local}Content-Type: text/plain\r\n");
     assert_eq!(
         request(port, raw("POST", "/preview", &plain, &preview)).0,
@@ -800,10 +819,40 @@ fn oversized_slow_and_excess_requests_are_turned_away() {
     let local = format!("Host: 127.0.0.1:{port}\r\n");
     let padded = format!("{local}X-Pad: {}\r\n", "a".repeat(17 * 1024));
     assert_eq!(request(port, raw("GET", "/", &padded, "")).0, 431);
+    let long = format!("/cleanup/caches?drop={}", "a1b2c3d4.".repeat(22_000));
+    assert_eq!(
+        get(port, &long).0,
+        200,
+        "a long selection in the URL still loads"
+    );
+    let too_long = format!("/cleanup/caches?drop={}", "a1b2c3d4.".repeat(30_000));
+    let (status, page) = get(port, &too_long);
+    assert_eq!(status, 431);
+    assert!(
+        page.contains("This address is too long for disk-clean"),
+        "{page}"
+    );
     let huge = format!(
         "POST /preview HTTP/1.1\r\n{local}Content-Type: application/json\r\nContent-Length: 2000000\r\n\r\n"
     );
     assert_eq!(request(port, huge).0, 413);
+    let mut sender = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut reader = sender.try_clone().unwrap();
+    let body = vec![b'x'; 2_000_000];
+    let head = format!(
+        "POST /preview HTTP/1.1\r\n{local}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let writer = std::thread::spawn(move || {
+        let _ = sender.write_all(head.as_bytes());
+        let _ = sender.write_all(&body);
+    });
+    let mut answer = Vec::new();
+    reader
+        .read_to_end(&mut answer)
+        .expect("an oversized body is answered, not reset");
+    writer.join().unwrap();
+    assert!(String::from_utf8_lossy(&answer).starts_with("HTTP/1.0 413"));
 
     let started = std::time::Instant::now();
     let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -871,12 +920,59 @@ fn listed_paths(reader: &mut BufReader<TcpStream>, wanted: &[&Path]) {
     }
 }
 
-fn items_body(token: &str, decision: &str, paths: &[&Path]) -> String {
-    let items: Vec<Value> = paths
+fn picks_body(
+    token: &str,
+    decision: &str,
+    run: &Path,
+    wanted: &[&str],
+    listed: Option<usize>,
+) -> String {
+    let mut lines = disk_clean::util::complete_lines(&run.join("scan.tsv"));
+    if let Some(count) = listed {
+        lines.truncate(count);
+    }
+    let categories = disk_clean::review::categories_of(&lines);
+    let drop: Vec<String> = categories.iter().map(|c| format!("_{}", c.id)).collect();
+    let add: Vec<String> = wanted.iter().map(|p| short_token(p)).collect();
+    let items: Vec<Listed> = categories
         .iter()
-        .map(|p| serde_json::json!({"path": p.to_str().unwrap(), "category": "caches"}))
+        .flat_map(|c| {
+            c.items.iter().filter(|i| !i.report).map(|i| Listed {
+                path: &i.path,
+                section: &c.id,
+                preselect: i.preselect,
+            })
+        })
         .collect();
-    serde_json::json!({"token": token, "decision": decision, "items": items}).to_string()
+    let (add, drop) = (add.join("."), drop.join("."));
+    let selected = decode(&items, &add, &drop);
+    serde_json::json!({
+        "token": token,
+        "decision": decision,
+        "add": add,
+        "drop": drop,
+        "listed": listed,
+        "fingerprint": fingerprint(&selected),
+    })
+    .to_string()
+}
+
+fn live_run(home: &Path) -> std::path::PathBuf {
+    let runs: Vec<_> = fs::read_dir(home.join(".cache/disk-clean"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("run-"))
+        })
+        .collect();
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    runs[0].clone()
+}
+
+fn lines_in(run: &Path) -> usize {
+    disk_clean::util::complete_lines(&run.join("scan.tsv")).len()
 }
 
 #[test]
@@ -896,13 +992,25 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
     let mut stream = open_events(port, &token);
     listed_paths(&mut stream, &[&take, &keep]);
 
-    let (status, body) = post_reply(port, "/preview", &items_body(&token, "", &[&take, &never]));
+    let run = live_run(&home);
+    let listed = Some(lines_in(&run));
+    let (take_s, never_s) = (take.to_str().unwrap(), never.to_str().unwrap());
+    let (status, body) = post_reply(
+        port,
+        "/preview",
+        &picks_body(&token, "", &run, &[take_s, never_s], listed),
+    );
     assert_eq!(status, 200, "{body}");
     let plan: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(plan["count"], 1, "{plan}");
     assert_eq!(plan["hold"][0]["path"], take.to_str().unwrap());
     assert_eq!(
-        post_reply(port, "/decide", &items_body(&token, "approve", &[&never])).0,
+        post_reply(
+            port,
+            "/decide",
+            &picks_body(&token, "approve", &run, &[never_s], listed)
+        )
+        .0,
         409,
         "a path the scan never listed is refused"
     );
@@ -912,7 +1020,7 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         post_reply(
             port,
             "/decide",
-            &items_body(&token, "approve", &[&take, &never])
+            &picks_body(&token, "approve", &run, &[take_s, never_s], listed)
         )
         .0,
         200
@@ -988,4 +1096,90 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         .collect();
     assert_eq!(held.len(), 1);
     assert_eq!(held[0]["path"], take.to_str().unwrap());
+}
+
+#[test]
+fn a_five_thousand_change_selection_previews_approves_and_reloads() {
+    let t = common::temp_dir("big-selection");
+    let (home, run) = (t.0.join("h"), t.0.join("run"));
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&run).unwrap();
+    let h = home.to_string_lossy().into_owned();
+    let paths: Vec<String> = (0..10_000)
+        .map(|i| format!("{h}/tmp/item-{i:05}"))
+        .collect();
+    let rows: String = paths
+        .iter()
+        .map(|p| {
+            format!("temp\tYour macOS temp\tdesc\tsafe\t1\trm\t-\t{p}\t{p}\t4096\t\t3\texact\n")
+        })
+        .collect();
+    fs::write(run.join("scan.tsv"), rows).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        .args(["review", &run.to_string_lossy()])
+        .env("HOME", &home)
+        .env("DISK_CLEAN_NO_BROWSER", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    stderr.read_line(&mut line).unwrap();
+    let port: u16 = line
+        .trim()
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+    let (_, page) = get(port, "/");
+    let token = page
+        .split_once(r#"<meta name="disk-clean-token" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(token, _)| token.to_string())
+        .unwrap();
+
+    let dropped: Vec<String> = paths.iter().step_by(2).map(|p| short_token(p)).collect();
+    let drop = dropped.join(".");
+    assert_eq!(dropped.len(), 5000);
+    let url = format!("/cleanup/temp?drop={drop}");
+    assert!(url.len() > 40_000, "{}", url.len());
+    assert_eq!(
+        get(port, &url).0,
+        200,
+        "the page reloads with the selection in its URL"
+    );
+
+    let kept: Vec<String> = paths.iter().skip(1).step_by(2).cloned().collect();
+    let body = serde_json::json!({
+        "token": token,
+        "decision": "approve",
+        "add": "",
+        "drop": drop,
+        "fingerprint": fingerprint(&kept),
+    })
+    .to_string();
+    let (status, plan) = post_reply(port, "/preview", &body);
+    assert_eq!(status, 200, "{plan}");
+    let plan: Value = serde_json::from_str(&plan).unwrap();
+    assert_eq!(
+        plan["rejected"].as_array().unwrap().len(),
+        5000,
+        "none exist on disk"
+    );
+    assert_eq!(post_reply(port, "/decide", &body).0, 200);
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    let sel: Value =
+        serde_json::from_str(&fs::read_to_string(run.join("selection.json")).unwrap()).unwrap();
+    let mut chosen: Vec<String> = sel["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["path"].as_str().unwrap().to_string())
+        .collect();
+    chosen.sort();
+    assert_eq!(chosen, kept);
 }

@@ -1,0 +1,253 @@
+{
+  "tokens": [
+    {
+      "path": "/Users/you/Library/Caches/app-a",
+      "short": "2e2m4v5i",
+      "full": "2e2m4v5ijem"
+    },
+    {
+      "path": "/Users/you/Library/Caches/com.apple.Safari",
+      "short": "26srhecu",
+      "full": "26srhecu87u"
+    },
+    {
+      "path": "/private/var/folders/xy/T/tmp.123",
+      "short": "00l6j0jg",
+      "full": "00l6j0jguxx"
+    },
+    {
+      "path": "/Users/you/code/web/node_modules",
+      "short": "28egz4vc",
+      "full": "28egz4vc8jo"
+    },
+    {
+      "path": "cmd:docker-prune",
+      "short": "27h21fdp",
+      "full": "27h21fdp56e"
+    },
+    {
+      "path": "/Users/you/Documents/résumé final.pdf",
+      "short": "1bcymovg",
+      "full": "1bcymovgn1c"
+    },
+    {
+      "path": "/Users/you/漢字/フォルダ",
+      "short": "0nhrepn0",
+      "full": "0nhrepn0kum"
+    },
+    {
+      "path": "/Users/you/party 🎉/emoji 🧹.zip",
+      "short": "1gipsj9u",
+      "full": "1gipsj9u647"
+    },
+    {
+      "path": "/Users/you/tab\there",
+      "short": "0312fg4s",
+      "full": "0312fg4sicv"
+    },
+    {
+      "path": "",
+      "short": "0wvjl67o",
+      "full": "0wvjl67o803"
+    },
+    {
+      "path": "/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/leaf",
+      "short": "26c3gj5z",
+      "full": "26c3gj5zqys"
+    }
+  ],
+  "items": [
+    {
+      "path": "/Users/you/Library/Caches/app-a",
+      "section": "caches",
+      "preselect": true,
+      "report": false
+    },
+    {
+      "path": "/Users/you/Library/Caches/com.apple.Safari",
+      "section": "caches",
+      "preselect": true,
+      "report": false
+    },
+    {
+      "path": "/Users/you/Documents/résumé final.pdf",
+      "section": "caches",
+      "preselect": false,
+      "report": false
+    },
+    {
+      "path": "/private/var/folders/xy/T/tmp.123",
+      "section": "temp",
+      "preselect": true,
+      "report": false
+    },
+    {
+      "path": "/Users/you/漢字/フォルダ",
+      "section": "temp",
+      "preselect": true,
+      "report": false
+    },
+    {
+      "path": "/Users/you/party 🎉/emoji 🧹.zip",
+      "section": "temp",
+      "preselect": false,
+      "report": false
+    },
+    {
+      "path": "/Users/you/code/web/node_modules",
+      "section": "node-modules",
+      "preselect": false,
+      "report": false
+    },
+    {
+      "path": "cmd:docker-prune",
+      "section": "docker",
+      "preselect": false,
+      "report": false
+    },
+    {
+      "path": "/Users/you/big.iso",
+      "section": "big",
+      "preselect": false,
+      "report": true
+    }
+  ],
+  "decodes": [
+    {
+      "add": "",
+      "drop": "",
+      "selected": [
+        "/Users/you/Library/Caches/app-a",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/Users/you/漢字/フォルダ",
+        "/private/var/folders/xy/T/tmp.123"
+      ],
+      "fingerprint": "1yurfwv7t9h"
+    },
+    {
+      "add": "_temp",
+      "drop": "",
+      "selected": [
+        "/Users/you/Library/Caches/app-a",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/Users/you/party 🎉/emoji 🧹.zip",
+        "/Users/you/漢字/フォルダ",
+        "/private/var/folders/xy/T/tmp.123"
+      ],
+      "fingerprint": "1cv4s8x5b5f"
+    },
+    {
+      "add": "",
+      "drop": "_caches",
+      "selected": [
+        "/Users/you/漢字/フォルダ",
+        "/private/var/folders/xy/T/tmp.123"
+      ],
+      "fingerprint": "2477g3pymv3"
+    },
+    {
+      "add": "1bcymovg.28egz4vc",
+      "drop": "2e2m4v5i",
+      "selected": [
+        "/Users/you/Documents/résumé final.pdf",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/Users/you/code/web/node_modules",
+        "/Users/you/漢字/フォルダ",
+        "/private/var/folders/xy/T/tmp.123"
+      ],
+      "fingerprint": "a8p73xn0ce"
+    },
+    {
+      "add": "_caches.27h21fdp",
+      "drop": "26srhecu._temp",
+      "selected": [
+        "/Users/you/Documents/résumé final.pdf",
+        "/Users/you/Library/Caches/app-a",
+        "cmd:docker-prune"
+      ],
+      "fingerprint": "1ln3vw0mthf"
+    },
+    {
+      "add": "1gipsj9u",
+      "drop": "_temp",
+      "selected": [
+        "/Users/you/Library/Caches/app-a",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/Users/you/party 🎉/emoji 🧹.zip"
+      ],
+      "fingerprint": "efpq9iuvdb"
+    },
+    {
+      "add": "00l6j0jg",
+      "drop": "00l6j0jg",
+      "selected": [
+        "/Users/you/Library/Caches/app-a",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/Users/you/漢字/フォルダ",
+        "/private/var/folders/xy/T/tmp.123"
+      ],
+      "fingerprint": "1yurfwv7t9h"
+    },
+    {
+      "add": "zzzzzzzz.00000000000._big.not-a-token._.UPPERCAS",
+      "drop": "",
+      "selected": [
+        "/Users/you/Library/Caches/app-a",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/Users/you/漢字/フォルダ",
+        "/private/var/folders/xy/T/tmp.123"
+      ],
+      "fingerprint": "1yurfwv7t9h"
+    },
+    {
+      "add": "_temp",
+      "drop": "_temp",
+      "selected": [
+        "/Users/you/Library/Caches/app-a",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/Users/you/party 🎉/emoji 🧹.zip",
+        "/Users/you/漢字/フォルダ",
+        "/private/var/folders/xy/T/tmp.123"
+      ],
+      "fingerprint": "1cv4s8x5b5f"
+    }
+  ],
+  "fingerprints": [
+    {
+      "paths": [],
+      "fingerprint": "wvjl67o803"
+    },
+    {
+      "paths": [
+        "/Users/you/Library/Caches/app-a"
+      ],
+      "fingerprint": "2e2m4v5ijem"
+    },
+    {
+      "paths": [
+        "/Users/you/Library/Caches/app-a",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/private/var/folders/xy/T/tmp.123",
+        "/Users/you/code/web/node_modules",
+        "cmd:docker-prune"
+      ],
+      "fingerprint": "zan0329v3e"
+    },
+    {
+      "paths": [
+        "/Users/you/Library/Caches/app-a",
+        "/Users/you/Library/Caches/com.apple.Safari",
+        "/private/var/folders/xy/T/tmp.123",
+        "/Users/you/code/web/node_modules",
+        "cmd:docker-prune",
+        "/Users/you/Documents/résumé final.pdf",
+        "/Users/you/漢字/フォルダ",
+        "/Users/you/party 🎉/emoji 🧹.zip",
+        "/Users/you/tab\there",
+        "",
+        "/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/leaf"
+      ],
+      "fingerprint": "ncjhk7cqqc"
+    }
+  ]
+}

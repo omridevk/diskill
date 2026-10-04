@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+pub const LINE_MAX: usize = 256 * 1024;
 pub const HEAD_MAX: usize = 16 * 1024;
+const DRAIN_MAX: usize = 8 << 20;
+const DRAIN_TIME: Duration = Duration::from_secs(2);
 pub const BODY_MAX: usize = 1 << 20;
 pub const REQUEST_TIME: Duration = Duration::from_secs(10);
 pub const CONNECTIONS: usize = 64;
@@ -32,9 +35,40 @@ pub fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) {
     let _ = stream.write_all(body);
 }
 
+const TOO_LONG_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Address too long</title><body style=\"font:15px system-ui;margin:3rem;max-width:40rem\"><h1 style=\"font-size:1.3rem\">This address is too long for disk-clean</h1><p>The address carries your selection, and this one is longer than disk-clean accepts. Nothing was deleted.</p><p><a href=\"/\">Open disk-clean without the selection</a></p>";
+
+fn drain(stream: &mut TcpStream) {
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let deadline = Instant::now() + DRAIN_TIME;
+    let mut chunk = [0u8; 16 * 1024];
+    let mut left = DRAIN_MAX;
+    while left > 0 {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        if wait.is_zero() || stream.set_read_timeout(Some(wait)).is_err() {
+            return;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => left = left.saturating_sub(n),
+        }
+    }
+}
+
 pub fn refuse(stream: &mut TcpStream, status: &str) {
-    let text = status.split_once(' ').map_or(status, |(_, t)| t);
-    respond(stream, status, "text/plain", text.to_lowercase().as_bytes());
+    if status == TOO_LARGE_HEAD {
+        respond(
+            stream,
+            status,
+            "text/html; charset=utf-8",
+            TOO_LONG_PAGE.as_bytes(),
+        );
+    } else {
+        let text = status.split_once(' ').map_or(status, |(_, t)| t);
+        respond(stream, status, "text/plain", text.to_lowercase().as_bytes());
+    }
+    if status == TOO_LARGE_HEAD || status == TOO_LARGE_BODY {
+        drain(stream);
+    }
 }
 
 fn read_more(
@@ -66,8 +100,19 @@ fn read_more(
     }
 }
 
-fn head_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+fn find(buf: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    let start = from.saturating_sub(needle.len() - 1);
+    buf.get(start..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|i| start + i)
+}
+
+fn oversized(buf: &[u8], line_end: Option<usize>) -> bool {
+    match line_end {
+        Some(line) => line > LINE_MAX || buf.len() - line > HEAD_MAX,
+        None => buf.len() > LINE_MAX,
+    }
 }
 
 fn is_json(content_type: &str) -> bool {
@@ -80,16 +125,19 @@ fn is_json(content_type: &str) -> bool {
 pub fn read_request(stream: &mut TcpStream) -> Result<Request, Option<&'static str>> {
     let deadline = Instant::now() + REQUEST_TIME;
     let mut buf = Vec::new();
+    let (mut searched, mut line_end) = (0, None);
     let end = loop {
-        if let Some(end) = head_end(&buf) {
-            break end;
+        line_end = line_end.or_else(|| find(&buf, searched, b"\r\n"));
+        if let Some(end) = find(&buf, searched, b"\r\n\r\n") {
+            break end + 4;
         }
-        if buf.len() > HEAD_MAX {
+        if oversized(&buf, line_end) {
             return Err(Some(TOO_LARGE_HEAD));
         }
+        searched = buf.len();
         read_more(stream, &mut buf, deadline)?;
     };
-    if end > HEAD_MAX {
+    if oversized(&buf[..end], line_end) {
         return Err(Some(TOO_LARGE_HEAD));
     }
     let head = std::str::from_utf8(&buf[..end]).map_err(|_| Some(BAD))?;
@@ -169,7 +217,13 @@ fn turn_away(mut stream: TcpStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
     let _ = stream.read(&mut [0u8; HEAD_MAX]);
-    refuse(&mut stream, "503 Service Unavailable");
+    let text = "service unavailable";
+    respond(
+        &mut stream,
+        "503 Service Unavailable",
+        "text/plain",
+        text.as_bytes(),
+    );
 }
 
 pub fn serve(listener: TcpListener, handle: impl Fn(TcpStream) + Send + Sync + 'static) {

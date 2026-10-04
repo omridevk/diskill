@@ -2,6 +2,7 @@ use crate::clean;
 use crate::hold;
 use crate::http::{self, constant_eq, query_token, refuse, respond};
 use crate::scan::{self, Sink};
+use crate::selection::{self, Listed};
 use crate::util;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -35,6 +36,8 @@ pub struct Item {
     pub report: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub checking: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -99,6 +102,7 @@ pub fn parse_row(f: &[&str]) -> Option<(Value, Item)> {
         preselect: *pre == "1" && *risk != "report",
         report: *risk == "report",
         checking: false,
+        line: None,
     };
     Some((
         json!({"id": id, "title": title, "desc": desc, "risk": risk}),
@@ -107,9 +111,13 @@ pub fn parse_row(f: &[&str]) -> Option<(Value, Item)> {
 }
 
 pub fn load_scan(run_dir: &Path) -> Vec<Category> {
+    categories_of(&util::complete_lines(&run_dir.join("scan.tsv")))
+}
+
+pub fn categories_of(lines: &[String]) -> Vec<Category> {
     let mut latest: HashMap<String, ([String; 4], Item)> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
-    for line in util::complete_lines(&run_dir.join("scan.tsv")) {
+    for line in lines {
         let f: Vec<&str> = line.split('\t').collect();
         let Some((_, item)) = parse_row(&f) else {
             continue;
@@ -397,12 +405,21 @@ impl Sink for Live {
     }
 }
 
+fn backlog(live: &Live) -> (u64, usize, String) {
+    let log = lock(&live.log);
+    (log.generation, log.events.len(), log.events.concat())
+}
+
 fn stream_events(out: &mut TcpStream, live: &Live) {
     let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n";
-    if out.write_all(head.as_bytes()).is_err() {
+    let (mut generation, mut sent, replay) = backlog(live);
+    let caught_up = format!("event: replayed\ndata: {}\n\n", json!({"elapsed_ms": 0}));
+    if out
+        .write_all(format!("{head}{replay}{caught_up}").as_bytes())
+        .is_err()
+    {
         return;
     }
-    let (mut generation, mut sent) = (0, 0);
     let mut quiet = Instant::now();
     loop {
         let batch = {
@@ -528,11 +545,17 @@ fn handle(
                 return;
             }
             let approve = payload.get("decision").and_then(Value::as_str) == Some("approve");
-            let items = payload
-                .get("items")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+            let items = if target == "/preview" || approve {
+                match picked(live, &payload) {
+                    Ok(items) => items,
+                    Err(reason) => {
+                        respond(&mut stream, "409 Conflict", "text/plain", reason.as_bytes());
+                        return;
+                    }
+                }
+            } else {
+                Vec::new()
+            };
             if target == "/preview" {
                 let listed = live.listed();
                 let body =
@@ -555,7 +578,7 @@ fn handle(
             }
             respond(&mut stream, "200 OK", "application/json", b"{}");
             let _ = decided.send(if approve {
-                payload
+                json!({"decision": "approve", "items": items})
             } else {
                 json!({"decision": "cancel"})
             });
@@ -564,23 +587,74 @@ fn handle(
     }
 }
 
-pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
-    let mut valid: HashMap<&str, &Item> = HashMap::new();
-    let mut seen: HashSet<&str> = HashSet::new();
-    for item in categories
+const CHANGED: &str =
+    "the list changed while this request was on its way; check the selection and try again";
+
+fn listed_of(categories: &[Category]) -> Vec<Listed<'_>> {
+    categories
         .iter()
-        .flat_map(|c| &c.items)
-        .filter(|i| !i.report)
-    {
-        valid.insert(&item.path, item);
+        .flat_map(|c| {
+            c.items.iter().filter(|i| !i.report).map(|i| Listed {
+                path: &i.path,
+                section: &c.id,
+                preselect: i.preselect,
+            })
+        })
+        .collect()
+}
+
+fn text_of<'a>(payload: &'a Value, key: &str) -> &'a str {
+    payload.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn decoded(categories: &[Category], payload: &Value) -> Vec<String> {
+    selection::decode(
+        &listed_of(categories),
+        text_of(payload, "add"),
+        text_of(payload, "drop"),
+    )
+}
+
+fn first_lines(dir: &Path, count: usize) -> Vec<String> {
+    let mut lines = util::complete_lines(&dir.join("scan.tsv"));
+    lines.truncate(count);
+    lines
+}
+
+fn picked(live: &Live, payload: &Value) -> Result<Vec<Value>, &'static str> {
+    let listed = payload
+        .get("listed")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok());
+    let paths = match (live.finished(), listed) {
+        (Some(done), _) => decoded(&done.categories, payload),
+        (None, Some(count)) => decoded(&categories_of(&first_lines(&live.dir, count)), payload),
+        (None, None) => decoded(&live.listed().categories, payload),
+    };
+    if selection::fingerprint(&paths) != text_of(payload, "fingerprint") {
+        return Err(CHANGED);
+    }
+    Ok(paths
+        .into_iter()
+        .map(|path| json!({"path": path}))
+        .collect())
+}
+
+pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
+    let mut valid: HashMap<&str, (&Item, &str)> = HashMap::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for c in categories {
+        for item in c.items.iter().filter(|i| !i.report) {
+            valid.insert(&item.path, (item, &c.id));
+        }
     }
     let mut chosen: Vec<Value> = Vec::new();
     for item in items {
-        let Some(known) = item
+        let Some((known, section)) = item
             .get("path")
             .and_then(Value::as_str)
             .and_then(|p| valid.get(p))
-            .filter(|known| seen.insert(&known.path))
+            .filter(|(known, _)| seen.insert(&known.path))
         else {
             continue;
         };
@@ -590,7 +664,7 @@ pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
             "bytes": known.bytes,
             "action": known.action,
             "cmd_id": known.cmd_id,
-            "category": item.get("category").cloned().unwrap_or(json!("")),
+            "category": section,
         }));
     }
     if chosen.is_empty() {
