@@ -40,3 +40,23 @@ All existing browser tests (app, router, film in Chromium/Firefox/retina) and Ru
 the same meaning; the perf project stays within its budgets and the report compares React work
 per interaction/batch before vs after (10k-row section, 5k-event cleanup, 9k-item streaming scan);
 bundle size before/after is reported; the reducers' modules are gone.
+
+## Live queries do the shaping (added 2026-10-04)
+
+Measured after the first cut: per-batch cost still grew with list size because TanStack Table rebuilt
+its whole filtered/grouped/sorted row model on every data change, and the URL selection was decoded
+in full on every tick. Fix, per the TanStack DB live-queries guide:
+
+- Search, risk/size/age filters and sort are the live query's `where` / `orderBy` (with `limit`
+  where a window is enough). Section totals and counts are `groupBy` + `sum`/`count`. These are
+  maintained incrementally, so a streamed batch or a filter change costs in proportion to what
+  changed. TanStack Table receives the already-shaped rows of the open section and does selection,
+  keyboard and rendering (table.md's "Table owns filtering/sorting" is superseded by this).
+- The URL search params stay the source of truth for filters and sort; the live query reads them.
+- Selection decodes incrementally (only changed tokens). Totals derived from it use
+  `useDeferredValue`, so a tick never waits on them. Change-driven work uses the live query's
+  `createEffect` / `onBatch`, not a full re-read.
+- TanStack Table v9's `workerRowModelsFeature` (experimental) is the fallback if a row model still
+  has to be computed in the table; not used unless measurement says so.
+- Perf tests assert flatness: the cost of one streamed batch, one tick and one filter keystroke at
+  10k rows stays within a small factor of the 30-row baseline (median and p95), in both browsers.
