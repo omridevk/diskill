@@ -39,6 +39,26 @@ value.
 | any route, search `overlay=progress` | the cleanup progress panel (it layers over whichever tab is open); its log filter `log` (all/removed/problems/commands) |
 | any route, search `overlay=movie` | the movie overlay; Replay is `navigate` with a fresh `take` key |
 
+### Routes own their UI (added 2026-10-04)
+
+The first cut left most route files as empty markers (`createFileRoute(...)({})`) while `Shell`
+decided what to render with `useMatch`, fetched the confirm plan in a `useEffect`, and passed data
+down through a React context. That is routing done by hand next to the router. The rule:
+
+- Every route file renders what its URL means. `cleanup.confirm.tsx` renders the confirm dialog
+  (layered over the list through the parent's `<Outlet />`), `cleanup.free.tsx` the Free dialog,
+  `cleanup.$section.tsx` the open section (reading `Route.useParams()`), `storage.$.tsx` the zoomed
+  folder. No `useMatch` / `useChildMatches` to decide what to show; no `useParams({strict: false})`
+  inside route-owned UI.
+- Route work lives in the route: the confirm plan is fetched by the `/cleanup/confirm` loader
+  (`Route.useLoaderData()`, pending UI via `pendingComponent`), `/cleanup/free` redirects in
+  `beforeLoad` when nothing is held, an unknown `$section` is `notFound()`.
+- Data reaches route components through the data layer's own hooks (TanStack DB live queries,
+  db.md), not through a Shell-level React context. `Shell` keeps only the chrome that is on every
+  route (header, summary, tabs as `<Link>`s, footer).
+- Overlays that layer over any route (`overlay=progress|movie`) stay search params read by one
+  root-level component.
+
 Hover, tooltips and in-flight animation state stay out of the URL. Selection (which items are
 ticked) stays page state, not URL (it can be thousands of paths); it is restored by the server's
 existing replay/approved-page data.
