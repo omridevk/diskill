@@ -15,7 +15,7 @@ import type {ScanEvent} from './lib/scan-feed'
 import {NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
 import {categoriesOf} from './lib/views'
 import {squarifyInBounds} from './lib/treemap-tile'
-import {at, category, cleanupEvents, fixture, item} from './test/fixture'
+import {at, bigSection, category, cleanupEvents, fixture, item, withSection} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN, ringPoints, sendAll, sendRaw} from './test/page'
 import './index.css'
 
@@ -89,6 +89,34 @@ describe('cleanup', () => {
     await screen.getByRole('textbox', {name: 'Filter paths'}).fill('no such path')
     await screen.getByRole('button', {name: 'Clear filters'}).click()
     await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+  })
+
+  test('leaving Cleanup longer than a live query lives keeps its sections and rows when coming back', async () => {
+    const screen = await render(<App loaded={fixture} history={at()} />)
+    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+    await screen.getByRole('tab', {name: 'Storage'}).click()
+    await expect.element(screen.getByRole('tab', {name: 'Storage'})).toHaveAttribute('aria-selected', 'true')
+    await new Promise(resolve => setTimeout(resolve, 6000))
+    await screen.getByRole('tab', {name: 'Cleanup'}).click()
+    await expect.element(screen.getByText('~/Library/Caches/app-a')).toBeVisible()
+    await expect.element(screen.getByRole('checkbox', {name: 'Select all in node_modules'})).toBeVisible()
+    await expect.element(screen.getByText('Nothing matches these filters.')).not.toBeInTheDocument()
+  }, 20_000)
+
+  test('with no filters set and nothing listed, the empty state offers no Clear filters', async () => {
+    const screen = await render(<App loaded={{...fixture, data: {...fixture.data, categories: []}}} history={at()} />)
+    await expect.element(screen.getByText('Nothing to clean up.')).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Clear filters'})).not.toBeInTheDocument()
+  })
+
+  test('jumping straight to the end of a long sorted section shows its last rows', async () => {
+    const screen = await render(<App loaded={withSection(bigSection(3000))} history={at('/cleanup/temp?sort=name-asc')} />)
+    const first = screen.getByText('~/tmp/item-00000')
+    await expect.element(first).toBeVisible()
+    const scroller = first.element().closest('.overflow-auto')
+    if (!(scroller instanceof HTMLElement)) throw new Error('no table scroller')
+    scroller.scrollTop = scroller.scrollHeight
+    await expect.element(screen.getByText('~/tmp/item-02999')).toBeVisible()
   })
 
   test('card view shows every section and expands the one whose items are shown', async () => {

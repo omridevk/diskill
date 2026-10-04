@@ -106,3 +106,94 @@ per-section maps: a sorted array per section and sort, patched by binary inserti
 changes few rows, filtered per filter key (one predicate pass), and per-section totals cached by
 section version. The table still receives only the window the virtualizer shows. The cleanup
 event views stay live queries. Frame numbers are in qa-round-2.md, section C.
+
+## Live queries, done right (2026-10-04)
+
+Profiled 858b272's shaping in headless Firefox (Gecko profiler, 0.5 ms sampling, built page in
+production mode, 12,000-row section) and in a DB-only bench of the same queries. Each new live query
+cost 50 to 290 ms in Firefox. Two separate costs, both ours to start with:
+
+**1. The window query loaded the whole section and inserted it row by row (our usage).**
+Call path: `createLiveQueryCollection` > `startSync` > `maybeRunGraph` > `TopKArray.insert` (db-ivm
+`topKArray`, binary search plus `splice` per row, plus a fresh fractional index key per row): 38%
+of all samples. DB only reads `offset + limit` rows from an index when the plan allows it.
+`compiler/order-by.ts` sets `requiresFullSource` when the query has any `fn.where` or a
+`stringSort: 'custom'` order, and `currentStateAsChanges` (`collection/change-events.ts`,
+`getOrderedKeys`) only uses `index.takeFromStart` for a single-column `orderBy`. 858b272 had all
+three: `.fn.where(keep)`, the `Intl.Collator` comparator for name, and tie-breaker `orderBy`s on
+`bytes` and `path`. So every query pushed every section row through top-K, an O(n²) insert.
+
+**2. Section totals hashed every row on every new filter (DB, not avoidable by usage).**
+Call path: `groupBy` > `ReduceOperator.run` > `Index.addValue` > `ValueMap.addValue` > `hash` >
+`hashObject` > `writeByte` / `update` / `isBinaryValue` (murmur over every key and string): 69% of a
+totals query. The WeakMap hash cache never hits because the hashed objects are not our rows: db-ivm's
+`groupBy` (`operators/groupBy.ts`) builds a new pre-aggregate values object per row (group key
+object, virtual-metadata object, group representative carrying the row key, one field per
+aggregate), and the reduce Index hashes each one because all rows of a section share one reduce
+key. Our row objects stay stable (the virtual-props cache returns the same enriched row); the cost
+is per row, about 8 µs in Chromium and 12 µs in Firefox, so 100 to 160 ms per new filter at 12,000
+rows. This is upstream's own finding in the open TanStack DB PR #1645 ("perf: systematic live query
+engine optimizations", section 6, "groupBy/reduce without structural hashing"), not released:
+`@tanstack/db` 0.11.3 / `db-ivm` 0.1.25 are the latest on npm.
+
+**Also found:** `inArray(i.path, paths)` evaluates `array.some` per row (O(rows x selected)): 25 s
+for 6,000 selected paths at 12,000 rows. PR #1645 section 4 adds the key-field fast path; until then
+"only selected" stays a `fn.where` (with `queryKey`), which needs a full-source load.
+
+### What changed
+
+- `lib/shaping.ts`: `useLiveQuery` owns every query (`queryKey` from the filter key, `gcTime`
+  500 ms); no module cache, no hand-rolled index or listener store, `createWindows` gone.
+- Expression `where` (`eq` section, `like` on the lower-cased `search` field, `inArray` risk, `gte`
+  size and age); one `orderBy` column per sort so the auto-index serves the window (`autoIndex:
+  'eager'` on the items collection); the name sort reads a precomputed `order` field (accents
+  stripped, lower-cased, digits zero-padded) with `stringSort: 'lexical'`. Ties break by row key
+  (path).
+- Totals: one always-live unfiltered `groupBy` query, plus a filtered one that is a disabled
+  conditional query (`query` returns `undefined`) when no filter is set, so clearing a filter costs
+  nothing.
+- The scroll window is `setWindow` on the live query. `getWindow()` reports the settled window,
+  which lags the rows DB publishes synchronously from `setWindow`, so the hook keeps the requested
+  window next to the collection it belongs to.
+- The 858b272 "Nothing matches these filters" bug: the module cache handed back a collection that
+  had been cleaned up after `gcTime` with no subscribers; render read its empty `toArray`, and
+  resubscribing restarted its sync without notifying the new subscriber, so the totals stayed empty.
+  With `useLiveQuery` owning the queries that cannot happen; a browser test leaves Cleanup for 6 s
+  and comes back. An empty list with no filters set says "Nothing to clean up." and offers no
+  "Clear filters".
+
+### Frames (largest frame, ms; `frames` project, 12,000 rows, headless)
+
+Before = 858b272's shaping, hand-rolled = 7c3b80a's index, after = this change, all on the same tree.
+
+| interaction | Firefox before / hand-rolled / after | Chromium before / hand-rolled / after |
+|---|---|---|
+| idle open section | 100 / 33 / 33 | 100 / 50 / 33 |
+| idle filter first keystrokes | 358 / 17 / 167 | 133 / 17 / 100 |
+| idle filter cleared | 9 / 9 / 9 | 17 / 17 / 17 |
+| idle only selected | 276 / 9 / 251 | 117 / 17 / 100 |
+| idle only selected off | 9 / 9 / 9 | 17 / 17 / 17 |
+| idle risk toggle | 292 / 9 / 200 | 133 / 17 / 83 |
+| idle risk toggle off | 9 / 9 / 17 | 17 / 17 / 17 |
+| idle sort by name | 108 / 42 / 50 | 67 / 17 / 17 |
+| idle sort by size | 25 / 33 / 25 | 17 / 17 / 17 |
+| walking open section | 291 / 58 / 58 | 67 / 17 / 17 |
+| walking filter first keystrokes | 258 / 17 / 234 | 133 / 17 / 67 |
+| walking filter cleared | 9 / 9 / 12 | 17 / 17 / 17 |
+| walking only selected | 258 / 9 / 400 | 117 / 17 / 100 |
+| walking only selected off | 17 / 9 / 9 | 17 / 17 / 17 |
+| walking risk toggle | 420 / 25 / 318 | 133 / 17 / 67 |
+| walking risk toggle off | 9 / 9 / 9 | 17 / 17 / 17 |
+| walking sort by name | 100 / 25 / 49 | 67 / 17 / 17 |
+| walking sort by size | 25 / 25 / 17 | 17 / 17 / 17 |
+| stream streaming | 42 / 42 / 34 | 17 / 50 / 17 |
+| stream interacting while streaming | 400 / 33 / 192 | 133 / 17 / 83 |
+| stream streaming to the end | 9 / 9 / 10 | 17 / 17 / 17 |
+
+Sorting, opening, clearing and streaming are within budget. Filter keystrokes, the risk toggle and
+only-selected are not: each builds a new filtered totals `groupBy` (cost 2 above), and only-selected
+also loads the whole section through `fn.where`. With the filtered totals switched off as an
+experiment, filter keystrokes and the risk toggle in Firefox fell to 17 ms and only-selected to
+125 ms (its `fn.where` full load), so the rest is the `groupBy` hashing. Options for the user: (a) a local `pnpm patch` of `@tanstack/db-ivm` and
+`@tanstack/db` with PR #1645's groupBy discriminant and key-field `inArray` path (needs approval);
+(b) wait for PR #1645 to ship and upgrade; (c) accept the cost until then.

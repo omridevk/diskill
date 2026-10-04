@@ -18,7 +18,7 @@ import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
-import {isFiltering, predicateOf, useSectionWindow, useShapedTotals, type SectionTotal} from '@/lib/shaping'
+import {isFiltering, predicateOf, useFilteredTotals, useSectionWindow, useTotals, type SectionTotal} from '@/lib/shaping'
 import {useScanState, useSections} from '@/lib/views'
 import {DataTable} from './data-table'
 
@@ -41,8 +41,6 @@ const SORT_LABEL: Record<Sort, string> = {
   'age-asc': 'Newest first',
 }
 const QUICK_SELECT_MIN = 4
-const NO_SHAPE = {...NO_FILTERS, sort: 'size-desc'} as const
-const NO_SELECTION: RowSelectionState = {}
 
 const SEARCH_WAIT = 150
 
@@ -525,16 +523,12 @@ interface ListState {
 
 const ListContext = createContext<ListState | null>(null)
 
-function useSectionList(db: Db) {
-  const heads = useSections(db)
-  const totals = useShapedTotals(db, NO_SHAPE, NO_SELECTION)
-  return useMemo(() => sectionsOf(heads, totals), [heads, totals])
-}
-
 function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep) {
   const on = selection.rowSelection
-  const sections = useSectionList(db)
-  const totals = useShapedTotals(db, list, on)
+  const heads = useSections(db)
+  const all = useTotals(db)
+  const sections = useMemo(() => sectionsOf(heads, all), [heads, all])
+  const totals = useFilteredTotals(db, list, on) ?? all
   const filtering = isFiltering(list)
   const items = db.scan.items.version()
   const nests = db.scan.nests.version()
@@ -569,10 +563,12 @@ function Body({groups, list, onList, progressed, choose, children}: {groups: Gro
   if (groups.length === 0) {
     return (
       <div className="flex grow flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-        Nothing matches these filters.
-        <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
-          Clear filters
-        </Button>
+        {isFiltering(list) ? 'Nothing matches these filters.' : 'Nothing to clean up.'}
+        {isFiltering(list) && (
+          <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
+            Clear filters
+          </Button>
+        )}
         {children}
       </div>
     )

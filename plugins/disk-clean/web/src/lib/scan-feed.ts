@@ -29,6 +29,7 @@ export interface Entry extends Item {
   exact: boolean
   selectable: number
   scan: number
+  order: string
 }
 
 export interface Nest {
@@ -69,8 +70,13 @@ export interface ScanState {
 
 const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
 
+const DIGITS = /\d+/g
+const MARKS = /\p{M}/gu
+
+const orderOf = (label: string) => label.normalize('NFD').replace(MARKS, '').toLowerCase().replace(DIGITS, digits => digits.padStart(16, '0'))
+
 function entryOf(item: Item, head: CategoryHead, scan: number): Entry {
-  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), selectable: isPickable(item) ? 1 : 0, scan}
+  return {...item, section: head.id, risk: head.risk, search: `${item.label} ${item.path} ${head.title} ${item.note}`.toLowerCase(), exact: isExact(item), selectable: isPickable(item) ? 1 : 0, scan, order: orderOf(item.label)}
 }
 
 function startState(loaded: Loaded): ScanState {
