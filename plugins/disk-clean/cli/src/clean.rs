@@ -647,10 +647,8 @@ fn hold_one(
 
 fn run_logged(label: &str, program: &str, args: &[&str]) -> bool {
     println!("running {label}");
-    match Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .status()
+    match util::spawn(Command::new(program).args(args).stdin(Stdio::null()))
+        .and_then(|mut c| c.wait())
     {
         Ok(status) => status.success(),
         Err(e) => {

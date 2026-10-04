@@ -11,6 +11,32 @@ impl Drop for TempDir {
     }
 }
 
+pub struct Reaped(pub std::process::Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for Reaped {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Reaped {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+pub fn reaped(cmd: &mut Command) -> Reaped {
+    Reaped(cmd.spawn().unwrap())
+}
+
 pub fn temp_dir(tag: &str) -> TempDir {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

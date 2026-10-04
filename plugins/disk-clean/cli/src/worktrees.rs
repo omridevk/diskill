@@ -67,13 +67,14 @@ fn idle_days() -> f64 {
 }
 
 pub fn git(cwd: &Path, args: &[&str]) -> (i32, String, String) {
-    match Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-    {
+    match util::captured(
+        Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped()),
+    ) {
         Ok(out) => (
             out.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&out.stdout).into_owned(),

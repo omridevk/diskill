@@ -4,8 +4,8 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 static HOME: OnceLock<Result<String, String>> = OnceLock::new();
 
@@ -167,13 +167,31 @@ pub fn which(name: &str) -> bool {
     })
 }
 
+static OPENING_INHERITABLE_FDS: Mutex<()> = Mutex::new(());
+
+pub fn with_fd_lock<T>(open: impl FnOnce() -> T) -> T {
+    let _alone = OPENING_INHERITABLE_FDS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    open()
+}
+
+pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
+    with_fd_lock(|| cmd.spawn())
+}
+
+pub fn captured(cmd: &mut Command) -> io::Result<Output> {
+    spawn(cmd.stdout(Stdio::piped()))?.wait_with_output()
+}
+
 pub fn output(program: &str, args: &[&str]) -> Option<(bool, String)> {
-    let out = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let out = captured(
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .ok()?;
     Some((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -254,7 +272,7 @@ pub fn spawn_detached(cmd: &mut Command) -> io::Result<Child> {
             Ok(())
         });
     }
-    cmd.spawn()
+    spawn(cmd)
 }
 
 pub fn in_parallel<T: Sync>(items: &[T], workers: usize, each: impl Fn(&T) + Sync) {
