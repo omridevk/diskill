@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 const TOKEN: &str = "tok-trash";
@@ -465,7 +465,7 @@ fn undo_and_empty_wait_while_the_record_is_busy() {
     assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(4));
     assert_eq!(cli(&s, &["empty", &text(&s.run)]).status.code(), Some(4));
     let port = free_port();
-    let mut child = watcher(&s, port);
+    let _child = watcher(&s, port);
     let own = own_headers(port);
     let id = record(&s)[0].id.clone();
     let body = format!(r#"{{"token": "{TOKEN}", "ids": ["{id}"]}}"#);
@@ -476,8 +476,6 @@ fn undo_and_empty_wait_while_the_record_is_busy() {
         !named(&s.run, "undo_done").is_empty()
     });
     assert!(a.join("data").exists());
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[test]
@@ -518,15 +516,15 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn watcher(s: &Sandbox, port: u16) -> Child {
-    common::bin(&s.home)
-        .args(["watch", &text(&s.run)])
-        .env("DISK_CLEAN_WATCH_TOKEN", TOKEN)
-        .env("DISK_CLEAN_WATCH_PORT", port.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap()
+fn watcher(s: &Sandbox, port: u16) -> common::Reaped {
+    common::reaped(
+        common::bin(&s.home)
+            .args(["watch", &text(&s.run)])
+            .env("DISK_CLEAN_WATCH_TOKEN", TOKEN)
+            .env("DISK_CLEAN_WATCH_PORT", port.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
 }
 
 fn own_headers(port: u16) -> String {
@@ -586,7 +584,7 @@ fn undo_and_empty_routes_need_token_origin_and_host_and_stay_in_the_record() {
     clean(&s);
     let ids: Vec<String> = record(&s).into_iter().map(|e| e.id).collect();
     let port = free_port();
-    let mut child = watcher(&s, port);
+    let _child = watcher(&s, port);
     let own = own_headers(port);
     let body = |id: &str| {
         format!(
@@ -660,8 +658,6 @@ fn undo_and_empty_routes_need_token_origin_and_host_and_stay_in_the_record() {
     );
     let rows = named(&s.run, "trash");
     assert!(rows.iter().any(|r| r["entries"][0]["state"] == "emptied"));
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[test]
@@ -675,7 +671,7 @@ fn a_page_load_syncs_the_record_and_tells_the_page() {
     assert_eq!(entry.state, "trashed", "{entry:?}");
     fs::rename(&entry.trashed, &a).unwrap();
     let port = free_port();
-    let mut child = watcher(&s, port);
+    let _child = watcher(&s, port);
     let page = get(port, "/trash");
     assert!(page.contains(" 200 OK"), "{page}");
     assert!(
@@ -686,8 +682,6 @@ fn a_page_load_syncs_the_record_and_tells_the_page() {
     let told = named(&s.run, "trash");
     assert_eq!(told.last().unwrap()["entries"][0]["state"], "put-back");
     assert_eq!(record(&s)[0].state, "put-back");
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[test]
