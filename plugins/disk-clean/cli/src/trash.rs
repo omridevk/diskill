@@ -31,18 +31,21 @@ pub const PUT_BACK: &str = "put-back";
 pub const EMPTIED: &str = "emptied";
 pub const FAILED: &str = "failed";
 
+const OSASCRIPT_SCRIPT_LIMIT: usize = 800;
 const MOVE_TO_TRASH: &str = r#"ObjC.import('Foundation')
 function run() {
-  const input = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile
-  const paths = JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(input, $.NSUTF8StringEncoding)))
   const files = $.NSFileManager.defaultManager
-  return JSON.stringify(paths.map(path => {
+  const input = $.NSString.alloc.initWithDataEncoding($.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile, 4)
+  return JSON.stringify(JSON.parse(ObjC.unwrap(input)).map(({path, dev, ino}) => {
+    const now = ObjC.deepUnwrap(files.attributesOfItemAtPathError(path, null)) || {}
+    if (now.NSFileSystemNumber !== dev || now.NSFileSystemFileNumber !== ino) return {error: 'it changed after the check'}
     const landed = $()
     const error = $()
     const moved = files.trashItemAtURLResultingItemURLError($.NSURL.fileURLWithPath(path), landed, error)
     return moved ? {trashed: ObjC.unwrap(landed.path)} : {error: ObjC.unwrap(error.localizedDescription)}
   }))
 }"#;
+const _: () = assert!(MOVE_TO_TRASH.len() < OSASCRIPT_SCRIPT_LIMIT);
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -335,25 +338,34 @@ struct Landed {
     error: Option<String>,
 }
 
-fn move_batch(paths: &[String]) -> Vec<Result<String, String>> {
+#[derive(Serialize, Clone)]
+struct Checked {
+    path: String,
+    dev: u64,
+    ino: u64,
+}
+
+fn move_batch(paths: &[Checked]) -> Vec<Result<String, String>> {
     let mut landed = call_trash(paths);
     let again: Vec<usize> = landed
         .iter()
         .enumerate()
-        .filter(|(i, l)| l.is_err() && fs::symlink_metadata(&paths[*i]).is_ok())
+        .filter(|(i, l)| {
+            l.is_err() && same_item(&paths[*i].path, paths[*i].dev, paths[*i].ino) == Some(true)
+        })
         .map(|(i, _)| i)
         .collect();
     if again.is_empty() {
         return landed;
     }
-    let retry: Vec<String> = again.iter().map(|i| paths[*i].clone()).collect();
+    let retry: Vec<Checked> = again.iter().map(|i| paths[*i].clone()).collect();
     for (i, result) in again.into_iter().zip(call_trash(&retry)) {
         landed[i] = result;
     }
     landed
 }
 
-fn call_trash(paths: &[String]) -> Vec<Result<String, String>> {
+fn call_trash(paths: &[Checked]) -> Vec<Result<String, String>> {
     let failed = |why: String| paths.iter().map(|_| Err(why.clone())).collect();
     let Ok(input) = serde_json::to_vec(paths) else {
         return failed("a path could not be encoded".to_string());
@@ -380,7 +392,8 @@ fn call_trash(paths: &[String]) -> Vec<Result<String, String>> {
         Ok(landed) if out.status.success() => landed,
         _ => {
             return failed(format!(
-                "the Trash call failed: {}",
+                "the Trash call failed ({}): {}",
+                out.status,
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
@@ -496,7 +509,14 @@ impl Record {
             return out;
         }
         self.entries.extend(ready.iter().cloned());
-        let paths: Vec<String> = ready.iter().map(|e| e.original.clone()).collect();
+        let paths: Vec<Checked> = ready
+            .iter()
+            .map(|e| Checked {
+                path: e.original.clone(),
+                dev: e.dev,
+                ino: e.ino,
+            })
+            .collect();
         let settled: Vec<Moved> = ready
             .into_iter()
             .zip(move_batch(&paths))
@@ -768,27 +788,47 @@ struct Held {
     ino: u64,
 }
 
-fn held_copy_ok(dir: &Path, held: &Held) -> bool {
-    let path = Path::new(&held.held);
-    let numbered = path
+const BOOKKEEPING: [&str; 3] = ["manifest.jsonl", "manifest.jsonl.tmp", "lock"];
+
+fn locate(dir: &Path, held: &Held) -> Option<PathBuf> {
+    let numbered = Path::new(&held.held);
+    let is_numbered = numbered
         .file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-    path.parent() == Some(dir)
-        && numbered
-        && same_item(&held.held, held.dev, held.ino) == Some(true)
+    let readable = Path::new(&held.original)
+        .file_name()
+        .map(|name| dir.join(name));
+    [is_numbered.then(|| numbered.to_path_buf()), readable]
+        .into_iter()
+        .flatten()
+        .find(|path| {
+            path.parent() == Some(dir)
+                && !BOOKKEEPING.iter().any(|b| path.ends_with(b))
+                && same_item(&path.to_string_lossy(), held.dev, held.ino) == Some(true)
+        })
 }
 
-fn readable_name(dir: &Path, held: &Held) -> String {
+fn readable_name(dir: &Path, found: &Path, held: &Held) -> PathBuf {
     let Some(name) = Path::new(&held.original).file_name() else {
-        return held.held.clone();
+        return found.to_path_buf();
     };
     let target = dir.join(name);
-    if fs::symlink_metadata(&target).is_err() && rename_excl(Path::new(&held.held), &target).is_ok()
+    if target != found
+        && !BOOKKEEPING.iter().any(|b| target.ends_with(b))
+        && fs::symlink_metadata(&target).is_err()
+        && rename_excl(found, &target).is_ok()
     {
-        return target.to_string_lossy().into_owned();
+        return target;
     }
-    held.held.clone()
+    found.to_path_buf()
+}
+
+fn only_bookkeeping(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|list| {
+        list.flatten()
+            .all(|e| BOOKKEEPING.iter().any(|b| e.file_name() == *b))
+    })
 }
 
 fn migrate_run(record: &mut Record, dir: &Path) -> (usize, usize) {
@@ -804,24 +844,23 @@ fn migrate_run(record: &mut Record, dir: &Path) -> (usize, usize) {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut left: Vec<String> = Vec::new();
+    let check = |path: &str| -> Result<(), String> {
+        (Path::new(path).parent() == Some(dir) && is_real_dir(dir))
+            .then_some(())
+            .ok_or_else(|| "the holding folder changed, not touched".to_string())
+    };
+    let mut left = 0;
     let mut moved = 0;
     for copy in held.iter() {
-        if fs::symlink_metadata(&copy.held).is_err() {
+        let Some(found) = locate(dir, copy) else {
+            if fs::symlink_metadata(&copy.held).is_ok() {
+                left += 1;
+            }
             continue;
-        }
-        if !held_copy_ok(dir, copy) {
-            left.push(copy.held.clone());
-            continue;
-        }
-        let current = readable_name(dir, copy);
-        let check = |path: &str| -> Result<(), String> {
-            (Path::new(path).parent() == Some(dir) && is_real_dir(dir))
-                .then_some(())
-                .ok_or_else(|| "the holding folder changed, not touched".to_string())
         };
+        let current = readable_name(dir, &found, copy);
         let wanted = [Wanted {
-            original: current.clone(),
+            original: current.to_string_lossy().into_owned(),
             bytes: copy.bytes,
         }];
         for result in record.move_to_trash(&run, &wanted, &check) {
@@ -839,18 +878,21 @@ fn migrate_run(record: &mut Record, dir: &Path) -> (usize, usize) {
                         "disk-clean: could not move {} to the Trash: {}",
                         copy.original, entry.reason
                     );
-                    left.push(current.clone());
+                    if current != found {
+                        let _ = rename_excl(&current, &found);
+                    }
+                    left += 1;
                 }
             }
         }
     }
-    if left.is_empty() {
+    if left == 0 && only_bookkeeping(dir) {
         let _ = fs::remove_file(&manifest);
         let _ = fs::remove_file(dir.join("lock"));
         let _ = fs::remove_file(dir.join("manifest.jsonl.tmp"));
         let _ = fs::remove_dir(dir);
     }
-    (moved, left.len())
+    (moved, left)
 }
 
 pub fn migrate(home: &str) {

@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
@@ -400,6 +400,68 @@ fn migration_moves_held_runs_into_the_trash_and_drops_the_holding_folder() {
     assert_eq!(undo.status.code(), Some(0), "{}", stdout(&undo));
     assert_eq!(fs::read(a.join("data")).unwrap().len(), 50);
     assert_eq!(fs::read(b.join("data")).unwrap().len(), 51);
+}
+
+fn trashed_entries(s: &Sandbox) -> Vec<trash::Entry> {
+    record(s)
+        .into_iter()
+        .filter(|e| e.state == "trashed")
+        .collect()
+}
+
+#[test]
+fn a_held_item_the_trash_refuses_stays_held_and_moves_on_a_later_run() {
+    let s = sandbox("trash-migrate-refused");
+    let (a, b) = (s.home.join("Library/Caches/a"), s.home.join("go/pkg/mod/b"));
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    fs::create_dir_all(b.parent().unwrap()).unwrap();
+    let dir = legacy_run(&s, &[&a, &b]);
+    let read_only = dir.join("2");
+    let ino_before = ino(&read_only);
+    fs::set_permissions(&read_only, fs::Permissions::from_mode(0o500)).unwrap();
+
+    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("moved 1 held items"), "{err}");
+    assert!(err.contains("1 stay in"), "{err}");
+    assert_eq!(ino(&read_only), ino_before, "renamed back to its held name");
+    assert!(!dir.join("b").exists());
+    assert!(
+        dir.join("manifest.jsonl").exists(),
+        "the manifest stays while an item is held"
+    );
+    assert_eq!(trashed_entries(&s).len(), 1);
+
+    fs::set_permissions(&read_only, fs::Permissions::from_mode(0o700)).unwrap();
+    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("moved 1 held items"), "{err}");
+    assert!(!dir.exists());
+    let trashed = trashed_entries(&s);
+    assert_eq!(trashed.len(), 2);
+    assert_eq!(trashed[1].original, text(&b));
+    let undo = cli(&s, &["undo", "--all"]);
+    assert_eq!(undo.status.code(), Some(0), "{}", stdout(&undo));
+    assert_eq!(fs::read(b.join("data")).unwrap().len(), 51);
+}
+
+#[test]
+fn a_held_item_left_under_its_readable_name_is_still_found_and_moved() {
+    let s = sandbox("trash-migrate-renamed");
+    let a = s.home.join("Library/Caches/a");
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    let dir = legacy_run(&s, &[&a]);
+    fs::rename(dir.join("1"), dir.join("a")).unwrap();
+    fs::write(dir.join("stray"), b"not in the manifest").unwrap();
+
+    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("moved 1 held items"), "{err}");
+    assert_eq!(trashed_entries(&s)[0].original, text(&a));
+    assert!(
+        dir.join("manifest.jsonl").exists() && dir.join("stray").exists(),
+        "never drops the manifest or the folder while a file remains"
+    );
 }
 
 #[test]

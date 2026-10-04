@@ -7,7 +7,8 @@ numbered folders plus a JSON manifest under `~/.cache/disk-clean/held` were unre
 
 ## Two ways to delete, like Finder
 
-- **Delete** (default button, Delete key in the list) moves each approved path to the macOS Trash
+- **Delete** (default button, ⌘⌫ anywhere but a text field, ⌫ or Delete while focus is in the item
+  table) moves each approved path to the macOS Trash
   through the system API (`NSFileManager trashItemAtURL:resultingItemURL:error:`), which handles
   per-volume `.Trashes` and name clashes and returns where the item landed. No Finder/Apple Events
   automation prompt. Called from Rust without a new crate: one `osascript -l JavaScript` (JXA, ObjC
@@ -92,7 +93,25 @@ The holding folder goes away:
   interrupted` (so a crash mid-call is never silent); after the call the landed path must be a direct
   child of `~/.Trash` or `<volume>/.Trashes/<uid>` with the same dev/ino, or the entry stays failed
   and nothing else is done with it. Items already inside a Trash are removed for good, never trashed
-  again. Under three test processes trashing same-named items at once, the system refused about 1
+  again.
+- **The move race.** The system call takes a path, so the item is re-identified right before its own
+  call: the script lstats each path (`attributesOfItemAtPath`, which does not follow a final symlink)
+  and moves it only if its dev/ino still match what Rust recorded, else answers "it changed after the
+  check". That shrinks the window from a whole batch plus the osascript start to the microseconds
+  between that lstat and `trashItemAtURL` for the same item. Residual guarantee: if a parent is
+  swapped to a symlink inside that window, the swapped target lands in the Trash (recoverable with
+  Put Back) and the entry is reported failed ("moved, but replaced"); it is never deleted. Cost on
+  200 items on a RAM disk, batches of 64: 0.35 to 1.04 s before, 0.39 to 1.06 s after (three rounds
+  each, noise larger than the change); batches of 1 instead would take 27.1 s. The script stays under
+  800 bytes (a compile-time check): on this Mac `osascript` launched from a non-shell parent is
+  SIGKILLed at exec when its arguments pass about 915 bytes.
+- **Migration failures.** A held item is renamed to its original name before the Trash call; if the
+  call fails it is renamed back to its number (no-follow, never overwriting). Held items are found by
+  manifest path or by original name, both checked by dev/ino, so an item left under its readable name
+  (a failed rename back, or a crash between the rename and the call) is still found and moved on the
+  next run. The manifest and run folder are removed only when nothing but the manifest, its tmp and
+  the lock is left in the folder; a read-only folder (as in Go's module cache) is the real case where
+  the rename works and the Trash refuses. Under three test processes trashing same-named items at once, the system refused about 1
   in 15 runs one item ("couldn't be moved to the trash") while its siblings moved; items it refuses
   that are still at their original path are retried once in a second call (18 of 18 runs green after
   that).
