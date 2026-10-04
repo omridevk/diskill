@@ -465,38 +465,48 @@ pub fn with_trash(mut data: Value, run_dir: &Path, emit: trash::Emit) -> Value {
     data
 }
 
-pub fn start_trash_job(
+pub fn run_trash_job(
     name: &str,
     payload: &Value,
     run_dir: &Path,
-    emit: impl Fn(&str, Value) + Send + Sync + 'static,
-    finished: impl FnOnce() + Send + 'static,
-) -> &'static str {
+    emit: trash::Emit,
+) -> Result<Value, &'static str> {
     let ids = trash::ids_of(payload);
     if ids.is_empty() {
-        return "400 Bad Request";
+        return Err("400 Bad Request");
     }
     let home = util::home();
     let Ok(Some(mut record)) = trash::Record::open(&home, 1) else {
-        return "409 Conflict";
+        return Err("409 Conflict");
     };
     if record.trashed(&ids).is_empty() {
-        return "404 Not Found";
+        return Err("404 Not Found");
     }
-    let (empty, run) = (name == "/empty", trash::run_id(run_dir));
-    std::thread::spawn(move || {
-        let result = if empty {
-            trash::empty(&mut record, &ids, &run, &emit)
-        } else {
-            trash::undo(&mut record, &ids, &run, &emit)
-        };
-        if let Err(e) = result {
+    let run = trash::run_id(run_dir);
+    let result = if name == "/empty" {
+        trash::empty(&mut record, &ids, &run, emit)
+    } else {
+        trash::undo(&mut record, &ids, &run, emit)
+    };
+    match result {
+        Ok(report) => Ok(trash::rows(&report.changed)),
+        Err(e) => {
             eprintln!("disk-clean: {e}");
+            Err("500 Internal Server Error")
         }
-        drop(record);
-        finished();
-    });
-    "202 Accepted"
+    }
+}
+
+pub fn answer_trash_job(stream: &mut TcpStream, result: Result<Value, &'static str>) {
+    match result {
+        Ok(rows) => respond(
+            stream,
+            "200 OK",
+            "application/json",
+            rows.to_string().as_bytes(),
+        ),
+        Err(status) => refuse(stream, status),
+    }
 }
 
 fn post_payload(body: &[u8]) -> Option<Value> {
@@ -574,17 +584,12 @@ fn handle(
                 return refuse(&mut stream, "403 Forbidden");
             }
             if target == "/undo" || target == "/empty" {
-                let events = Arc::clone(live);
-                let status = start_trash_job(
-                    target,
-                    &payload,
-                    &live.dir,
-                    move |event, data| events.emit(event, data),
-                    || {},
-                );
-                let body: &[u8] = if status == "202 Accepted" { b"{}" } else { b"" };
-                respond(&mut stream, status, "application/json", body);
-                return;
+                if !http::is_own_origin_post(&req, port) {
+                    return refuse(&mut stream, "403 Forbidden");
+                }
+                let emit = |event: &str, data: Value| live.emit(event, data);
+                let result = run_trash_job(target, &payload, &live.dir, &emit);
+                return answer_trash_job(&mut stream, result);
             }
             if target == "/rescan" {
                 if live

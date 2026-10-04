@@ -466,7 +466,7 @@ fn undo_and_empty_wait_while_the_record_is_busy() {
     let body = format!(r#"{{"token": "{TOKEN}", "ids": ["{id}"]}}"#);
     assert_eq!(post(port, "/undo", &own, &body), 409);
     drop(held);
-    assert_eq!(post(port, "/undo", &own, &body), 202);
+    assert_eq!(post(port, "/undo", &own, &body), 200);
     common::wait_for("the undo", Duration::from_secs(10), || {
         !named(&s.run, "undo_done").is_empty()
     });
@@ -636,12 +636,12 @@ fn undo_and_empty_routes_need_token_origin_and_host_and_stay_in_the_record() {
         "an id we never recorded"
     );
 
-    assert_eq!(post(port, "/undo", &own, &body(&ids[0])), 202);
+    assert_eq!(post(port, "/undo", &own, &body(&ids[0])), 200);
     common::wait_for("the undo", Duration::from_secs(10), || {
         !named(&s.run, "undo_done").is_empty()
     });
     assert!(a.join("data").exists() && !b.exists());
-    assert_eq!(post(port, "/empty", &own, &body(&ids[1])), 202);
+    assert_eq!(post(port, "/empty", &own, &body(&ids[1])), 200);
     common::wait_for("the empty", Duration::from_secs(10), || {
         !named(&s.run, "empty_done").is_empty()
     });
@@ -715,4 +715,66 @@ fn the_confirm_plan_lists_trash_moves_apart_from_steps_that_cannot_be_undone() {
     assert_eq!(plan["final"], serde_json::json!(["docker system prune -f"]));
     assert_eq!((&plan["count"], &plan["bytes"]), (&3.into(), &4113.into()));
     assert!(a.exists());
+}
+
+#[test]
+fn the_review_page_can_undo_and_empty_earlier_runs_too() {
+    let s = sandbox("trash-review");
+    let (a, b) = (
+        s.home.join("Library/Caches/a"),
+        s.home.join("Library/Caches/b"),
+    );
+    make(&a, 10);
+    make(&b, 10);
+    approve(&s, &[("rm", &a, 1), ("rm", &b, 2)]);
+    clean(&s);
+    let ids: Vec<String> = record(&s).into_iter().map(|e| e.id).collect();
+    let next = s.home.join(".cache/disk-clean/run-2");
+    fs::create_dir_all(&next).unwrap();
+    fs::write(
+        next.join("scan.tsv"),
+        scan_row("caches", "rm", &text(&s.home.join("x")), 1),
+    )
+    .unwrap();
+    let mut child = common::reaped(
+        common::bin(&s.home)
+            .args(["review", &text(&next)])
+            .env("DISK_CLEAN_NO_BROWSER", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()),
+    );
+    let mut err = std::io::BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut err, &mut line).unwrap();
+    let port: u16 = line
+        .trim()
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let page = get(port, "/trash");
+    let token = page
+        .split_once(r#"<meta name="disk-clean-token" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(token, _)| token.to_string())
+        .unwrap();
+    assert!(page.contains(&ids[0]), "the page lists earlier runs");
+    let body = |id: &str| format!(r#"{{"token": "{token}", "ids": ["{id}"]}}"#);
+    let no_origin = format!("Host: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n");
+    assert_eq!(post(port, "/undo", &no_origin, &body(&ids[0])), 403);
+    assert_eq!(post(port, "/undo", &own_headers(port), &body(&ids[0])), 200);
+    assert!(a.join("data").exists());
+    assert_eq!(
+        post(port, "/empty", &own_headers(port), &body(&ids[1])),
+        200
+    );
+    assert_eq!(
+        record(&s)
+            .iter()
+            .map(|e| e.state.as_str())
+            .collect::<Vec<_>>(),
+        ["restored", "emptied"]
+    );
 }

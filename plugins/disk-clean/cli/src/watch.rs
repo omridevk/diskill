@@ -1,6 +1,6 @@
 use crate::clean;
 use crate::http::{self, constant_eq, query_token, refuse, respond};
-use crate::review::{approved_page, start_trash_job};
+use crate::review::{answer_trash_job, approved_page, run_trash_job};
 use crate::util;
 use serde_json::Value;
 use std::fs;
@@ -153,25 +153,15 @@ fn post_job(
         return refuse(write, "403 Forbidden");
     }
     busy.store(true, Ordering::SeqCst);
-    let (events, run_dir) = (OnceLock::new(), dir.to_path_buf());
-    let done = Arc::clone(busy);
-    let status = start_trash_job(
-        name,
-        &payload,
-        dir,
-        move |event, data| {
-            events
-                .get_or_init(|| clean::Events::append(&run_dir))
-                .emit(event, data)
-        },
-        move || done.store(false, Ordering::SeqCst),
-    );
-    if status == "202 Accepted" {
-        respond(write, status, "application/json", b"{}");
-    } else {
-        busy.store(false, Ordering::SeqCst);
-        refuse(write, status);
-    }
+    let events = OnceLock::new();
+    let emit = |event: &str, data: Value| {
+        events
+            .get_or_init(|| clean::Events::append(dir))
+            .emit(event, data)
+    };
+    let result = run_trash_job(name, &payload, dir, &emit);
+    busy.store(false, Ordering::SeqCst);
+    answer_trash_job(write, result);
 }
 
 fn handle(

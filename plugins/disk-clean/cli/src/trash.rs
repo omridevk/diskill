@@ -502,6 +502,7 @@ pub struct Report {
     pub done: usize,
     pub done_bytes: i64,
     pub kept: usize,
+    pub changed: Vec<Entry>,
 }
 
 fn job_id() -> String {
@@ -602,6 +603,7 @@ pub fn undo(record: &mut Record, ids: &[String], run: &str, emit: Emit) -> io::R
         done: 0,
         done_bytes: 0,
         kept: 0,
+        changed: Vec::new(),
     };
     let mut changed = Vec::new();
     for entry in &chosen {
@@ -629,6 +631,7 @@ pub fn undo(record: &mut Record, ids: &[String], run: &str, emit: Emit) -> io::R
     }
     record.put(&changed)?;
     emit("trash", rows(&changed));
+    report.changed = changed;
     let (left, left_bytes) = left_bytes(record, run);
     emit(
         "undo_done",
@@ -708,13 +711,14 @@ pub fn empty(record: &mut Record, ids: &[String], run: &str, emit: Emit) -> io::
             }
         });
     });
-    let changed = changed.into_inner().unwrap_or_default();
+    let changed: Vec<Entry> = changed.into_inner().unwrap_or_default();
     record.put(&changed)?;
     emit("trash", rows(&changed));
     let report = Report {
         done: done.into_inner(),
         done_bytes: done_bytes.into_inner(),
         kept: kept.into_inner(),
+        changed,
     };
     let (left, left_bytes) = left_bytes(record, run);
     emit(
