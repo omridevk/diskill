@@ -7,7 +7,8 @@
     "build": "pnpm run lint && tsc --noEmit && vite build && mv ../cli/assets/index.html ../cli/assets/page.html",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src",
-    "test": "vitest run --project 'app *' && vitest run --project 'perf chromium' && vitest run --project 'perf firefox'"
+    "test": "vitest run --project 'app *' && vitest run --project 'perf chromium' && vitest run --project 'perf firefox' && vitest run --project 'frames *'",
+    "frames": "vitest run --project 'frames *'"
   },
   "dependencies": {
     "@base-ui/react": "1.8.0",

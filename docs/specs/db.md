@@ -93,3 +93,16 @@ build its query (substring match cannot use an index): that build runs in the de
 handler (`prepare`), outside React, and cost about 18 to 28 ms in Chromium and 90 to 160 ms in
 Firefox at 10,000 rows. No worker and no `workerRowModelsFeature`: the table no longer computes a
 row model over the section, and SSE parsing did not show in the profiles.
+
+### QA round 2: the section index replaces the shaping live queries (2026-10-04)
+
+Profiled in real Firefox on the built page with 12,000 rows (Gecko profiler, unminified build): every
+new filter key, sort or only-selected value built a new live query collection, and its first graph
+run hashed every row (`hashObject`, `writeByte`, `isBinaryValue` in db-ivm): about 140 to 340 ms per
+query, synchronous, on the interaction. While a scan streamed, each typed key added another live
+query that every later batch also flowed through (4.2 s of graph runs in a 10 s window). The open
+section and the per-section totals are now kept in a plain incremental index over the scan store's
+per-section maps: a sorted array per section and sort, patched by binary insertion when a batch
+changes few rows, filtered per filter key (one predicate pass), and per-section totals cached by
+section version. The table still receives only the window the virtualizer shows. The cleanup
+event views stay live queries. Frame numbers are in qa-round-2.md, section C.

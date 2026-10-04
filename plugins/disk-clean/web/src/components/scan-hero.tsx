@@ -1,4 +1,4 @@
-import {counted, formatBytes, plural} from '@/lib/data'
+import {formatBytes, plural} from '@/lib/data'
 import {useDb} from '@/lib/db'
 import type {ScanState as Scan} from '@/lib/scan-feed'
 import {useScanProgress} from '@/lib/views'

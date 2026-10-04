@@ -1,6 +1,5 @@
 import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
 import {useDebouncer} from '@tanstack/react-pacer/debouncer'
-import {useLiveQuery} from '@tanstack/react-db'
 import {Link, useNavigate} from '@tanstack/react-router'
 import type {RowSelectionState, Updater} from '@tanstack/react-table'
 import {LayoutGrid, List, Search, TriangleAlert} from 'lucide-react'
@@ -19,7 +18,7 @@ import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
-import {isFiltering, predicateOf, prepare, useSectionWindow, useShapedTotals, type SectionTotal} from '@/lib/shaping'
+import {isFiltering, predicateOf, useSectionWindow, useShapedTotals, type SectionTotal} from '@/lib/shaping'
 import {useScanState, useSections} from '@/lib/views'
 import {DataTable} from './data-table'
 
@@ -42,6 +41,8 @@ const SORT_LABEL: Record<Sort, string> = {
   'age-asc': 'Newest first',
 }
 const QUICK_SELECT_MIN = 4
+const NO_SHAPE = {...NO_FILTERS, sort: 'size-desc'} as const
+const NO_SELECTION: RowSelectionState = {}
 
 const SEARCH_WAIT = 150
 
@@ -526,7 +527,7 @@ const ListContext = createContext<ListState | null>(null)
 
 function useSectionList(db: Db) {
   const heads = useSections(db)
-  const {data: totals} = useLiveQuery(db.queries.sectionTotals)
+  const totals = useShapedTotals(db, NO_SHAPE, NO_SELECTION)
   return useMemo(() => sectionsOf(heads, totals), [heads, totals])
 }
 
@@ -543,10 +544,11 @@ function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep
   return {groups: groupsOf(sections, {totals, shadow, picked}), hidden}
 }
 
-const OPEN_LAYER = '[role="dialog"], [role="listbox"], [role="menu"], [aria-expanded="true"]'
+const LAYER = '[role="dialog"], [role="listbox"], [role="menu"]'
 
-const inOverlay = (event: KeyboardEvent) =>
-  document.querySelector(OPEN_LAYER) !== null || (event.target instanceof Element && event.target.closest(OPEN_LAYER) !== null)
+const layerOpen = () => document.querySelector('[aria-expanded="true"]') !== null || [...document.querySelectorAll(LAYER)].some(layer => layer.checkVisibility())
+
+const inOverlay = (event: KeyboardEvent) => layerOpen() || (event.target instanceof Element && event.target.closest(LAYER) !== null)
 
 function useShortcuts(actions: [Hotkey, () => void, boolean][]) {
   useHotkeys(
@@ -617,10 +619,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
         <Toolbar
           list={list}
           onList={onList}
-          onSearch={q => {
-            prepare(db, list, {...list, q}, on)
-            onList({q}, {replace: true})
-          }}
+          onSearch={q => onList({q}, {replace: true})}
           searchRef={search}
         />
         <Warnings hidden={hidden} risky={selection.risky} />

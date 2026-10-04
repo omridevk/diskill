@@ -1,6 +1,5 @@
-import {count, createLiveQueryCollection, eq, sum, type InitialQueryBuilder} from '@tanstack/react-db'
 import type {RowSelectionState} from '@tanstack/react-table'
-import {useMemo} from 'react'
+import {useMemo, useSyncExternalStore} from 'react'
 import type {Db} from './db'
 import type {Entry} from './scan-feed'
 import type {CleanupSearch, Sort} from './search'
@@ -21,86 +20,113 @@ export function predicateOf(shape: Shape, on: RowSelectionState) {
     (!shape.only || on[entry.path] === true)
 }
 
-const filterKey = (shape: Shape, on: RowSelectionState) => [shape.q, shape.risk.join(','), shape.minSize, shape.minAge, shape.only ? onKey(on) : ''].join('|')
-
 const onIds = new WeakMap<RowSelectionState, number>()
-let nextOn = 0
+const counter = {next: 0}
 
 function onKey(on: RowSelectionState) {
   const known = onIds.get(on)
   if (known !== undefined) return known
-  nextOn += 1
-  onIds.set(on, nextOn)
-  return nextOn
+  counter.next += 1
+  onIds.set(on, counter.next)
+  return counter.next
 }
 
-const naturally = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'})
+const filterKey = (shape: Shape, on: RowSelectionState) => [shape.q, shape.risk.join(','), shape.minSize, shape.minAge, shape.only ? onKey(on) : ''].join('|')
 
-type Items = Db['scan']['items']['collection']
+type Group = Db['scan']['bySection'] extends Map<string, infer G> ? G : never
+type Compare = (a: Entry, b: Entry) => number
 
-function sectionOf(items: Items, section: string) {
-  return (q: InitialQueryBuilder) => q.from({i: items}).where(({i}) => eq(i.section, section))
+const DIGITS = /\d+/g
+const MARKS = /\p{M}/gu
+const nameKeys = new WeakMap<Entry, string>()
+
+function nameKey(entry: Entry) {
+  const known = nameKeys.get(entry)
+  if (known !== undefined) return known
+  const key = entry.label
+    .normalize('NFD')
+    .replace(MARKS, '')
+    .toLowerCase()
+    .replace(DIGITS, digits => digits.padStart(16, '0'))
+  nameKeys.set(entry, key)
+  return key
 }
 
-type Base = ReturnType<ReturnType<typeof sectionOf>>
+const byText = (a: string, b: string) => (a < b ? -1 : Number(a > b))
+const byPath: Compare = (a, b) => byText(a.path, b.path)
+const bySizeThenPath: Compare = (a, b) => b.bytes - a.bytes || byPath(a, b)
 
-const ORDER: Record<Sort, (base: Base) => Base> = {
-  'size-desc': base => base.orderBy(({i}) => i.bytes, 'desc'),
-  'size-asc': base => base.orderBy(({i}) => i.bytes, 'asc'),
-  'name-asc': base => base.orderBy(({i}) => i.label, {stringSort: 'custom', compare: naturally.compare}),
-  'age-desc': base => base.orderBy(({i}) => i.age, {direction: 'desc', nulls: 'last'}),
-  'age-asc': base => base.orderBy(({i}) => i.age, {direction: 'asc', nulls: 'last'}),
+function byAge(direction: 1 | -1): Compare {
+  return (a, b) => {
+    if (a.age === null || b.age === null) return Number(a.age === null) - Number(b.age === null) || bySizeThenPath(a, b)
+    return direction * (a.age - b.age) || bySizeThenPath(a, b)
+  }
 }
 
-const WINDOW = 120
-const KEEP = 6
-
-function totalsQuery(items: Items, keep: (entry: Entry) => boolean) {
-  return createLiveQueryCollection({
-    query: q =>
-      q
-        .from({i: items})
-        .fn.where(({i}) => keep(i))
-        .groupBy(({i}) => i.section)
-        .select(({i}) => ({id: i.section, count: count(i.path), bytes: sum(i.bytes), selectable: sum(i.selectable), aged: count(i.age)})),
-    gcTime: 5000,
-    startSync: true,
-  })
+const ORDER: Record<Sort, Compare> = {
+  'size-desc': bySizeThenPath,
+  'size-asc': (a, b) => a.bytes - b.bytes || byPath(a, b),
+  'name-asc': (a, b) => byText(nameKey(a), nameKey(b)) || bySizeThenPath(a, b),
+  'age-desc': byAge(-1),
+  'age-asc': byAge(1),
 }
 
-function rowsQuery(items: Items, section: string, sort: Sort, keep: (entry: Entry) => boolean) {
-  return createLiveQueryCollection({
-    query: q =>
-      ORDER[sort](sectionOf(items, section)(q))
-        .orderBy(({i}) => i.bytes, 'desc')
-        .orderBy(({i}) => i.path)
-        .fn.where(({i}) => keep(i))
-        .limit(WINDOW)
-        .offset(0),
-    gcTime: 5000,
-    startSync: true,
-  })
+interface Sorted {
+  version: number
+  rows: Entry[]
+  members: Map<string, Entry>
 }
 
-type Totals = ReturnType<typeof totalsQuery>
-type Rows = ReturnType<typeof rowsQuery>
-
-function cached<T>(store: Map<string, T>, key: string, make: () => T) {
-  const known = store.get(key)
-  if (known) return known
-  const made = make()
-  store.set(key, made)
-  for (const old of [...store.keys()].slice(0, Math.max(0, store.size - KEEP))) store.delete(old)
-  return made
+function insertAt(rows: readonly Entry[], entry: Entry, compare: Compare) {
+  let low = 0
+  let high = rows.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    const row = rows[middle]
+    if (row && compare(row, entry) < 0) low = middle + 1
+    else high = middle
+  }
+  return low
 }
 
-const totalsBy = new WeakMap<Items, Map<string, Totals>>()
-const rowsBy = new WeakMap<Items, Map<string, Rows>>()
+function patched(known: Sorted, group: Group, compare: Compare): Entry[] | null {
+  const changed: Entry[] = []
+  for (const entry of group.items.values()) if (known.members.get(entry.path) !== entry) changed.push(entry)
+  const gone = known.members.size + changed.length - group.items.size
+  if (changed.length + gone > group.items.size / 4) return null
+  const rows = gone > 0 || changed.length > 0 ? known.rows.filter(row => group.items.get(row.path) === row) : known.rows
+  for (const entry of changed) rows.splice(insertAt(rows, entry, compare), 0, entry)
+  return rows
+}
 
-function storeOf<T>(by: WeakMap<Items, Map<string, T>>, items: Items) {
-  const known = by.get(items) ?? new Map<string, T>()
-  by.set(items, known)
+function storeOf<T>(by: WeakMap<Db, Map<string, T>>, db: Db) {
+  const known = by.get(db) ?? new Map<string, T>()
+  by.set(db, known)
   return known
+}
+
+const KEEP = 8
+
+function remember<T>(store: Map<string, T>, key: string, value: T) {
+  store.delete(key)
+  store.set(key, value)
+  for (const old of [...store.keys()].slice(0, Math.max(0, store.size - KEEP))) store.delete(old)
+  return value
+}
+
+const sortedBy = new WeakMap<Db, Map<string, Sorted>>()
+const NOTHING: Sorted = {version: -1, rows: [], members: new Map()}
+
+function sortedOf(db: Db, section: string, sort: Sort): Sorted {
+  const group = db.scan.bySection.get(section)
+  if (!group) return NOTHING
+  const store = storeOf(sortedBy, db)
+  const key = `${section}|${sort}`
+  const known = store.get(key)
+  if (known?.version === group.version) return known
+  const compare = ORDER[sort]
+  const rows = (known && patched(known, group, compare)) ?? [...group.items.values()].sort(compare)
+  return remember(store, key, {version: group.version, rows, members: new Map(group.items)})
 }
 
 export interface SectionTotal {
@@ -111,45 +137,107 @@ export interface SectionTotal {
   aged: number
 }
 
-function totalsOf(db: Db, shape: Shape, on: RowSelectionState) {
-  const items = db.scan.items.collection
-  return cached(storeOf(totalsBy, items), filterKey(shape, on), () => totalsQuery(items, predicateOf(shape, on)))
+interface CachedTotal {
+  version: number
+  total: SectionTotal
 }
 
-function rowsOf(db: Db, section: string, shape: Shape, on: RowSelectionState) {
-  const items = db.scan.items.collection
-  return cached(storeOf(rowsBy, items), `${section}|${shape.sort}|${filterKey(shape, on)}`, () => rowsQuery(items, section, shape.sort, predicateOf(shape, on)))
+function totalOf(id: string, group: Group, keep: (entry: Entry) => boolean): SectionTotal {
+  const total = {id, count: 0, bytes: 0, selectable: 0, aged: 0}
+  for (const entry of group.items.values()) {
+    if (!keep(entry)) continue
+    total.count += 1
+    total.bytes += entry.bytes
+    total.selectable += entry.selectable
+    if (entry.age !== null) total.aged += 1
+  }
+  return total
 }
 
-export function prepare(db: Db, from: Shape, to: Shape, on: RowSelectionState) {
-  const shown = `|${from.sort}|${filterKey(from, on)}`
-  const sections = [...storeOf(rowsBy, db.scan.items.collection).keys()].filter(key => key.endsWith(shown)).map(key => key.slice(0, -shown.length))
-  totalsOf(db, to, on)
-  for (const section of sections) rowsOf(db, section, to, on)
+const totalsBy = new WeakMap<Db, Map<string, Map<string, CachedTotal>>>()
+
+function totalsNow(db: Db, shape: Shape, on: RowSelectionState): SectionTotal[] {
+  const store = storeOf(totalsBy, db)
+  const key = filterKey(shape, on)
+  const bySection = remember(store, key, store.get(key) ?? new Map<string, CachedTotal>())
+  const keep = predicateOf(shape, on)
+  const totals: SectionTotal[] = []
+  for (const [id, group] of db.scan.bySection) {
+    const known = bySection.get(id)
+    const cached = known?.version === group.version ? known : {version: group.version, total: totalOf(id, group, keep)}
+    bySection.set(id, cached)
+    if (cached.total.count > 0) totals.push(cached.total)
+  }
+  return totals
 }
 
 export function useShapedTotals(db: Db, shape: Shape, on: RowSelectionState): SectionTotal[] {
-  const collection = totalsOf(db, shape, on)
-  const version = useVersion(collection)
-  return useMemo(() => collection.toArray, [collection, version])
+  const items = useVersion(db.scan.items.collection)
+  return useMemo(() => totalsNow(db, shape, on), [db, shape, on, items])
 }
+
+interface Shown {
+  sorted: Sorted
+  rows: Entry[]
+}
+
+const shownBy = new WeakMap<Db, Map<string, Shown>>()
+
+function shownOf(db: Db, section: string, shape: Shape, on: RowSelectionState) {
+  const sorted = sortedOf(db, section, shape.sort)
+  const store = storeOf(shownBy, db)
+  const key = `${section}|${shape.sort}|${filterKey(shape, on)}`
+  const known = store.get(key)
+  if (known?.sorted === sorted) return known.rows
+  const rows = isFiltering(shape) ? sorted.rows.filter(predicateOf(shape, on)) : sorted.rows
+  return remember(store, key, {sorted, rows}).rows
+}
+
+function createWindows() {
+  const offsets = new Map<string, number>()
+  const listeners = new Set<() => void>()
+  return {
+    offsetOf: (key: string) => offsets.get(key) ?? 0,
+    move: (key: string, offset: number) => {
+      if (offsets.get(key) === offset) return
+      offsets.set(key, offset)
+      for (const listener of listeners) listener()
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+  }
+}
+
+const windowsBy = new WeakMap<Db, ReturnType<typeof createWindows>>()
+
+function windowsOf(db: Db) {
+  const known = windowsBy.get(db) ?? createWindows()
+  windowsBy.set(db, known)
+  return known
+}
+
+const WINDOW = 240
 
 export interface SectionWindow {
   rows: Entry[]
   offset: number
-  collection: Rows
+  move: (offset: number) => void
 }
 
 export function useSectionWindow(db: Db, section: string, shape: Shape, on: RowSelectionState): SectionWindow {
-  const collection = rowsOf(db, section, shape, on)
-  const version = useVersion(collection)
-  return useMemo(() => ({rows: collection.toArray, offset: collection.utils.getWindow()?.offset ?? 0, collection}), [collection, version])
+  const items = useVersion(db.scan.items.collection)
+  const windows = windowsOf(db)
+  const key = `${section}|${shape.sort}|${filterKey(shape, on)}`
+  const offset = useSyncExternalStore(windows.subscribe, () => windows.offsetOf(key))
+  const shown = useMemo(() => shownOf(db, section, shape, on), [db, section, shape, on, items])
+  return useMemo(() => ({rows: shown.slice(offset, offset + WINDOW), offset, move: next => windows.move(key, next)}), [shown, offset, windows, key])
 }
 
 export function moveWindow(window: SectionWindow, start: number, end: number) {
-  const current = window.collection.utils.getWindow()
-  const offset = Math.max(0, start - WINDOW / 4)
-  const inside = current && start >= current.offset && end <= current.offset + current.limit
-  if (inside) return
-  void window.collection.utils.setWindow({offset, limit: Math.max(WINDOW, end - offset + WINDOW / 4)})
+  if (start >= window.offset && end <= window.offset + window.rows.length) return
+  window.move(Math.max(0, start - WINDOW / 4))
 }
