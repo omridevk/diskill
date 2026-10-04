@@ -16,6 +16,15 @@ The page had 30 effect calls when this was written; the target is zero in our co
 | canvas / WebGL / particle loops (`canvas-loop.ts`, `react-bits/*`) | ref callbacks that start the loop and return a cleanup (React 19), plus `useSyncExternalStore` for visibility and reduced-motion |
 | window/document listeners (keyboard shortcuts, resize, visibility) | ref callbacks, `useSyncExternalStore`, or the owning library's API |
 
+Ref callbacks are only for attaching to a DOM node's lifetime: subscriptions, observers, imperative
+libraries, canvas loops, whose dependencies are configuration. A ref callback whose dependencies
+are data and whose job is "when this value changes, do that" (timers, replays, re-measures) is an
+effect in disguise and is not allowed. Use instead:
+- `key` remount plus a CSS animation for replays;
+- render-time derivation plus `onAnimationEnd`/`onTransitionEnd` to advance a state machine;
+- `useGSAP` with dependencies (including GSAP Flip) for measured layout animation;
+- the event handler that caused the change.
+
 Library hooks that use effects internally (`useGSAP`, TanStack hooks, Base UI) are fine; our code
 does not call `useEffect` / `useLayoutEffect`.
 

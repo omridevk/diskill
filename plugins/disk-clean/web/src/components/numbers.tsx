@@ -1,4 +1,4 @@
-import {useCallback, useId, useState, type TransitionEvent} from 'react'
+import {useId, useState, type TransitionEvent} from 'react'
 import {formatBytes} from '@/lib/data'
 import {cssMs, cssNumber, useReducedMotion} from '@/lib/motion'
 
@@ -38,31 +38,22 @@ export function PopBytes({bytes}: {bytes: number}) {
   )
 }
 
-function startBlur(animate: SVGAnimateElement | null, duration: number, delay: number) {
-  if (!animate) return
-  animate.setAttribute('dur', `${duration}ms`)
-  animate.setAttribute('values', `0 ${cssNumber('--reel-spin-blur', 3)};0 0`)
-  animate.beginElementAt(delay / 1000)
+function startBlur(animate: SVGAnimateElement | null) {
+  animate?.beginElementAt(Number(animate.dataset.delay) / 1000)
 }
 
 function useReel(digit: number, column: number) {
   const reduced = useReducedMotion()
   const [reel, setReel] = useState({digit, spins: 0, column, spinning: false})
   if (reel.digit !== digit) setReel(reduced ? {...reel, digit} : {digit, spins: reel.spins + 1, column, spinning: true})
-  const blur = useCallback(
-    (animate: SVGAnimateElement | null) => {
-      if (reel.spins > 0) startBlur(animate, cssMs('--reel-dur', 1400), cssMs('--reel-stagger', 90) * reel.column)
-    },
-    [reel.spins, reel.column],
-  )
   const settle = (event: TransitionEvent<HTMLSpanElement>) => {
     if (event.target === event.currentTarget && event.propertyName === 'transform') setReel(current => ({...current, spinning: false}))
   }
-  return {spinning: reel.spinning, spins: reel.spins, blur, settle}
+  return {...reel, settle}
 }
 
 function Reel({digit, column}: {digit: number; column: number}) {
-  const {spinning, spins, blur, settle} = useReel(digit, column)
+  const {spinning, spins, column: spun, settle} = useReel(digit, column)
   const filter = `reel-${useId().replace(/[^\w-]/g, '')}`
   const cell = spinning ? SPINS * 10 + digit : digit
   return (
@@ -70,7 +61,19 @@ function Reel({digit, column}: {digit: number; column: number}) {
       <svg width="0" height="0" className="absolute">
         <filter id={filter}>
           <feGaussianBlur stdDeviation="0 0">
-            <animate key={spins} ref={blur} attributeName="stdDeviation" begin="indefinite" fill="freeze" calcMode="spline" keyTimes="0;1" keySplines="0.16 1 0.3 1" />
+            <animate
+              key={spins}
+              ref={spins > 0 ? startBlur : undefined}
+              data-delay={cssMs('--reel-stagger', 90) * spun}
+              attributeName="stdDeviation"
+              begin="indefinite"
+              dur={`${cssMs('--reel-dur', 1400)}ms`}
+              values={`0 ${cssNumber('--reel-spin-blur', 3)};0 0`}
+              fill="freeze"
+              calcMode="spline"
+              keyTimes="0;1"
+              keySplines="0.16 1 0.3 1"
+            />
           </feGaussianBlur>
         </filter>
       </svg>

@@ -1,4 +1,4 @@
-import {useCallback, useRef, useState, useSyncExternalStore} from 'react'
+import {useCallback, useRef, useState, useSyncExternalStore, type AnimationEvent} from 'react'
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)'
 
@@ -35,22 +35,10 @@ function reflow(el: HTMLElement) {
   return el.offsetHeight
 }
 
-function replayPanel(panel: HTMLElement) {
-  panel.dataset.open = 'false'
-  reflow(panel)
-  panel.dataset.open = 'true'
-}
-
 export function useReveal(key: string) {
-  const last = useRef(key)
-  return useCallback(
-    (panel: HTMLDivElement | null) => {
-      if (!panel || last.current === key) return
-      last.current = key
-      replayPanel(panel)
-    },
-    [key],
-  )
+  const [reveal, setReveal] = useState({key, replay: false})
+  if (reveal.key !== key) setReveal({key, replay: true})
+  return reveal.replay
 }
 
 function showOnMount(block: HTMLDivElement | null) {
@@ -64,32 +52,16 @@ export function useShownOnMount() {
   return showOnMount
 }
 
-function enter(el: HTMLElement) {
-  if (!el.classList.contains('is-exit')) return
-  el.classList.remove('is-exit')
-  el.classList.add('is-enter-start')
-  reflow(el)
-  el.classList.remove('is-enter-start')
-}
-
 export function useTextSwap(text: string) {
   const reduced = useReducedMotion()
-  const [shown, setShown] = useState(text)
-  const entered = useRef(shown)
-  if (reduced && text !== shown) setShown(text)
-  const ref = useCallback(
-    (el: HTMLSpanElement | null) => {
-      if (!el) return
-      if (entered.current !== shown) enter(el)
-      entered.current = shown
-      if (text === shown) return el.classList.remove('is-exit')
-      el.classList.add('is-exit')
-      const timer = setTimeout(() => setShown(text), cssMs('--text-swap-dur', 150))
-      return () => clearTimeout(timer)
-    },
-    [text, shown],
-  )
-  return {ref, shown}
+  const [swap, setSwap] = useState({shown: text, swaps: 0})
+  if (reduced && text !== swap.shown) setSwap({shown: text, swaps: swap.swaps})
+  const leaving = text !== swap.shown
+  const onAnimationEnd = (event: AnimationEvent<HTMLElement>) => {
+    if (leaving && event.target === event.currentTarget && event.animationName === 't-text-swap-exit') setSwap({shown: text, swaps: swap.swaps + 1})
+  }
+  const className = ['t-text-swap', leaving && 'is-exit', swap.swaps > 0 && 'is-swapped'].filter(Boolean).join(' ')
+  return {shown: swap.shown, className, onAnimationEnd}
 }
 
 function placePill(pill: HTMLElement, tab: HTMLElement) {

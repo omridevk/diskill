@@ -250,7 +250,7 @@ function SectionButton({group, on, active, locked, max, progressed}: {group: Gro
 function ListView({table, groups, on, active, progressed}: {table: CleanupTable; groups: Group[]; on: RowSelectionState; active: string; progressed: Progressed | null}) {
   const current = groups.find(g => g.category.id === active) ?? groups[0]
   const max = Math.max(1, ...groups.map(g => bytesOf(g.row.subRows)))
-  const reveal = useReveal(current?.category.id ?? '')
+  const replay = useReveal(current?.category.id ?? '')
   return (
     <div className="flex min-h-0 grow">
       <nav aria-label="Sections" className="flex w-80 shrink-0 flex-col gap-3.5 overflow-auto border-r px-3 py-4">
@@ -276,7 +276,7 @@ function ListView({table, groups, on, active, progressed}: {table: CleanupTable;
         })}
       </nav>
       {current && (
-        <main ref={reveal} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
+        <main key={current.category.id} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
           <div className="flex flex-col gap-2.5 border-b px-6 pt-4 pb-3">
             <div className="flex items-center gap-2.5">
               <h2 className="text-lg font-semibold tracking-tight">{current.category.title}</h2>
@@ -548,7 +548,7 @@ export function Cleanup({categories, selection, list, progress}: {categories: Ca
   const section = useParams({strict: false, select: params => params.section}) ?? ''
   const table = useCleanupTable(categories, selection, list, onList, progress)
   const search = useRef<HTMLInputElement>(null)
-  const reveal = useReveal(list.view)
+  const replay = useReveal(list.view)
   const groups = groupsOf(table, categories)
   const filtered = table.getFilteredRowModel().rowsById
   const hidden = useMemo(() => selection.selected.filter(i => !filtered[i.path]), [selection.selected, filtered])
@@ -583,7 +583,7 @@ export function Cleanup({categories, selection, list, progress}: {categories: Ca
     <div className="flex min-h-0 grow flex-col">
       <Toolbar table={table} list={list} onList={onList} searchRef={search} />
       <Warnings hidden={hidden} risky={selection.risky} />
-      <div ref={reveal} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
+      <div key={list.view} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
         {body}
       </div>
     </div>

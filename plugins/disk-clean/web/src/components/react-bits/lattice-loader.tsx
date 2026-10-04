@@ -15,7 +15,7 @@
   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 // fallow-ignore-file complexity
-import React, {useRef, useState, type CSSProperties} from 'react'
+import React, {useState, type CSSProperties} from 'react'
 import {useClock} from '@/lib/clock'
 
 type LatticeStatus = 'working' | 'done' | 'error'
@@ -140,9 +140,9 @@ const LatticeLoader: React.FC<LatticeLoaderProps> = ({
   const d = step * pat.scale
   const cycle = Math.round(pat.loop * d)
 
-  const markRef = useRef<'done' | 'error'>('done')
-  const mark = status === 'working' ? markRef.current : status
-  markRef.current = mark
+  const [lastMark, setLastMark] = useState<'done' | 'error'>('done')
+  if (status !== 'working' && status !== lastMark) setLastMark(status)
+  const mark = status === 'working' ? lastMark : status
   const ticking = elapsed == null && status === 'working'
   const now = useClock(ticking)
   const [run, setRun] = useState(() => ({status, since: performance.now(), frozen: 0}))

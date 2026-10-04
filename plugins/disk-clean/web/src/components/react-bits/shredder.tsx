@@ -17,6 +17,8 @@
 // fallow-ignore-file complexity
 import {useCallback, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode} from 'react'
 import {flushSync} from 'react-dom'
+import {useGSAP} from '@gsap/react'
+import {gsap} from 'gsap'
 
 const FOLLOW = 30
 const SETTLE = 16
@@ -1075,7 +1077,6 @@ const Shredder = <T extends ShredderItem>({
   const attachRoot = useCallback((root: HTMLDivElement | null) => {
     rootRef.current = root
     if (!root) return
-    settle(null, null)
     const s = sim.current
     return () => {
       cancelAnimationFrame(s.raf)
@@ -1085,20 +1086,18 @@ const Shredder = <T extends ShredderItem>({
     }
   }, [])
 
-  const attachList = useCallback(
-    (list: HTMLUListElement | null) => {
-      if (!list) return
+  useGSAP(
+    () => {
       settle(null, null)
-      const timer = setTimeout(() => {
+      gsap.delayedCall(0.3, () => {
         itemEls.current.forEach(el => {
           el.querySelectorAll('img').forEach(img => {
             dataUrl(img.currentSrc || img.src).catch(() => {})
           })
         })
-      }, 300)
-      return () => clearTimeout(timer)
+      })
     },
-    [items],
+    {dependencies: [items]},
   )
 
   const attachCanvas = useCallback(
@@ -1200,7 +1199,7 @@ const Shredder = <T extends ShredderItem>({
         } as CSSProperties
       }
     >
-      <ul ref={attachList} className="absolute right-0 left-0 z-[1] m-0 list-none [bottom:calc(var(--sh-fall)+var(--sh-slit-h))] [padding:0_var(--sh-inset)] [clip-path:inset(-9999px_-9999px_0_-9999px)]">
+      <ul className="absolute right-0 left-0 z-[1] m-0 list-none [bottom:calc(var(--sh-fall)+var(--sh-slit-h))] [padding:0_var(--sh-inset)] [clip-path:inset(-9999px_-9999px_0_-9999px)]">
         {sorted.map((item, index) => (
           <li
             key={item.id}

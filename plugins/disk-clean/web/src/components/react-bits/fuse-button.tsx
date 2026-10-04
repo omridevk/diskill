@@ -99,7 +99,8 @@ const FuseButton: React.FC<FuseButtonProps> = ({
   const rootRef = useRef<HTMLSpanElement>(null)
   const idleRef = useRef<HTMLButtonElement>(null)
   const undoRef = useRef<HTMLButtonElement>(null)
-  const fuseRef = useRef<HTMLElement | SVGRectElement>(null)
+  const lineRef = useRef<HTMLElement>(null)
+  const rimRef = useRef<SVGRectElement>(null)
   const anim = useRef<Animation | null>(null)
   const pause = useRef({hover: false, hidden: false, canHoverPause: false})
   const lastInput = useRef<'pointer' | 'keyboard'>('pointer')
@@ -133,10 +134,10 @@ const FuseButton: React.FC<FuseButtonProps> = ({
   }
 
   const light = (from = 0) => {
-    const el = fuseRef.current
+    const el = fuse === 'outline' ? rimRef.current : lineRef.current
     if (!el) return
     anim.current?.cancel()
-    const a = el.animate(el instanceof SVGRectElement ? OUTLINE : LINE, {
+    const a = el.animate(fuse === 'outline' ? OUTLINE : LINE, {
       duration: windowRef.current,
       easing: 'linear',
       fill: 'forwards',
@@ -152,12 +153,6 @@ const FuseButton: React.FC<FuseButtonProps> = ({
     anim.current = a
     syncPlayState()
   }
-
-  const attachFuse = useCallback((el: HTMLElement | SVGRectElement | null) => {
-    fuseRef.current = el
-    const a = anim.current
-    if (el && a?.onfinish && a.playState !== 'finished') light(Number(a.currentTime) || 0)
-  }, [])
 
   const attachRoot = useCallback((el: HTMLSpanElement | null) => {
     rootRef.current = el
@@ -227,7 +222,7 @@ const FuseButton: React.FC<FuseButtonProps> = ({
   const actionIcon = icon ?? <Archive size={preset.icon} strokeWidth={1.8} />
   const line = (
     <i
-      ref={attachFuse}
+      ref={lineRef}
       className="pointer-events-none absolute inset-x-0 bottom-0 h-[var(--fb-fuse-h)] origin-left [background:var(--fb-fuse)] [box-shadow:0_0_6px_color-mix(in_srgb,var(--fb-fuse)_55%,transparent)] group-data-[fuse=top]:top-0 group-data-[fuse=top]:bottom-auto forced-colors:[background:Highlight]"
       aria-hidden="true"
     />
@@ -311,7 +306,7 @@ const FuseButton: React.FC<FuseButtonProps> = ({
           aria-hidden="true"
         >
           <rect
-            ref={attachFuse}
+            ref={rimRef}
             pathLength="1"
             className="fill-none [x:calc(var(--fb-fuse-h)/2)] [y:calc(var(--fb-fuse-h)/2)] [width:calc(100%-var(--fb-fuse-h))] [height:calc(100%-var(--fb-fuse-h))] [rx:max(0px,calc(var(--fb-radius)-var(--fb-fuse-h)/2))] [stroke:var(--fb-fuse)] [stroke-width:var(--fb-fuse-h)] [stroke-linecap:round] [stroke-dasharray:1] forced-colors:[stroke:Highlight]"
           />
