@@ -8,11 +8,12 @@ import {routeTree} from './routeTree.gen'
 function createAppRouter(loaded: Loaded, history: RouterHistory) {
   const tabs = createTabMemory()
   const router = createRouter({routeTree, history, context: {page: createPage(loaded), tabs}})
-  router.subscribe('onResolved', ({toLocation}) => {
+  router.subscribe('onResolved', () => {
     const {matches} = router.state
     const layout = matches.findIndex(match => match.routeId === '/_tabs')
     const tab = layout < 0 ? undefined : matches[layout + 1]
-    if (tab) tabs.remember(tab.routeId, toLocation.href)
+    const leaf = matches.at(-1)
+    if (tab && leaf) tabs.remember(tab.routeId, {to: leaf.fullPath, params: leaf.params, search: leaf.search})
   })
   return router
 }

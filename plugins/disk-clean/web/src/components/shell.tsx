@@ -59,10 +59,10 @@ const root = getRouteApi('__root__')
 
 function TabLink({tab}: {tab: (typeof TABS)[number]}) {
   const tabs = root.useRouteContext({select: context => context.tabs})
-  const last = useSyncExternalStore(tabs.subscribe, () => tabs.hrefOf(tab.id))
+  const last = useSyncExternalStore(tabs.subscribe, () => tabs.placeOf(tab.id)) ?? tab.link
   const active = 'data-status' in useLinkProps({...tab.link, activeOptions: {includeSearch: false}})
   return (
-    <Link key={last} {...tab.link} href={last} role="tab" aria-selected={active} className={TAB_LINK}>
+    <Link {...last} role="tab" aria-selected={active} className={TAB_LINK}>
       {tab.label}
     </Link>
   )

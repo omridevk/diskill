@@ -1,5 +1,9 @@
+import type {AnyRouter, ToOptions} from '@tanstack/react-router'
+
+type Place = ToOptions<AnyRouter>
+
 export function createTabMemory() {
-  let last: Readonly<Record<string, string>> = {}
+  let last: Readonly<Record<string, Place>> = {}
   const listeners = new Set<() => void>()
   return {
     subscribe: (listener: () => void) => {
@@ -8,10 +12,9 @@ export function createTabMemory() {
         listeners.delete(listener)
       }
     },
-    hrefOf: (tab: string): string | undefined => last[tab],
-    remember: (tab: string, href: string) => {
-      if (last[tab] === href) return
-      last = {...last, [tab]: href}
+    placeOf: (tab: string): Place | undefined => last[tab],
+    remember: (tab: string, place: Place) => {
+      last = {...last, [tab]: place}
       for (const listener of listeners) listener()
     },
   }
