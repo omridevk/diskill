@@ -5,7 +5,7 @@ import {treemap, type TreemapNode} from '@tanstack/charts/hierarchy/treemap'
 import {motion} from '@tanstack/charts/motion'
 import {polar} from '@tanstack/charts/polar'
 import {RendererChart as Chart} from '@tanstack/charts/react/tooltip'
-import {Link, useNavigate, useParams} from '@tanstack/react-router'
+import {Link, useNavigate} from '@tanstack/react-router'
 import {Fragment, useMemo, useRef, useState, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {ChartBoundary} from './chart-boundary'
@@ -260,17 +260,16 @@ function splatOf(path: string, root: string) {
   return path === root ? '' : path.slice(1)
 }
 
-function useFocus(flat: ReturnType<typeof flatten> | null, root: string) {
-  const splat = useParams({strict: false, select: params => params._splat})
-  const wanted = splat ? `/${splat}` : root
+function focusOf(flat: ReturnType<typeof flatten> | null, root: string, zoom: string) {
+  const wanted = zoom ? `/${zoom}` : root
   return flat?.byPath.has(wanted) ? wanted : root
 }
 
-export function Storage({data, cleanable, selection, shape}: {data: ScanData; cleanable: Set<string>; selection: Selection; shape: Shape}) {
+export function Storage({data, cleanable, selection, shape, zoom}: {data: ScanData; cleanable: Set<string>; selection: Selection; shape: Shape; zoom: string}) {
   const tree = data.tree
   const flat = useMemo(() => (tree ? flatten(tree) : null), [tree])
   const root = tree?.path ?? ''
-  const focus = useFocus(flat, root)
+  const focus = focusOf(flat, root, zoom)
   const navigate = useNavigate()
   const [hover, setHover] = useState<TreeNode | null>(null)
   const {definition, onRender} = useStorageDefinition(flat, tree, shape, focus, cleanable)

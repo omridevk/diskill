@@ -1,6 +1,6 @@
 import {useVirtualizer} from '@tanstack/react-virtual'
 import {Loader2} from 'lucide-react'
-import {Fragment, useRef, type ReactNode, type RefObject} from 'react'
+import {Fragment, useRef, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
 import type {Plan} from '@/lib/api'
@@ -136,24 +136,37 @@ function Body({plan, home}: {plan: Plan; home: string}) {
   )
 }
 
-export function ConfirmDialog({
-  plan,
-  home,
-  open,
-  onOpenChange,
-  onConfirm,
-  returnFocus,
-}: {
-  plan: Plan | null
-  home: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onConfirm: () => void
-  returnFocus?: RefObject<HTMLButtonElement | null>
-}) {
+function Checking() {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl" finalFocus={returnFocus}>
+    <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+      <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> Checking the selection…
+    </p>
+  )
+}
+
+function Decision({plan, home, onCancel, onConfirm}: {plan: Plan | null; home: string; onCancel: () => void; onConfirm: () => void}) {
+  return (
+    <>
+      {plan ? <Body plan={plan} home={home} /> : <Checking />}
+      <DialogFooter className="items-center">
+        <span className="grow text-xs text-muted-foreground">
+          Same list in the terminal: <code className="font-mono text-zinc-300">disk-clean clean --dry-run</code>
+        </span>
+        <Button variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button variant="destructive" disabled={!plan || plan.count === 0} onClick={onConfirm}>
+          {plan ? confirmLabel(plan) : 'Delete'}
+        </Button>
+      </DialogFooter>
+    </>
+  )
+}
+
+export function ConfirmDialog({plan, home, onClose, onConfirm}: {plan: Plan | null; home: string; onClose: () => void; onConfirm: () => void}) {
+  return (
+    <Dialog open onOpenChange={open => open || onClose()}>
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Confirm the cleanup</DialogTitle>
           <DialogDescription>
@@ -161,23 +174,25 @@ export function ConfirmDialog({
             elsewhere; a symlink is moved itself, never followed. Worktrees are re-checked and git refuses any that changed.
           </DialogDescription>
         </DialogHeader>
-        {plan ? (
-          <Body plan={plan} home={home} />
-        ) : (
-          <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> Checking the selection…
-          </p>
-        )}
-        <DialogFooter className="items-center">
-          <span className="grow text-xs text-muted-foreground">
-            Same list in the terminal: <code className="font-mono text-zinc-300">disk-clean clean --dry-run</code>
-          </span>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+        <Decision plan={plan} home={home} onCancel={onClose} onConfirm={onConfirm} />
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export function ConfirmFailed({message, onClose, onRetry}: {message: string; onClose: () => void; onRetry: () => void}) {
+  return (
+    <Dialog open onOpenChange={open => open || onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Couldn't check the selection</DialogTitle>
+          <DialogDescription>Nothing was deleted. {message}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="destructive" disabled={!plan || plan.count === 0} onClick={onConfirm}>
-            {plan ? confirmLabel(plan) : 'Delete'}
-          </Button>
+          <Button onClick={onRetry}>Retry</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

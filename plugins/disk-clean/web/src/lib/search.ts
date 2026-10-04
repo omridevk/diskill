@@ -1,5 +1,6 @@
 import type {SearchSchemaInput} from '@tanstack/react-router'
 import type {Risk} from './data'
+import {cleanTokens} from './selection'
 
 export type View = 'list' | 'cards'
 export type Sort = 'size-desc' | 'size-asc' | 'name-asc' | 'age-desc' | 'age-asc'
@@ -20,6 +21,8 @@ export interface RootSearch {
   overlay?: Overlay
   log: LogFilter
   take: number
+  add: string
+  drop: string
 }
 
 export interface CleanupSearch {
@@ -36,7 +39,7 @@ export interface StorageSearch {
   shape: Shape
 }
 
-export const ROOT_DEFAULTS = {log: 'all', take: 0} satisfies Omit<RootSearch, 'overlay'>
+export const ROOT_DEFAULTS = {log: 'all', take: 0, add: '', drop: ''} satisfies Omit<RootSearch, 'overlay'>
 export const NO_FILTERS = {q: '', risk: [], minSize: 0, minAge: -1, only: false} satisfies Partial<CleanupSearch>
 export const CLEANUP_DEFAULTS: CleanupSearch = {...NO_FILTERS, view: 'list', sort: 'size-desc'}
 export const STORAGE_DEFAULTS: StorageSearch = {shape: 'sunburst'}
@@ -58,7 +61,13 @@ function countOf(value: unknown) {
 
 export function rootSearch(raw: Raw<RootSearch>): RootSearch {
   const overlay = OVERLAYS.find(o => o === raw.overlay)
-  return {...(overlay && {overlay}), log: oneOf(LOG_FILTERS, raw.log, ROOT_DEFAULTS.log), take: countOf(raw.take)}
+  return {
+    ...(overlay && {overlay}),
+    log: oneOf(LOG_FILTERS, raw.log, ROOT_DEFAULTS.log),
+    take: countOf(raw.take),
+    add: cleanTokens(textOf(raw.add)),
+    drop: cleanTokens(textOf(raw.drop)),
+  }
 }
 
 export function cleanupSearch(raw: Raw<CleanupSearch>): CleanupSearch {

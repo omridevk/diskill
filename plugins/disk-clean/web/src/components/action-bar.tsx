@@ -1,5 +1,5 @@
 import {Trash2, X} from 'lucide-react'
-import {useEffect, useState, type ReactNode, type RefObject} from 'react'
+import {useEffect, useState, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
 import type {CleanupProgress} from '@/lib/cleanup'
 import {formatBytes} from '@/lib/data'
@@ -64,7 +64,6 @@ export function ActionBar({
   selection,
   locked,
   progress = null,
-  deleteRef,
   held,
   onCancel,
   onDelete,
@@ -72,7 +71,6 @@ export function ActionBar({
   selection: Selection
   locked: boolean
   progress?: CleanupProgress | null
-  deleteRef?: RefObject<HTMLButtonElement | null>
   held?: ReactNode
   onCancel: () => void
   onDelete: () => void
@@ -96,7 +94,7 @@ export function ActionBar({
         </div>
       </div>
       <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />
-      <Button ref={deleteRef} size="lg" className="shrink-0" disabled={disabled} aria-haspopup="dialog" onClick={onDelete}>
+      <Button size="lg" className="shrink-0" disabled={disabled} aria-haspopup="dialog" onClick={onDelete}>
         <Trash2 /> Delete {count} {count === 1 ? 'item' : 'items'} · {formatBytes(selection.exactBytes)}
       </Button>
     </footer>

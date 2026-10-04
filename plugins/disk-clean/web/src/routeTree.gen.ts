@@ -12,7 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as CleanupRouteImport } from './routes/cleanup'
 import { Route as InsightsRouteImport } from './routes/insights'
-import { Route as StorageRouteImport } from './routes/storage'
+import { Route as CleanupIndexRouteImport } from './routes/cleanup.index'
 import { Route as CleanupSectionRouteImport } from './routes/cleanup.$section'
 import { Route as CleanupConfirmRouteImport } from './routes/cleanup.confirm'
 import { Route as CleanupFreeRouteImport } from './routes/cleanup.free'
@@ -33,10 +33,10 @@ const InsightsRoute = InsightsRouteImport.update({
   path: '/insights',
   getParentRoute: () => rootRouteImport,
 } as any)
-const StorageRoute = StorageRouteImport.update({
-  id: '/storage',
-  path: '/storage',
-  getParentRoute: () => rootRouteImport,
+const CleanupIndexRoute = CleanupIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => CleanupRoute,
 } as any)
 const CleanupSectionRoute = CleanupSectionRouteImport.update({
   id: '/$section',
@@ -54,41 +54,40 @@ const CleanupFreeRoute = CleanupFreeRouteImport.update({
   getParentRoute: () => CleanupRoute,
 } as any)
 const StorageSplatRoute = StorageSplatRouteImport.update({
-  id: '/$',
-  path: '/$',
-  getParentRoute: () => StorageRoute,
+  id: '/storage/$',
+  path: '/storage/$',
+  getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/cleanup': typeof CleanupRouteWithChildren
   '/insights': typeof InsightsRoute
-  '/storage': typeof StorageRouteWithChildren
   '/cleanup/$section': typeof CleanupSectionRoute
   '/cleanup/confirm': typeof CleanupConfirmRoute
   '/cleanup/free': typeof CleanupFreeRoute
   '/storage/$': typeof StorageSplatRoute
+  '/cleanup/': typeof CleanupIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/cleanup': typeof CleanupRouteWithChildren
   '/insights': typeof InsightsRoute
-  '/storage': typeof StorageRouteWithChildren
   '/cleanup/$section': typeof CleanupSectionRoute
   '/cleanup/confirm': typeof CleanupConfirmRoute
   '/cleanup/free': typeof CleanupFreeRoute
   '/storage/$': typeof StorageSplatRoute
+  '/cleanup': typeof CleanupIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/cleanup': typeof CleanupRouteWithChildren
   '/insights': typeof InsightsRoute
-  '/storage': typeof StorageRouteWithChildren
   '/cleanup/$section': typeof CleanupSectionRoute
   '/cleanup/confirm': typeof CleanupConfirmRoute
   '/cleanup/free': typeof CleanupFreeRoute
   '/storage/$': typeof StorageSplatRoute
+  '/cleanup/': typeof CleanupIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -96,38 +95,37 @@ export interface FileRouteTypes {
     | '/'
     | '/cleanup'
     | '/insights'
-    | '/storage'
     | '/cleanup/$section'
     | '/cleanup/confirm'
     | '/cleanup/free'
     | '/storage/$'
+    | '/cleanup/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/cleanup'
     | '/insights'
-    | '/storage'
     | '/cleanup/$section'
     | '/cleanup/confirm'
     | '/cleanup/free'
     | '/storage/$'
+    | '/cleanup'
   id:
     | '__root__'
     | '/'
     | '/cleanup'
     | '/insights'
-    | '/storage'
     | '/cleanup/$section'
     | '/cleanup/confirm'
     | '/cleanup/free'
     | '/storage/$'
+    | '/cleanup/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CleanupRoute: typeof CleanupRouteWithChildren
   InsightsRoute: typeof InsightsRoute
-  StorageRoute: typeof StorageRouteWithChildren
+  StorageSplatRoute: typeof StorageSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -153,12 +151,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InsightsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/storage': {
-      id: '/storage'
-      path: '/storage'
-      fullPath: '/storage'
-      preLoaderRoute: typeof StorageRouteImport
-      parentRoute: typeof rootRouteImport
+    '/cleanup/': {
+      id: '/cleanup/'
+      path: '/'
+      fullPath: '/cleanup/'
+      preLoaderRoute: typeof CleanupIndexRouteImport
+      parentRoute: typeof CleanupRoute
     }
     '/cleanup/$section': {
       id: '/cleanup/$section'
@@ -183,10 +181,10 @@ declare module '@tanstack/react-router' {
     }
     '/storage/$': {
       id: '/storage/$'
-      path: '/$'
+      path: '/storage/$'
       fullPath: '/storage/$'
       preLoaderRoute: typeof StorageSplatRouteImport
-      parentRoute: typeof StorageRoute
+      parentRoute: typeof rootRouteImport
     }
   }
 }
@@ -195,33 +193,24 @@ interface CleanupRouteChildren {
   CleanupSectionRoute: typeof CleanupSectionRoute
   CleanupConfirmRoute: typeof CleanupConfirmRoute
   CleanupFreeRoute: typeof CleanupFreeRoute
+  CleanupIndexRoute: typeof CleanupIndexRoute
 }
 
 const CleanupRouteChildren: CleanupRouteChildren = {
   CleanupSectionRoute: CleanupSectionRoute,
   CleanupConfirmRoute: CleanupConfirmRoute,
   CleanupFreeRoute: CleanupFreeRoute,
+  CleanupIndexRoute: CleanupIndexRoute,
 }
 
 const CleanupRouteWithChildren =
   CleanupRoute._addFileChildren(CleanupRouteChildren)
 
-interface StorageRouteChildren {
-  StorageSplatRoute: typeof StorageSplatRoute
-}
-
-const StorageRouteChildren: StorageRouteChildren = {
-  StorageSplatRoute: StorageSplatRoute,
-}
-
-const StorageRouteWithChildren =
-  StorageRoute._addFileChildren(StorageRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CleanupRoute: CleanupRouteWithChildren,
   InsightsRoute: InsightsRoute,
-  StorageRoute: StorageRouteWithChildren,
+  StorageSplatRoute: StorageSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

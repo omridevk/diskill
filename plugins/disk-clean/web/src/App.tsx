@@ -1,10 +1,11 @@
 import {createRouter, RouterProvider, type RouterHistory} from '@tanstack/react-router'
 import {useState} from 'react'
 import type {Loaded} from './lib/data'
+import {createPage} from './lib/page-data'
 import {routeTree} from './routeTree.gen'
 
 function createAppRouter(loaded: Loaded, history: RouterHistory) {
-  return createRouter({routeTree, history, context: {loaded}})
+  return createRouter({routeTree, history, context: {page: createPage(loaded)}})
 }
 
 declare module '@tanstack/react-router' {

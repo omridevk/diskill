@@ -5,7 +5,9 @@ import {userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import type {Loaded} from './lib/data'
+import {NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
 import {at, cleanupEvents, fixture, heldEvents} from './test/fixture'
+import {PLAN} from './test/page'
 import {fakeEventSource, mockServer, ringPoints, sendAll} from './test/page'
 import './index.css'
 
@@ -226,5 +228,161 @@ describe('the URL', () => {
     await userEvent.keyboard('{Escape}')
     await expect.element(reopened).not.toBeInTheDocument()
     expect(again.history.location.href).toBe('/cleanup')
+  })
+
+  test('an unknown section is not found, inside the Cleanup tab', async () => {
+    const {screen} = await open('/cleanup/nope')
+    await expect.element(screen.getByText('There is no section called “nope” in this scan.')).toBeVisible()
+    await expect.element(screen.getByRole('tab', {name: 'Cleanup'})).toHaveAttribute('aria-selected', 'true')
+    await screen.getByRole('link', {name: 'Show the first section'}).click()
+    await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
+  })
+
+  test('a /cleanup/free deep link with nothing held redirects to the list', async () => {
+    const {history, screen} = await open('/cleanup/free')
+    await expect.poll(() => history.location.href).toBe('/cleanup')
+    await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
+    await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  test('the confirm route shows its pending state, then the plan', async () => {
+    let answer: (plan: Response) => void = () => {}
+    vi.spyOn(window, 'fetch').mockImplementation(() => new Promise(resolve => (answer = resolve)))
+    const {screen} = await open('/cleanup/confirm')
+    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    await expect.element(dialog.getByText('Checking the selection…')).toBeVisible()
+    await expect.element(dialog.getByRole('button', {name: 'Delete'})).toBeDisabled()
+    await expect.poll(() => vi.mocked(window.fetch).mock.calls.length).toBe(1)
+    answer(new Response(JSON.stringify(PLAN)))
+    await expect.element(dialog.getByText('6 items in total')).toBeVisible()
+    await expect.element(dialog.getByText('Checking the selection…')).not.toBeInTheDocument()
+  })
+})
+
+describe('the selection in the URL', () => {
+  const footer = (screen: Screen) => screen.getByRole('contentinfo')
+  const categories = fixture.data.categories
+  const APP_A = '/Users/you/Library/Caches/app-a'
+
+  beforeEach(() => gsap.globalTimeline.timeScale(20))
+  afterEach(() => {
+    gsap.globalTimeline.timeScale(1)
+    vi.restoreAllMocks()
+  })
+
+  async function open(url: string) {
+    const history = at(url)
+    const screen = await render(<App loaded={fixture} history={history} />)
+    return {history, screen}
+  }
+
+  test('a reload keeps a custom selection', async () => {
+    const first = await open('/cleanup')
+    await first.screen.getByText('~/Library/Caches/app-a').click()
+    await first.screen.getByRole('checkbox', {name: 'Select all in node_modules'}).click()
+    await expect.element(footer(first.screen).getByText('4 items selected · 4.8 GB')).toBeVisible()
+    const url = first.history.location.href
+    expect(url).toMatch(/[?&]drop=/)
+    await first.screen.unmount()
+    const again = await open(url)
+    await expect.element(footer(again.screen).getByText('4 items selected · 4.8 GB')).toBeVisible()
+    await expect.element(again.screen.getByRole('checkbox', {name: '~/Library/Caches/app-a'})).not.toBeChecked()
+    await expect.element(again.screen.getByRole('checkbox', {name: '~/Library/Caches/app-b'})).toBeChecked()
+  })
+
+  test('a deep link with add and drop applies them over the preselection', async () => {
+    const {[APP_A]: _dropped, ...rest} = rowSelectionOf(categories, NO_PICKS)
+    const {drop} = picksOf(categories, rest)
+    expect(drop).toMatch(/^[0-9a-z]{8}$/)
+    const {screen} = await open(`/cleanup?add=_node&drop=${drop}`)
+    await expect.element(footer(screen).getByText('4 items selected · 4.8 GB')).toBeVisible()
+    await expect.element(screen.getByRole('checkbox', {name: 'Select all in node_modules'})).toBeChecked()
+    await expect.element(screen.getByRole('checkbox', {name: '~/Library/Caches/app-a'})).not.toBeChecked()
+  })
+
+  test('garbage selection values fall back to the preselection without errors', async () => {
+    const errors = vi.spyOn(console, 'error')
+    const {screen} = await open('/cleanup?add=%5B%22x%22%5D&drop=..%2F%2F.ZZZZZZZZ._nope.12')
+    await expect.element(footer(screen).getByText('4 items selected · 3.8 GB')).toBeVisible()
+    expect(errors).not.toHaveBeenCalled()
+  })
+
+  test('ticking replaces the history entry, so Back skips the individual ticks', async () => {
+    const {history, screen} = await open('/cleanup')
+    await screen.getByRole('link', {name: /^node_modules/}).click()
+    await expect.element(screen.getByRole('heading', {name: 'node_modules'})).toBeVisible()
+    const entries = history.length
+    await screen.getByRole('checkbox', {name: '~/code/web/node_modules'}).click()
+    await screen.getByRole('checkbox', {name: 'Select all in Application caches'}).click()
+    await screen.getByRole('checkbox', {name: 'Select all in Application caches'}).click()
+    await expect.element(footer(screen).getByText('5 items selected · 6.8 GB')).toBeVisible()
+    expect(history.length).toBe(entries)
+    expect(where(history)).toBe('/cleanup/node')
+    history.back()
+    await expect.element(screen.getByRole('heading', {name: 'Application caches'})).toBeVisible()
+    expect(where(history)).toBe('/cleanup')
+  })
+
+  const where = (history: RouterHistory) => history.location.pathname
+})
+
+describe('errors are shown, never swallowed', () => {
+  beforeEach(() => gsap.globalTimeline.timeScale(20))
+  afterEach(() => {
+    gsap.globalTimeline.timeScale(1)
+    vi.restoreAllMocks()
+  })
+
+  async function open(url: string, loaded: Loaded = fixture) {
+    const history = at(url)
+    const screen = await render(<App loaded={loaded} history={history} />)
+    return {history, screen}
+  }
+
+  function answering(first: () => Promise<Response>) {
+    let failing = true
+    vi.spyOn(window, 'fetch').mockImplementation(async () => (failing ? first() : new Response(JSON.stringify(PLAN))))
+    return () => {
+      failing = false
+    }
+  }
+
+  test('a /preview 500 shows what failed, and Retry works once the server recovers', async () => {
+    const recover = answering(async () => new Response('the selection changed on disk', {status: 500}))
+    const {screen} = await open('/cleanup/confirm')
+    const failed = screen.getByRole('dialog', {name: "Couldn't check the selection"})
+    await expect.element(failed.getByText(/disk-clean answered 500 to \/preview: the selection changed on disk/)).toBeVisible()
+    recover()
+    await failed.getByRole('button', {name: 'Retry'}).click()
+    await expect.element(screen.getByRole('dialog', {name: 'Confirm the cleanup'}).getByText('6 items in total')).toBeVisible()
+  })
+
+  test('an unreachable server says so, and Retry works once it is back', async () => {
+    const recover = answering(() => Promise.reject(new TypeError('Failed to fetch')))
+    const {screen} = await open('/cleanup/confirm')
+    const failed = screen.getByRole('dialog', {name: "Couldn't check the selection"})
+    await expect.element(failed.getByText(/Can't reach disk-clean/)).toBeVisible()
+    recover()
+    await failed.getByRole('button', {name: 'Retry'}).click()
+    await expect.element(screen.getByRole('dialog', {name: 'Confirm the cleanup'}).getByText('6 items in total')).toBeVisible()
+  })
+
+  test('a preview that never answers shows the pending dialog, and Escape leaves it', async () => {
+    vi.spyOn(window, 'fetch').mockImplementation(() => new Promise(() => {}))
+    const {history, screen} = await open('/cleanup')
+    await screen.getByRole('button', {name: /^Delete \d+ items? · /}).click()
+    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    await expect.element(dialog.getByText('Checking the selection…')).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(dialog).not.toBeInTheDocument()
+    expect(history.location.pathname).toBe('/cleanup')
+  })
+
+  test('a render error in a tab shows the root error page, not a blank screen', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const tree = JSON.parse('{"name": "~", "path": "/Users/you", "bytes": 1, "files": 1, "mtime": 0, "children": null}')
+    const {screen} = await open('/storage', {...fixture, data: {...fixture.data, tree}})
+    await expect.element(screen.getByRole('alert').getByText('This page hit a problem')).toBeVisible()
+    expect(errors).toHaveBeenCalled()
   })
 })

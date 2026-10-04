@@ -1,16 +1,19 @@
 import {createFileRoute} from '@tanstack/react-router'
 import {Insights} from '@/components/insights'
-import {Streamed, useApp} from '@/components/shell'
+import {Streamed} from '@/components/streamed'
+import {useScanData} from '@/lib/page-data'
 
 export const Route = createFileRoute('/insights')({
   component: InsightsTab,
 })
 
 function InsightsTab() {
-  const {data} = useApp()
+  const {insights, categories} = useScanData()
   return (
-    <Streamed>
-      <Insights insights={data.insights} categories={data.categories} />
-    </Streamed>
+    <div className="min-h-0 flex-1 overflow-auto">
+      <Streamed>
+        <Insights insights={insights} categories={categories} />
+      </Streamed>
+    </div>
   )
 }

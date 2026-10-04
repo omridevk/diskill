@@ -60,8 +60,16 @@ down through a React context. That is routing done by hand next to the router. T
   root-level component.
 
 Hover, tooltips and in-flight animation state stay out of the URL. Selection (which items are
-ticked) stays page state, not URL (it can be thousands of paths); it is restored by the server's
-existing replay/approved-page data.
+ticked) lives in the URL as the user's changes against the recommended preselection: root search
+params `add` and `drop`, each a `.`-joined list of tokens, declared on the root route (every tab
+reads the selection), retained across navigation, defaults stripped. An item token is the first 8
+base-36 characters of a 53-bit hash of its path (the full 11 when two items in the scan share the
+short form); a whole-section toggle is one `_<section id>` token, and the encoder picks, per
+section, whichever of "no section token", "section on" or "section off" needs the fewest tokens.
+Unknown or malformed tokens are dropped by `validateSearch`. Ticking replaces the history entry, so
+Back never steps through individual ticks. TanStack Table row selection stays the table's state,
+fed from the URL. After approval the server's approved-page data still restores the exact
+approved list on reload.
 
 ## Server
 

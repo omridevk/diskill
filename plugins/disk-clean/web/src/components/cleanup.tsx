@@ -1,7 +1,7 @@
-import {Link, useNavigate, useParams} from '@tanstack/react-router'
+import {Link, useNavigate} from '@tanstack/react-router'
 import {functionalUpdate, useTable, type ReactTable, type RowSelectionState} from '@tanstack/react-table'
 import {LayoutGrid, List, Search, TriangleAlert} from 'lucide-react'
-import {useEffect, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
+import {createContext, use, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {Button, buttonVariants} from '@/components/ui/button'
 import {Checkbox} from '@/components/ui/checkbox'
@@ -223,15 +223,18 @@ function QuickSelect({table, group}: {table: CleanupTable; group: Group}) {
 type ChangeList = (patch: Partial<CleanupSearch>, how?: {replace: boolean}) => void
 
 function SectionLink({section, ...props}: {section: string; className?: string; children?: ReactNode}) {
-  return <Link to="/cleanup/$section" params={{section}} search={prev => ({...prev, view: 'list'})} {...props} />
+  return <Link to="/cleanup/$section" params={{section}} search={prev => ({...prev, view: 'list'})} activeOptions={{includeSearch: false}} {...props} />
 }
 
-function SectionButton({group, on, active, locked, max, progressed}: {group: Group; on: RowSelectionState; active: boolean; locked: boolean; max: number; progressed: Progressed | null}) {
+const OPEN_SECTION = 'has-[a[data-status=active]]:border-zinc-700 has-[a[data-status=active]]:bg-zinc-900'
+const DEFAULT_SECTION = '[&:not(:has(a[data-status=active]))_[data-default]]:border-zinc-700 [&:not(:has(a[data-status=active]))_[data-default]]:bg-zinc-900'
+
+function SectionButton({group, on, first, locked, max, progressed}: {group: Group; on: RowSelectionState; first: boolean; locked: boolean; max: number; progressed: Progressed | null}) {
   const {category} = group
   const picked = pickedCount(group.row.subRows, on)
   const lit = !progressed && picked > 0
   return (
-    <div className={`flex items-start gap-2.5 rounded-lg border p-2.5 ${STATE_MOTION} ${active ? 'border-zinc-700 bg-zinc-900' : lit ? 'border-blue-400/35 bg-blue-400/5' : 'border-transparent'}`}>
+    <div data-default={first || undefined} className={`flex items-start gap-2.5 rounded-lg border p-2.5 ${STATE_MOTION} ${lit ? 'border-blue-400/35 bg-blue-400/5' : 'border-transparent'} ${OPEN_SECTION}`}>
       <SectionCheckbox group={group} locked={locked} />
       <SectionLink section={category.id} className="flex grow flex-col gap-1.5 text-left">
         <span className="flex w-full items-baseline gap-2">
@@ -247,13 +250,12 @@ function SectionButton({group, on, active, locked, max, progressed}: {group: Gro
   )
 }
 
-function ListView({table, groups, on, active, progressed}: {table: CleanupTable; groups: Group[]; on: RowSelectionState; active: string; progressed: Progressed | null}) {
-  const current = groups.find(g => g.category.id === active) ?? groups[0]
+function ListView({groups, on, progressed, children}: {groups: Group[]; on: RowSelectionState; progressed: Progressed | null; children: ReactNode}) {
   const max = Math.max(1, ...groups.map(g => bytesOf(g.row.subRows)))
-  const reveal = useReveal(current?.category.id ?? '')
+  const first = groups[0]?.category.id
   return (
     <div className="flex min-h-0 grow">
-      <nav aria-label="Sections" className="flex w-80 shrink-0 flex-col gap-3.5 overflow-auto border-r px-3 py-4">
+      <nav aria-label="Sections" className={`flex w-80 shrink-0 flex-col gap-3.5 overflow-auto border-r px-3 py-4 ${DEFAULT_SECTION}`}>
         {GROUPS.map(([label, risk]) => {
           const inGroup = groups.filter(g => g.category.risk === risk)
           if (inGroup.length === 0) return null
@@ -265,7 +267,7 @@ function ListView({table, groups, on, active, progressed}: {table: CleanupTable;
                   key={group.category.id}
                   group={group}
                   on={on}
-                  active={current?.category.id === group.category.id}
+                  first={group.category.id === first}
                   locked={progressed !== null}
                   max={max}
                   progressed={progressed}
@@ -275,24 +277,29 @@ function ListView({table, groups, on, active, progressed}: {table: CleanupTable;
           )
         })}
       </nav>
-      {current && (
-        <main ref={reveal} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
-          <div className="flex flex-col gap-2.5 border-b px-6 pt-4 pb-3">
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-lg font-semibold tracking-tight">{current.category.title}</h2>
-              <Badge className={RISK_BADGE[current.category.risk]}>{RISK_LABEL[current.category.risk]}</Badge>
-              <span className="grow" />
-              <span className="text-[13px] text-muted-foreground tabular-nums">
-                {formatBytes(bytesOf(current.row.subRows))} · {current.row.subRows.length} of {current.category.items.length} shown
-              </span>
-            </div>
-            <p className="text-[13px] text-muted-foreground">{current.category.desc}</p>
-            {!progressed && <QuickSelect table={table} group={current} />}
-          </div>
-          <DataTable key={current.category.id} table={table} rows={current.row.subRows} label={current.category.title} />
-        </main>
-      )}
+      {children}
     </div>
+  )
+}
+
+function SectionPanel({table, group, progressed}: {table: CleanupTable; group: Group; progressed: Progressed | null}) {
+  const reveal = useReveal(group.category.id)
+  return (
+    <main ref={reveal} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
+      <div className="flex flex-col gap-2.5 border-b px-6 pt-4 pb-3">
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-lg font-semibold tracking-tight">{group.category.title}</h2>
+          <Badge className={RISK_BADGE[group.category.risk]}>{RISK_LABEL[group.category.risk]}</Badge>
+          <span className="grow" />
+          <span className="text-[13px] text-muted-foreground tabular-nums">
+            {formatBytes(bytesOf(group.row.subRows))} · {group.row.subRows.length} of {group.category.items.length} shown
+          </span>
+        </div>
+        <p className="text-[13px] text-muted-foreground">{group.category.desc}</p>
+        {!progressed && <QuickSelect table={table} group={group} />}
+      </div>
+      <DataTable key={group.category.id} table={table} rows={group.row.subRows} label={group.category.title} />
+    </main>
   )
 }
 
@@ -490,8 +497,10 @@ function Warnings({hidden, risky}: {hidden: Item[]; risky: Item[]}) {
   )
 }
 
-function useShortcuts(actions: Record<string, () => void>) {
-  useEffect(() => {
+function shortcutsOn(actions: Record<string, () => void>) {
+  return (node: HTMLElement | null) => {
+    const view = node?.ownerDocument.defaultView
+    if (!view) return
     const onKey = (event: KeyboardEvent) => {
       const action = actions[event.key]
       const typing = event.target instanceof Element && event.target.closest('input, select, textarea, [role="dialog"], [role="listbox"]')
@@ -499,9 +508,9 @@ function useShortcuts(actions: Record<string, () => void>) {
       event.preventDefault()
       action()
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  })
+    view.addEventListener('keydown', onKey)
+    return () => view.removeEventListener('keydown', onKey)
+  }
 }
 
 const LOCKED_KEYS = new Set(['a', 'd', 'r'])
@@ -543,9 +552,16 @@ function useListChange(): ChangeList {
   return (patch, how) => navigate({to: '.', search: prev => ({...prev, ...patch}), replace: how?.replace})
 }
 
-export function Cleanup({categories, selection, list, progress}: {categories: Category[]; selection: Selection; list: CleanupSearch; progress: CleanupProgress | null}) {
+interface ListState {
+  table: CleanupTable
+  groups: Group[]
+  progressed: Progressed | null
+}
+
+const ListContext = createContext<ListState | null>(null)
+
+export function Cleanup({categories, selection, list, progress, children}: {categories: Category[]; selection: Selection; list: CleanupSearch; progress: CleanupProgress | null; children: ReactNode}) {
   const onList = useListChange()
-  const section = useParams({strict: false, select: params => params.section}) ?? ''
   const table = useCleanupTable(categories, selection, list, onList, progress)
   const search = useRef<HTMLInputElement>(null)
   const reveal = useReveal(list.view)
@@ -563,7 +579,7 @@ export function Cleanup({categories, selection, list, progress}: {categories: Ca
     r: () => selection.reset(),
     v: () => onList({view: list.view === 'list' ? 'cards' : 'list'}),
   }
-  useShortcuts(progress ? Object.fromEntries(Object.entries(shortcuts).filter(([key]) => !LOCKED_KEYS.has(key))) : shortcuts)
+  const keys = shortcutsOn(progress ? Object.fromEntries(Object.entries(shortcuts).filter(([key]) => !LOCKED_KEYS.has(key))) : shortcuts)
 
   const body =
     groups.length === 0 ? (
@@ -572,20 +588,34 @@ export function Cleanup({categories, selection, list, progress}: {categories: Ca
         <Button variant="outline" size="sm" onClick={() => onList(NO_FILTERS)}>
           Clear filters
         </Button>
+        {children}
       </div>
     ) : list.view === 'list' ? (
-      <ListView table={table} groups={groups} on={on} active={section} progressed={progressed} />
+      <ListView groups={groups} on={on} progressed={progressed}>
+        {children}
+      </ListView>
     ) : (
-      <CardsView groups={groups} on={on} progressed={progressed} />
+      <>
+        <CardsView groups={groups} on={on} progressed={progressed} />
+        {children}
+      </>
     )
 
   return (
-    <div className="flex min-h-0 grow flex-col">
-      <Toolbar table={table} list={list} onList={onList} searchRef={search} />
-      <Warnings hidden={hidden} risky={selection.risky} />
-      <div ref={reveal} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
-        {body}
+    <ListContext value={{table, groups, progressed}}>
+      <div ref={keys} className="flex min-h-0 grow flex-col">
+        <Toolbar table={table} list={list} onList={onList} searchRef={search} />
+        <Warnings hidden={hidden} risky={selection.risky} />
+        <div ref={reveal} data-open="true" className="t-panel-slide flex min-h-0 grow flex-col">
+          {body}
+        </div>
       </div>
-    </div>
+    </ListContext>
   )
+}
+
+export function SectionDetail({section}: {section: string}) {
+  const view = use(ListContext)
+  const group = view && (view.groups.find(g => g.category.id === section) ?? view.groups[0])
+  return view && group ? <SectionPanel table={view.table} group={group} progressed={view.progressed} /> : null
 }

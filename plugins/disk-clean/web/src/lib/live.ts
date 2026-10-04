@@ -59,7 +59,7 @@ export function perFrame<T>(dispatch: (events: T[]) => void) {
   return {take, stop}
 }
 
-export function useScan(loaded: Loaded) {
+export function useScanStream(loaded: Loaded) {
   const [scan, dispatch] = useReducer(scanBatchReducer, loaded, startScan)
   const [stream, setStream] = useState(loaded.live ? 1 : 0)
   useEffect(() => {

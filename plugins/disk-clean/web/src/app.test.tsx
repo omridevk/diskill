@@ -10,7 +10,7 @@ import {cleanupReducer, filmPlan, NO_CLEANUP, outcomes, totalsOf, type CleanupEv
 import {formatBytes, NO_DATA, type Category, type Loaded} from './lib/data'
 import {cssMs, useTextSwap} from './lib/motion'
 import {scanBatchReducer, scanReducer, startScan, type ScanEvent} from './lib/scan'
-import {NO_PICKS, outermost, picksReducer} from './lib/selection'
+import {NO_PICKS, outermost, picksOf, rowSelectionOf} from './lib/selection'
 import {squarifyInBounds} from './lib/treemap-tile'
 import {at, category, cleanupEvents, fixture, item} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN, ringPoints, sendAll, sendRaw} from './test/page'
@@ -163,7 +163,7 @@ describe('other tabs', () => {
 describe('confirm dialog', () => {
   test('lists totals, every held path with its size, the steps that cannot be undone and the rejections', async () => {
     const confirmed = vi.fn()
-    const screen = await render(<ConfirmDialog plan={PLAN} home="/Users/you" open onOpenChange={() => {}} onConfirm={confirmed} />)
+    const screen = await render(<ConfirmDialog plan={PLAN} home="/Users/you" onClose={() => {}} onConfirm={confirmed} />)
     const held = screen.getByRole('list', {name: 'Moved to hold'})
     await expect.element(screen.getByRole('heading', {name: /^Moved to hold \(undo available\)/})).toBeVisible()
     await expect.poll(() => held.getByRole('listitem').elements().length).toBe(4)
@@ -177,10 +177,10 @@ describe('confirm dialog', () => {
 
   test('says Delete when nothing can be held, and waits for the plan', async () => {
     const plan = {...PLAN, hold: [], hold_bytes: 0, count: 2}
-    const screen = await render(<ConfirmDialog plan={plan} home="" open onOpenChange={() => {}} onConfirm={() => {}} />)
+    const screen = await render(<ConfirmDialog plan={plan} home="" onClose={() => {}} onConfirm={() => {}} />)
     await expect.element(screen.getByRole('button', {name: 'Delete 2 items'})).toBeEnabled()
     await expect.element(screen.getByRole('list', {name: 'Moved to hold'})).not.toBeInTheDocument()
-    await screen.rerender(<ConfirmDialog plan={null} home="" open onOpenChange={() => {}} onConfirm={() => {}} />)
+    await screen.rerender(<ConfirmDialog plan={null} home="" onClose={() => {}} onConfirm={() => {}} />)
     await expect.element(screen.getByText('Checking the selection…')).toBeVisible()
     await expect.element(screen.getByRole('button', {name: 'Delete'})).toBeDisabled()
   })
@@ -229,7 +229,7 @@ const walked: ScanEvent = {
 const done: ScanEvent = {type: 'done', data: {reclaimable: 7 * GB, elapsed_ms: 9500}}
 const items = itemEvents(fixture.data.categories)
 const fold = (events: ScanEvent[]) => events.reduce(scanReducer, startScan(LIVE))
-const itemsOf = (events: ScanEvent[]) => fold(events).data.categories.flatMap(c => c.items)
+const categoriesOf = (events: ScanEvent[]) => fold(events).data.categories
 
 describe('live scan reducer', () => {
   test('items land in their categories, ordered by risk then size like the server', () => {
@@ -272,14 +272,15 @@ describe('live scan reducer', () => {
   test('preselected items are selected when they arrive, and an unticked one stays unticked on replay', () => {
     const appA = items[0]?.type === 'item' ? items[0].data.item : undefined
     if (!appA) throw new Error('fixture has no first item')
-    const first = picksReducer(NO_PICKS, {type: 'offer', items: itemsOf(items.slice(0, 2))})
-    expect(Object.keys(first.on)).toEqual(['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b'])
-    const {[appA.path]: _untick, ...rest} = first.on
-    const unticked = picksReducer(first, {type: 'select', update: rest})
-    const replayed = picksReducer(unticked, {type: 'offer', items: itemsOf([...items, ...items])})
-    expect(replayed.on[appA.path]).toBeUndefined()
-    expect(replayed.on['/Users/you/Library/Caches/app-d']).toBe(true)
-    expect(replayed.on['/Users/you/code/web/node_modules']).toBeUndefined()
+    const arrived = categoriesOf(items.slice(0, 2))
+    const first = rowSelectionOf(arrived, NO_PICKS)
+    expect(Object.keys(first)).toEqual(['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b'])
+    const {[appA.path]: _untick, ...rest} = first
+    const unticked = picksOf(arrived, rest)
+    const replayed = rowSelectionOf(categoriesOf([...items, ...items]), unticked)
+    expect(replayed[appA.path]).toBeUndefined()
+    expect(replayed['/Users/you/Library/Caches/app-d']).toBe(true)
+    expect(replayed['/Users/you/code/web/node_modules']).toBeUndefined()
   })
 })
 
