@@ -1,5 +1,6 @@
 use crate::clean::{already_trashed, inside};
 use std::fs;
+use std::sync::{Mutex, PoisonError};
 
 const PERSONAL: &[&str] = &[
     "desktop",
@@ -47,12 +48,32 @@ const SYSTEM: &[&str] = &[
     "/snap", "/proc", "/sys", "/dev", "/run", "/nix",
 ];
 
-pub(super) fn user_dirs(home: &str) -> Vec<(String, String)> {
+type UserDirs = Vec<(String, String)>;
+
+static LAST_USER_DIRS: Mutex<Option<(String, String, UserDirs)>> = Mutex::new(None);
+
+pub(super) fn user_dirs(home: &str) -> UserDirs {
     let config = std::env::var("XDG_CONFIG_HOME")
         .ok()
         .filter(|d| d.starts_with('/'))
         .unwrap_or_else(|| format!("{home}/.config"));
-    let Ok(text) = fs::read_to_string(format!("{config}/user-dirs.dirs")) else {
+    let file = format!("{config}/user-dirs.dirs");
+    let mut last = LAST_USER_DIRS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some((cached_file, cached_home, dirs)) = last.as_ref()
+        && *cached_file == file
+        && cached_home == home
+    {
+        return dirs.clone();
+    }
+    let dirs = read_user_dirs(&file, home);
+    *last = Some((file, home.to_string(), dirs.clone()));
+    dirs
+}
+
+fn read_user_dirs(file: &str, home: &str) -> UserDirs {
+    let Ok(text) = fs::read_to_string(file) else {
         return Vec::new();
     };
     text.lines()
