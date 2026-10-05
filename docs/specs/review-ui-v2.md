@@ -16,6 +16,13 @@ and show everything the scan already learns about the disk, not only the cleanup
   and `<meta name="disk-clean-token" content="__TOKEN__">`. Rust escapes `</` as `<\/` in the JSON.
   In `vite dev` the app loads `web/dev/fixture.json` instead.
 - Endpoints unchanged: `POST /preview`, `POST /decide`.
+- Test projects (`pnpm test` runs them all): `app *` is the functional suite and the only one CI
+  runs. `perf`, `frames` and `realtime` are a local gate, not on CI runners: they measure React work,
+  frame budgets and real-time film playback (frame rate, film seconds, work per frame), which a
+  shared GPU-less runner cannot hold. `pnpm run test:slow` runs `app *` the way CI's macOS runner
+  does: Firefox with software WebGL and software WebRender, Chromium with `--disable-gpu` and 4x CPU
+  throttling. `app firefox software-gl` always runs the movie on software WebGL: the burning
+  backdrop times one 64 px draw and drops itself when the GPU is too slow, so the film still plays.
 
 ## Layout (approved mockup C, https://claude.ai/artifact/8L2K5Exn7Z3WCWgrkKisFM)
 
