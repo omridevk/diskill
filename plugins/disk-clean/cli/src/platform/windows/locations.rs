@@ -1,5 +1,5 @@
 use super::disk::is_fixed_drive;
-use super::path::{known_folder, user_folder, within};
+use super::path::{known_folder, same_text, user_folder, within};
 use super::protected::{RECYCLE_BIN, owned_by_user, user_sid};
 use super::walk::{UNREAL_OUTPUT, find_one, is_project_output};
 use crate::platform::{self, path_text};
@@ -263,7 +263,14 @@ fn recycle_bins() -> Vec<PathBuf> {
         .filter(|i| drives & (1 << i) != 0)
         .map(|i| format!("{}:/", char::from(b'A' + i)))
         .filter(|root| is_fixed_drive(root))
-        .map(|root| PathBuf::from(format!("{root}{RECYCLE_BIN}/{sid}")))
+        .filter_map(|root| {
+            let bin = fs::read_dir(&root)
+                .ok()?
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .find(|name| same_text(name, RECYCLE_BIN))?;
+            Some(PathBuf::from(format!("{root}{bin}/{sid}")))
+        })
         .filter(|bin| bin.is_dir())
         .collect()
 }

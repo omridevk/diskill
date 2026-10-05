@@ -224,6 +224,7 @@ pub fn is_canonical(p: &str) -> bool {
     })
 }
 
+#[cfg(unix)]
 pub(crate) fn inside(p: &str, root: &str) -> bool {
     p.strip_prefix(root)
         .is_some_and(|rest| rest.starts_with('/'))

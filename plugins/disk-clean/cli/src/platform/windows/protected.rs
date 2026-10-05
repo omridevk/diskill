@@ -1,7 +1,6 @@
 use super::disk::is_fixed_drive;
 use super::path::{at_or_within, known_folder, rel_of, same_text, user_folder, wide, within};
 use super::walk::{CLOUD_ATTRS, find_one, is_cloud_tag};
-use crate::clean::inside;
 use crate::platform::split_root;
 use std::ffi::c_void;
 use std::path::Path;
@@ -248,7 +247,7 @@ fn in_own_recycle_bin(p: &str) -> bool {
     let (Some((root, rest)), Some(sid)) = (split_root(p), user_sid()) else {
         return false;
     };
-    inside(rest, &format!("{RECYCLE_BIN}/{sid}")) && is_fixed_drive(root)
+    within(rest, &format!("{RECYCLE_BIN}/{sid}")) && is_fixed_drive(root)
 }
 
 fn in_system(p: &str, home: &str) -> bool {
