@@ -179,6 +179,8 @@ const EMBER_GLOW = 1.0
 const START_SECONDS = 5
 const STILL_SECONDS = 24
 const RENDER_SCALE = 0.5
+const PROBE_SIZE = 64
+const PROBE_BUDGET_MS = 20
 
 function compile(gl: WebGLRenderingContext, type: number, source: string) {
   const shader = gl.createShader(type)
@@ -225,24 +227,39 @@ function createBurningFilm(canvas: HTMLCanvasElement): Renderer | null {
     gl.uniform1f(time, seconds)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
+  const resize = (width: number, height: number, dpr: number) => {
+    const w = Math.max(1, Math.round(width * dpr))
+    const h = Math.max(1, Math.round(height * dpr))
+    if (canvas.width === w && canvas.height === h) return
+    canvas.width = w
+    canvas.height = h
+    gl.viewport(0, 0, canvas.width, canvas.height)
+    gl.uniform2f(resolution, canvas.width, canvas.height)
+  }
+  const dispose = () => {
+    gl.deleteBuffer(buffer)
+    gl.deleteProgram(program)
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+  }
+  const pixel = new Uint8Array(4)
+  const timedStill = (size: number) => {
+    resize(size, size, 1)
+    const start = performance.now()
+    draw(STILL_SECONDS)
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
+    return performance.now() - start
+  }
+  timedStill(1)
+  if (timedStill(PROBE_SIZE) > PROBE_BUDGET_MS) {
+    dispose()
+    return null
+  }
 
   return {
-    resize: (width, height, dpr) => {
-      const w = Math.max(1, Math.round(width * dpr))
-      const h = Math.max(1, Math.round(height * dpr))
-      if (canvas.width === w && canvas.height === h) return
-      canvas.width = w
-      canvas.height = h
-      gl.viewport(0, 0, canvas.width, canvas.height)
-      gl.uniform2f(resolution, canvas.width, canvas.height)
-    },
+    resize,
     frame: now => draw(START_SECONDS + (now - started) / 1000),
     still: () => draw(STILL_SECONDS),
-    dispose: () => {
-      gl.deleteBuffer(buffer)
-      gl.deleteProgram(program)
-      gl.getExtension('WEBGL_lose_context')?.loseContext()
-    },
+    dispose,
   }
 }
 

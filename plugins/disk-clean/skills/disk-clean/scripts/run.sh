@@ -30,7 +30,7 @@ tmp=$(mktemp -d "$data/bin/.install.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 download() {
-  local url="https://github.com/omridevk/diskill/releases/download/disk-clean--v$version/$asset"
+  local url="https://github.com/omridevk/mopper/releases/download/disk-clean--v$version/$asset"
   command -v curl >/dev/null 2>&1 || return 1
   echo "disk-clean: downloading release v$version..." >&2
   curl -fsL --retry 2 -o "$tmp/$asset" "$url" || return 1
@@ -56,7 +56,7 @@ if ! download && ! build; then
   echo "disk-clean: could not get the disk-clean binary for v$version." >&2
   echo "  Either install Rust (https://rustup.rs) so it can be built from source on first run," >&2
   echo "  or install a plugin version that has a published release:" >&2
-  echo "  https://github.com/omridevk/diskill/releases" >&2
+  echo "  https://github.com/omridevk/mopper/releases" >&2
   exit 1
 fi
 

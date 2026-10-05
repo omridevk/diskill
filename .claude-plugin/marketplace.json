@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "diskill",
+  "name": "mopper",
   "description": "Claude Code plugins for keeping a Mac disk in check.",
   "owner": {
     "name": "Omri Katz",

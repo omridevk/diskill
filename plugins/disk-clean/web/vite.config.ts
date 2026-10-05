@@ -8,12 +8,19 @@ import {viteSingleFile} from 'vite-plugin-singlefile'
 import {startWalk, stopWalk} from './walk-commands'
 
 const review = process.env.DISK_CLEAN_REVIEW_URL
-const retina = playwright({contextOptions: {deviceScaleFactor: 2}})
-const reduced = playwright({contextOptions: {reducedMotion: 'reduce'}})
+const slow = process.env.DISK_CLEAN_SLOW === '1'
+const SOFTWARE_GL = {'webgl.forbid-hardware': true, 'gfx.webrender.software': true}
+const launchOptions = slow ? {args: ['--disable-gpu'], firefoxUserPrefs: SOFTWARE_GL} : {}
+const browsers = (contextOptions = {}) => playwright({launchOptions, contextOptions})
+const retina = browsers({deviceScaleFactor: 2})
+const reduced = browsers({reducedMotion: 'reduce'})
+const softwareGl = playwright({launchOptions: {firefoxUserPrefs: SOFTWARE_GL}, contextOptions: {deviceScaleFactor: 2}})
 const VIEWPORT = {width: 1440, height: 960}
 const CHROMIUM = {browser: 'chromium' as const, viewport: VIEWPORT}
 const FIREFOX = {browser: 'firefox' as const, viewport: VIEWPORT}
 const FILM = ['src/film.test.tsx']
+const REALTIME = ['src/realtime.test.tsx']
+const SOFTWARE_GL_TESTS = ['src/software-gl.test.tsx']
 const ROUTER = ['src/router.test.tsx']
 const TRASH = ['src/trash.test.tsx']
 const SCANNING = ['src/scanning.test.tsx']
@@ -26,6 +33,7 @@ interface Instance {
   viewport: {width: number; height: number}
   name?: string
   include?: string[]
+  exclude?: string[]
   provider?: typeof retina
 }
 
@@ -34,7 +42,7 @@ function inBrowsers(project: string, instances: Instance[]) {
     enabled: true,
     commands: {startWalk, stopWalk},
     headless: true,
-    provider: playwright(),
+    provider: browsers(),
     instances: instances.map(instance => ({...instance, name: `${project} ${instance.name ?? instance.browser}`})),
   }
 }
@@ -70,13 +78,28 @@ export default defineConfig({
         test: {
           name: 'app',
           include: ['src/**/*.test.tsx'],
-          exclude: ['src/perf.test.tsx', 'src/frames.test.tsx'],
+          exclude: ['src/perf.test.tsx', 'src/frames.test.tsx', ...REALTIME],
+          setupFiles: ['src/test/slow-cpu.ts'],
+          provide: {cpuSlowdown: slow ? 4 : 1},
           browser: inBrowsers('app', [
-            CHROMIUM,
+            {...CHROMIUM, exclude: ['src/perf.test.tsx', 'src/frames.test.tsx', ...REALTIME, ...SOFTWARE_GL_TESTS]},
             {...FIREFOX, include: [...FILM, ...ROUTER, ...TRASH, ...SCANNING, ...WORDS, ...URLS, ...TOOLTIPS], provider: retina},
             {...CHROMIUM, name: 'chromium reduced', include: TOOLTIPS, provider: reduced},
             {...FIREFOX, name: 'firefox reduced', include: TOOLTIPS, provider: reduced},
             {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, include: FILM, provider: retina},
+            {...FIREFOX, name: 'firefox software-gl', include: SOFTWARE_GL_TESTS, provider: softwareGl},
+          ]),
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'realtime',
+          include: REALTIME,
+          browser: inBrowsers('realtime', [
+            CHROMIUM,
+            {...FIREFOX, provider: retina},
+            {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, provider: retina},
           ]),
         },
       },
