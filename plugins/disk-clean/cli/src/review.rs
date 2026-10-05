@@ -639,7 +639,7 @@ fn handle(
             }
             respond(&mut stream, "200 OK", "application/json", b"{}");
             drop(stream);
-            let mode =if payload.get("mode").and_then(Value::as_str) == Some("now") {
+            let mode = if payload.get("mode").and_then(Value::as_str) == Some("now") {
                 "now"
             } else {
                 "trash"
