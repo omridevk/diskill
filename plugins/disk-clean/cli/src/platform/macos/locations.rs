@@ -113,7 +113,7 @@ pub fn plan_locations(home: &str, tmp_base: Option<&str>) -> (HashSet<PathBuf>, 
     .iter()
     .map(|r| hp(r))
     .collect();
-    parents.insert(PathBuf::from("/private/tmp"));
+    parents.insert(PathBuf::from(SYSTEM_TMP));
     if let Some(base) = tmp_base {
         for sub in ["T", "C", "X"] {
             parents.insert(PathBuf::from(format!("{base}/{sub}")));
@@ -332,7 +332,7 @@ fn scan_ios_backups(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
 }
 
 fn scan_private_tmp(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let tmp = Path::new("/private/tmp");
+    let tmp = Path::new(SYSTEM_TMP);
     if !tmp.is_dir() {
         return;
     }
