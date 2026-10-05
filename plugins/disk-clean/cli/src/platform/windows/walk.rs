@@ -1,24 +1,23 @@
-use super::path::{from_wide, wide};
+use super::path::wide;
 use crate::walk::{Kind, Meta};
 use std::ffi::{OsString, c_void};
 use std::fs;
 use std::io;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::MetadataExt;
 use std::path::Path;
-use windows::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_NOT_FOUND, FILETIME, HANDLE, NO_ERROR, SetLastError,
-};
+use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, FILETIME, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_PINNED,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_ATTRIBUTE_UNPINNED,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-    FILE_INFO_BY_HANDLE_CLASS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FIND_FIRST_EX_LARGE_FETCH, FileAttributeTagInfo,
-    FileIdInfo, FileStandardInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch,
-    FindFirstFileExW, FindNextFileW, GetCompressedFileSizeW, GetDiskFreeSpaceW,
-    GetFileAttributesExW, GetFileExInfoStandard, GetFileInformationByHandleEx, GetVolumePathNameW,
-    INVALID_FILE_SIZE, WIN32_FILE_ATTRIBUTE_DATA, WIN32_FIND_DATAW,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO,
+    FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FIND_FIRST_EX_LARGE_FETCH,
+    FileAttributeTagInfo, FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo,
+    FileStandardInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
+    GetFileAttributesExW, GetFileExInfoStandard, GetFileInformationByHandleEx, OPEN_EXISTING,
+    WIN32_FILE_ATTRIBUTE_DATA, WIN32_FIND_DATAW,
 };
 use windows::core::PCWSTR;
 
@@ -115,21 +114,14 @@ fn has_sibling(d: &Path, wanted: impl Fn(&Path) -> bool) -> bool {
         .is_some_and(|mut list| list.any(|e| e.is_ok_and(|e| wanted(Path::new(&e.file_name())))))
 }
 
-struct Entry {
-    attrs: u32,
-    tag: u32,
-    size: u64,
-    mtime: i64,
-}
+const LIST_BUFFER_WORDS: usize = 8192;
 
-struct Volume {
-    serial: u64,
-    cluster: u64,
+fn unix_seconds(ticks: i64) -> i64 {
+    (ticks - EPOCH_AS_FILETIME).div_euclid(TICKS_PER_SECOND)
 }
 
 fn unix_time(t: FILETIME) -> i64 {
-    let ticks = (i64::from(t.dwHighDateTime) << 32) | i64::from(t.dwLowDateTime);
-    (ticks - EPOCH_AS_FILETIME).div_euclid(TICKS_PER_SECOND)
+    unix_seconds((i64::from(t.dwHighDateTime) << 32) | i64::from(t.dwLowDateTime))
 }
 
 pub(super) fn is_cloud_tag(attrs: u32, tag: u32) -> bool {
@@ -149,15 +141,15 @@ fn kind_of(attrs: u32, tag: u32) -> Kind {
     }
 }
 
-fn open_attributes(name: &[u16]) -> Option<HANDLE> {
-    // SAFETY: CreateFileW reads the NUL-terminated name; it opens for attributes only and never follows a reparse point.
+fn open(name: &[u16], access: u32) -> Option<HANDLE> {
+    // SAFETY: CreateFileW reads the NUL-terminated name; it opens for the given metadata or listing access only and never follows a reparse point.
     unsafe {
         CreateFileW(
             PCWSTR(name.as_ptr()),
-            FILE_READ_ATTRIBUTES.0,
+            access,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
-            windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+            OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
             None,
         )
@@ -192,88 +184,11 @@ pub(super) fn identity(handle: HANDLE) -> Option<(u64, u64, u64)> {
 }
 
 pub fn dev_and_ino(path: &str) -> io::Result<(u64, u64, u64)> {
-    let handle = open_attributes(&wide(Path::new(path))).ok_or_else(io::Error::last_os_error)?;
+    let handle = open(&wide(Path::new(path)), FILE_READ_ATTRIBUTES.0)
+        .ok_or_else(io::Error::last_os_error)?;
     let id = identity(handle).ok_or_else(io::Error::last_os_error);
     close(handle);
     id
-}
-
-fn volume_of(name: &[u16]) -> Option<Volume> {
-    let handle = open_attributes(name)?;
-    let id = identity(handle);
-    close(handle);
-    let mut root = [0u16; 1024];
-    let (mut sectors, mut bytes) = (0u32, 0u32);
-    // SAFETY: GetVolumePathNameW writes at most root.len() characters into root; GetDiskFreeSpaceW reads the NUL-terminated root and writes the two locals.
-    let cluster = unsafe {
-        GetVolumePathNameW(PCWSTR(name.as_ptr()), &mut root)
-            .and_then(|()| {
-                GetDiskFreeSpaceW(
-                    PCWSTR(root.as_ptr()),
-                    Some(&mut sectors),
-                    Some(&mut bytes),
-                    None,
-                    None,
-                )
-            })
-            .map_or(4096, |()| u64::from(sectors) * u64::from(bytes))
-    };
-    Some(Volume {
-        serial: id?.0,
-        cluster: cluster.max(1),
-    })
-}
-
-fn allocated(name: &[u16], fallback: u64, cluster: u64) -> u64 {
-    let mut high = 0u32;
-    // SAFETY: SetLastError only clears this thread's error code, so a failed size can be told from a size whose low half is INVALID_FILE_SIZE; GetCompressedFileSizeW reads the NUL-terminated name and writes the high half into the local.
-    let low = unsafe {
-        SetLastError(NO_ERROR);
-        GetCompressedFileSizeW(PCWSTR(name.as_ptr()), Some(&mut high))
-    };
-    let bytes = if low == INVALID_FILE_SIZE && io::Error::last_os_error().raw_os_error() != Some(0)
-    {
-        fallback
-    } else {
-        (u64::from(high) << 32) | u64::from(low)
-    };
-    bytes.div_ceil(cluster) * cluster
-}
-
-fn meta_from(name: &[u16], e: &Entry, volume: &Volume) -> Meta {
-    let kind = kind_of(e.attrs, e.tag);
-    let mut meta = Meta {
-        dev: volume.serial,
-        ino: 0,
-        ino_hi: 0,
-        nlink: 1,
-        blocks: 0,
-        size: e.size,
-        mtime: e.mtime,
-        kind,
-    };
-    if kind != Kind::File || e.attrs & NO_OPEN != 0 {
-        return meta;
-    }
-    if let Some(handle) = open_attributes(name) {
-        let id = identity(handle);
-        let standard: Option<FILE_STANDARD_INFO> = info(handle, FileStandardInfo);
-        close(handle);
-        if let Some((dev, ino, ino_hi)) = id {
-            meta.dev = dev;
-            meta.ino = ino;
-            meta.ino_hi = ino_hi;
-        }
-        if let Some(standard) = standard {
-            meta.nlink = u64::from(standard.NumberOfLinks);
-        }
-    }
-    meta.blocks = allocated(name, e.size, volume.cluster).div_ceil(512);
-    meta
-}
-
-fn child(dir: &Path, name: &OsString) -> Vec<u16> {
-    wide(&dir.join(name))
 }
 
 fn find_first(pattern: &[u16], data: &mut WIN32_FIND_DATAW) -> windows::core::Result<HANDLE> {
@@ -290,48 +205,88 @@ fn find_first(pattern: &[u16], data: &mut WIN32_FIND_DATAW) -> windows::core::Re
     }
 }
 
-fn find_close(find: HANDLE) {
-    // SAFETY: find is an open search handle and is closed exactly once.
-    let _ = unsafe { FindClose(find) };
-}
-
 pub(super) fn find_one(path: &Path) -> Option<(u32, u32)> {
     let mut data = WIN32_FIND_DATAW::default();
     let find = find_first(&wide(path), &mut data).ok()?;
-    find_close(find);
+    // SAFETY: find is the open search handle and is closed exactly once.
+    let _ = unsafe { FindClose(find) };
     Some((data.dwFileAttributes, data.dwReserved0))
 }
 
-pub fn read_dir_bulk(dir: &Path) -> io::Result<Vec<(OsString, Option<Meta>)>> {
-    let dir_name = wide(dir);
-    let volume = volume_of(&dir_name).ok_or_else(io::Error::last_os_error)?;
-    let pattern = wide(&dir.join("*"));
-    let mut data = WIN32_FIND_DATAW::default();
-    let find = match find_first(&pattern, &mut data) {
-        Ok(find) => find,
-        Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() => return Ok(Vec::new()),
-        Err(_) => return Err(io::Error::last_os_error()),
-    };
+fn entry_meta(e: &FILE_ID_EXTD_DIR_INFO, dev: u64) -> Meta {
+    let kind = kind_of(e.FileAttributes, e.ReparsePointTag);
+    let id = u128::from_le_bytes(e.FileId.Identifier);
+    Meta {
+        dev,
+        ino: id as u64,
+        ino_hi: (id >> 64) as u64,
+        nlink: if kind == Kind::File { 2 } else { 1 },
+        blocks: (e.AllocationSize.max(0) as u64).div_ceil(512),
+        size: e.EndOfFile.max(0) as u64,
+        mtime: unix_seconds(e.LastWriteTime),
+        kind,
+    }
+}
+
+fn entries_in(buf: &[u64], out: &mut Vec<(OsString, Option<Meta>)>, dev: u64) {
+    let bytes = buf.as_ptr().cast::<u8>();
+    let mut at = 0usize;
+    loop {
+        // SAFETY: GetFileInformationByHandleEx filled buf with a chain of FILE_ID_EXTD_DIR_INFO
+        // records, each 8-byte aligned and starting NextEntryOffset bytes after the previous one;
+        // the name's FileNameLength bytes follow FileName inside the same record.
+        let (entry, name) = unsafe {
+            let entry = &*bytes.add(at).cast::<FILE_ID_EXTD_DIR_INFO>();
+            let name = std::slice::from_raw_parts(
+                std::ptr::addr_of!(entry.FileName).cast::<u16>(),
+                entry.FileNameLength as usize / 2,
+            );
+            (entry, OsString::from_wide(name))
+        };
+        if name != "." && name != ".." {
+            out.push((name, Some(entry_meta(entry, dev))));
+        }
+        if entry.NextEntryOffset == 0 {
+            return;
+        }
+        at += entry.NextEntryOffset as usize;
+    }
+}
+
+fn list(handle: HANDLE) -> io::Result<Vec<(OsString, Option<Meta>)>> {
+    let (dev, _, _) = identity(handle).ok_or_else(io::Error::last_os_error)?;
+    let mut buf = vec![0u64; LIST_BUFFER_WORDS];
+    let mut class = FileIdExtdDirectoryRestartInfo;
     let mut out = Vec::new();
     loop {
-        let name = from_wide(&data.cFileName);
-        if name != "." && name != ".." {
-            let entry = Entry {
-                attrs: data.dwFileAttributes,
-                tag: data.dwReserved0,
-                size: (u64::from(data.nFileSizeHigh) << 32) | u64::from(data.nFileSizeLow),
-                mtime: unix_time(data.ftLastWriteTime),
-            };
-            let meta = meta_from(&child(dir, &name), &entry, &volume);
-            out.push((name, Some(meta)));
+        // SAFETY: buf is 8-byte aligned and the length passed is its size in bytes; the call
+        // writes whole FILE_ID_EXTD_DIR_INFO records into it.
+        let read = unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                class,
+                buf.as_mut_ptr().cast::<c_void>(),
+                (buf.len() * size_of::<u64>()) as u32,
+            )
+        };
+        if read.is_err() {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(ERROR_NO_MORE_FILES.0 as i32) {
+                return Ok(out);
+            }
+            return Err(e);
         }
-        // SAFETY: find is the open search handle; FindNextFileW writes one WIN32_FIND_DATAW into data.
-        if unsafe { FindNextFileW(find, &mut data) }.is_err() {
-            break;
-        }
+        entries_in(&buf, &mut out, dev);
+        class = FileIdExtdDirectoryInfo;
     }
-    find_close(find);
-    Ok(out)
+}
+
+pub fn read_dir_bulk(dir: &Path) -> io::Result<Vec<(OsString, Option<Meta>)>> {
+    let handle = open(&wide(dir), FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0)
+        .ok_or_else(io::Error::last_os_error)?;
+    let listed = list(handle);
+    close(handle);
+    listed
 }
 
 pub fn meta_at(path: &Path) -> Option<Meta> {
@@ -346,28 +301,40 @@ pub fn meta_at(path: &Path) -> Option<Meta> {
         )
         .ok()?;
     }
-    let tag = if data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
-        && data.dwFileAttributes & NO_OPEN == 0
-    {
-        let handle = open_attributes(&name)?;
-        let tag: Option<FILE_ATTRIBUTE_TAG_INFO> = info(handle, FileAttributeTagInfo);
-        close(handle);
-        tag?.ReparseTag
-    } else {
-        0
-    };
-    let entry = Entry {
-        attrs: data.dwFileAttributes,
-        tag,
+    let attrs = data.dwFileAttributes;
+    let mut meta = Meta {
         size: (u64::from(data.nFileSizeHigh) << 32) | u64::from(data.nFileSizeLow),
         mtime: unix_time(data.ftLastWriteTime),
+        nlink: 1,
+        kind: kind_of(attrs, 0),
+        ..Meta::default()
     };
-    let volume = if entry.attrs & NO_OPEN == 0 {
-        volume_of(&name)?
+    if attrs & NO_OPEN != 0 {
+        let parent = open(&wide(path.parent()?), FILE_READ_ATTRIBUTES.0)?;
+        let id = identity(parent);
+        close(parent);
+        meta.dev = id?.0;
+        return Some(meta);
+    }
+    let handle = open(&name, FILE_READ_ATTRIBUTES.0)?;
+    let tag = if attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        info::<FILE_ATTRIBUTE_TAG_INFO>(handle, FileAttributeTagInfo).map(|t| t.ReparseTag)
     } else {
-        volume_of(&wide(path.parent()?))?
+        Some(0)
     };
-    Some(meta_from(&name, &entry, &volume))
+    let id = identity(handle);
+    let standard: Option<FILE_STANDARD_INFO> = info(handle, FileStandardInfo);
+    close(handle);
+    let ((dev, ino, ino_hi), standard) = (id?, standard?);
+    meta.kind = kind_of(attrs, tag?);
+    meta.dev = dev;
+    meta.ino = ino;
+    meta.ino_hi = ino_hi;
+    meta.blocks = (standard.AllocationSize.max(0) as u64).div_ceil(512);
+    if meta.kind == Kind::File {
+        meta.nlink = u64::from(standard.NumberOfLinks);
+    }
+    Some(meta)
 }
 
 pub fn meta_of(m: &fs::Metadata) -> Meta {
@@ -389,7 +356,7 @@ pub fn meta_of(m: &fs::Metadata) -> Meta {
         nlink: 1,
         blocks: m.file_size().div_ceil(512),
         size: m.file_size(),
-        mtime: (ticks - EPOCH_AS_FILETIME).div_euclid(TICKS_PER_SECOND),
+        mtime: unix_seconds(ticks),
         kind,
     }
 }
