@@ -9,7 +9,8 @@ Scan and review (stages 1 and 2) run as one command, then stage 3 deletes. Never
 
 Every stage goes through one launcher. It runs the `disk-clean` binary for this plugin version,
 fetching it on first use (the published release, checksum-verified, or a `cargo build` from the
-bundled source when no release exists). The first run may print a download or build line on stderr.
+bundled source when no release exists). On Linux it is built from source with cargo for now. The
+first run may print a download or build line on stderr.
 
 ## Stages 1 and 2 — Scan and review
 
@@ -68,8 +69,8 @@ The page has four tabs, a summary strip (disk donut, selected total, scan status
 - **Trash** — every item disk-clean put in the Trash, across runs, from its record after a sync:
   path from `~`, size, when, which cleanup, and its state (in the Trash, put back by our Undo, put
   back in Finder or, on Linux, the file manager's Restore, emptied, or failed with the reason).
-  Undo or Empty per item, per cleanup or for the ticked items; a cleanup filter. Empty always asks first and never touches anything else in the
-  Trash.
+  Undo or Empty per item, per cleanup or for the ticked items; a cleanup filter. Empty always asks
+  first and never touches anything else in the Trash.
 - **Addresses** — everything you see is in the page address, so reload, Back/Forward and a copied
   link all restore it: the tab and the open section or zoomed folder are the path
   (`/cleanup/<section>`, `/storage/<folder path>`, `/insights`), filters, sort, view and the
@@ -273,8 +274,8 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
 - No `sudo`, ever. System-level caches under `/Library` and `/private/var` are out of scope.
 - Approved paths go to the Trash (the macOS Trash, or the freedesktop.org Trash on Linux), never
   deleted directly, unless the user chose Delete immediately, which is labelled "can't be undone"
-  everywhere. Git worktree removals and the three fixed commands can't go to the Trash and are
-  labelled "can't be undone" too.
+  everywhere. Git worktree removals and the fixed commands (three on macOS, only Docker prune on
+  Linux) can't go to the Trash and are labelled "can't be undone" too.
 
 ## Re-running
 

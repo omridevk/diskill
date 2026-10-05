@@ -30,6 +30,7 @@ tmp=$(mktemp -d "$data/bin/.install.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 download() {
+  [ "$(uname -s)" = Darwin ] || return 1
   local url="https://github.com/omridevk/mopper/releases/download/disk-clean--v$version/$asset"
   command -v curl >/dev/null 2>&1 || return 1
   echo "disk-clean: downloading release v$version..." >&2
