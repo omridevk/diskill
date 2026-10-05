@@ -500,8 +500,13 @@ fn protected_folders_spelled_by_case_or_short_name_are_rejected() {
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     for p in &spellings {
+        let shown = if p.contains('~') {
+            format!("'{p}'")
+        } else {
+            p.clone()
+        };
         assert!(
-            plan.contains(&format!("# rejected (protected path): {p}\n")),
+            plan.contains(&format!("# rejected (protected path): {shown}\n")),
             "{plan}"
         );
     }
