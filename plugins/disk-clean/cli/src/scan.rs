@@ -81,9 +81,11 @@ pub(crate) fn size_bytes(ctx: &Ctx, path: &Path) -> Option<u64> {
     }
     let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !is_link
-        && let Some(r) = fs::canonicalize(path)
-            .ok()
-            .and_then(|c| ctx.walk.sizes.get(&c))
+        && let Some(r) = fs::canonicalize(path).ok().and_then(|c| {
+            ctx.walk.sizes.get(&c).or_else(|| {
+                platform::path_text(&c).and_then(|text| ctx.walk.sizes.get(Path::new(&text)))
+            })
+        })
     {
         return Some(kb_bytes(*r));
     }
