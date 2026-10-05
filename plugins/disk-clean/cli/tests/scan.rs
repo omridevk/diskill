@@ -27,7 +27,7 @@ fn docker_reclaimable_parsing() {
 
 fn scan(home: &Path, run: &Path) -> String {
     let out = common::cli(
-        &["scan", &run.to_string_lossy()],
+        &["scan", &common::text(run)],
         home,
         &[
             ("DISK_CLEAN_SKIP_MAP", "1"),
@@ -40,6 +40,7 @@ fn scan(home: &Path, run: &Path) -> String {
     err
 }
 
+#[cfg(unix)]
 #[test]
 fn a_symlinked_home_is_scanned_through_its_real_path() {
     let t = common::temp_dir("scan-homelink");
@@ -60,6 +61,7 @@ fn a_symlinked_home_is_scanned_through_its_real_path() {
     assert!(rows.contains(&wanted), "{rows}");
 }
 
+#[cfg(unix)]
 #[test]
 fn folders_nested_too_deep_to_read_are_reported() {
     let t = common::temp_dir("scan-deep");
@@ -128,4 +130,90 @@ fn a_future_mtime_never_becomes_the_newest_change_of_its_parents() {
         newest(&root) > 1_600_000_000,
         "the normal file still counts"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_home_reached_through_a_junction_is_scanned_through_its_real_path() {
+    let t = common::temp_dir("scan-homelink-windows");
+    let real = t.0.join("real-home");
+    let nm = real.join("code/app/node_modules/pkg");
+    fs::create_dir_all(&nm).unwrap();
+    fs::write(nm.join("index.js"), vec![1u8; 8192]).unwrap();
+    let link = t.0.join("home-link");
+    common::junction(&link, &real);
+    let run = t.0.join("run");
+    let err = scan(&link, &run);
+    assert!(
+        err.contains(&format!("resolves to {}", common::text(&real))),
+        "{err}"
+    );
+    let rows = fs::read_to_string(run.join("scan.tsv")).unwrap();
+    let wanted = format!("\t{}\t", common::text(&real.join("code/app/node_modules")));
+    assert!(rows.contains(&wanted), "{rows}");
+}
+
+#[cfg(windows)]
+#[test]
+fn project_folders_are_offered_only_beside_their_project_files() {
+    let t = common::temp_dir("scan-projects-windows");
+    let home = t.0.join("home");
+    let code = home.join("code");
+    let folder = |rel: &str| {
+        let dir = code.join(rel);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("data"), vec![1u8; 8192]).unwrap();
+        dir
+    };
+    let file = |rel: &str| {
+        let path = code.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"x").unwrap();
+    };
+    let vs = folder("app/.vs");
+    file("app/App.sln");
+    let library = folder("game/Library");
+    folder("game/Assets");
+    folder("game/ProjectSettings");
+    let packages = folder("old/packages");
+    file("old/packages.config");
+    let test_results = folder("svc/TestResults");
+    file("svc/Svc.Tests.csproj");
+    let unreal: Vec<_> = ["DerivedDataCache", "Intermediate", "Saved"]
+        .iter()
+        .map(|name| folder(&format!("ue/{name}")))
+        .collect();
+    file("ue/Game.uproject");
+    let never = [
+        folder("lone/.vs"),
+        folder("half/Library"),
+        folder("fresh/packages"),
+        folder("mono/packages"),
+        folder("plain/TestResults"),
+        folder("notue/Saved"),
+    ];
+    folder("half/Assets");
+    file("fresh/packages.config");
+    file("plain/Svc.csproj");
+    common::sh(&code, "touch -t 202001010000 old/packages mono/packages");
+    let run = t.0.join("run");
+    scan(&home, &run);
+    let rows = fs::read_to_string(run.join("scan.tsv")).unwrap();
+    let cat_of = |p: &Path| {
+        let path = common::text(p);
+        rows.lines()
+            .map(|l| l.split('\t').collect::<Vec<_>>())
+            .filter(|cols| cols.get(8) == Some(&path.as_str()))
+            .map(|cols| cols[0].to_string())
+            .collect::<Vec<_>>()
+    };
+    for p in [&vs, &library, &packages, &test_results] {
+        assert_eq!(cat_of(p), ["project-review"], "{}\n{rows}", p.display());
+    }
+    for p in &unreal {
+        assert_eq!(cat_of(p), ["unreal-projects"], "{}\n{rows}", p.display());
+    }
+    for p in &never {
+        assert!(cat_of(p).is_empty(), "{}\n{rows}", p.display());
+    }
 }

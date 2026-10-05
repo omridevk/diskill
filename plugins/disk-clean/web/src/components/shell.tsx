@@ -77,9 +77,10 @@ function TabLink({tab}: {tab: (typeof TABS)[number]}) {
   const tabs = root.useRouteContext({select: context => context.tabs})
   const last = useSyncExternalStore(tabs.subscribe, () => tabs.placeOf(tab.id)) ?? tab.link
   const active = 'data-status' in useLinkProps({...tab.link, activeOptions: {includeSearch: false}})
+  const {bin} = usePlatform()
   return (
     <Link {...last} role="tab" aria-selected={active} className={TAB_LINK}>
-      {tab.label}
+      {bin(tab.label)}
     </Link>
   )
 }
@@ -221,7 +222,7 @@ export function Shell() {
   const trashBusy = usePending(db, BUSY)
   const trashActions = useTrashActions()
   const reduced = useReducedMotion()
-  const {deleteNow} = usePlatform()
+  const {deleteNow, path} = usePlatform()
   const deleteReady = deleteState(selection, scan.scan).ready && !progress
   const commands = commandsFor({
     tabs: TABS,
@@ -231,6 +232,7 @@ export function Shell() {
     scanning: !scan.scan.done && scan.scan.error === '',
     deleteReady,
     deleteNow,
+    path,
     reduced,
     cleanupTrash: cleanupTrash.ready,
     cleanup: list ? {listing, section, onList} : null,

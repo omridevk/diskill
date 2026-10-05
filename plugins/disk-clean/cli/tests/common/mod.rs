@@ -63,6 +63,12 @@ struct RamDisk {
     mount: PathBuf,
 }
 
+#[cfg(windows)]
+struct RamDisk {
+    file: PathBuf,
+    mount: PathBuf,
+}
+
 static RAM: OnceLock<RamDisk> = OnceLock::new();
 
 #[cfg(target_os = "macos")]
@@ -164,6 +170,132 @@ pub fn other_volume(dir: &Path) -> OtherVolume {
     OtherVolume(std::fs::canonicalize(dir).unwrap())
 }
 
+#[cfg(windows)]
+fn diskpart(script: &str) -> Output {
+    let file = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "diskpart-{}-{}.txt",
+        std::process::id(),
+        nanos()
+    ));
+    std::fs::write(&file, script).unwrap();
+    let out = output(Command::new("diskpart").arg("/s").arg(&file));
+    let _ = std::fs::remove_file(&file);
+    out
+}
+
+#[cfg(windows)]
+fn create_vhdx(name: &str, assign: &str) -> PathBuf {
+    let file = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.vhdx"));
+    let _ = std::fs::remove_file(&file);
+    let made = diskpart(&format!(
+        "create vdisk file=\"{f}\" maximum=2048 type=expandable\nselect vdisk file=\"{f}\"\nattach vdisk\nconvert gpt\ncreate partition primary\nformat fs=ntfs quick label=dc-test\n{assign}\n",
+        f = file.display()
+    ));
+    assert!(
+        made.status.success(),
+        "diskpart could not create {} (needs an administrator): {}",
+        file.display(),
+        String::from_utf8_lossy(&made.stdout)
+    );
+    file
+}
+
+#[cfg(windows)]
+fn detach_vhdx(file: &Path) {
+    let _ = diskpart(&format!(
+        "select vdisk file=\"{}\"\ndetach vdisk\n",
+        file.display()
+    ));
+    let _ = std::fs::remove_file(file);
+}
+
+#[cfg(windows)]
+fn free_letter() -> char {
+    ('G'..='Z')
+        .rev()
+        .find(|l| !Path::new(&format!("{l}:\\")).exists())
+        .expect("no free drive letter")
+}
+
+#[cfg(windows)]
+fn attach_drive(name: &str) -> (PathBuf, PathBuf) {
+    let letter = free_letter();
+    let file = create_vhdx(name, &format!("assign letter={letter}"));
+    let short_names =
+        output(Command::new("fsutil").args(["8dot3name", "set", &format!("{letter}:"), "0"]));
+    assert!(
+        short_names.status.success(),
+        "fsutil 8dot3name set {letter}: 0 failed: {}",
+        String::from_utf8_lossy(&short_names.stdout)
+    );
+    (file, PathBuf::from(format!("{letter}:/")))
+}
+
+#[cfg(windows)]
+extern "C" fn detach_ram_disk() {
+    if let Some(disk) = RAM.get() {
+        detach_vhdx(&disk.file);
+    }
+}
+
+#[cfg(windows)]
+fn attach_ram_disk() -> RamDisk {
+    let (file, mount) = attach_drive(&format!("dc-test-{}", std::process::id()));
+    RamDisk { file, mount }
+}
+
+#[cfg(windows)]
+static OTHER_DRIVES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+#[cfg(windows)]
+pub struct OtherVolume(pub PathBuf, PathBuf);
+
+#[cfg(windows)]
+impl Drop for OtherVolume {
+    fn drop(&mut self) {
+        OTHER_DRIVES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|root| root != &self.0);
+        detach_vhdx(&self.1);
+    }
+}
+
+#[cfg(windows)]
+pub fn other_drive() -> OtherVolume {
+    let (file, root) = attach_drive(&format!("dc-other-{}-{}", std::process::id(), nanos()));
+    OTHER_DRIVES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(root.clone());
+    OtherVolume(root, file)
+}
+
+#[cfg(windows)]
+pub fn folder_volume(dir: &Path) -> OtherVolume {
+    assert_inside_ram_disk(dir.parent().unwrap());
+    std::fs::create_dir_all(dir).unwrap();
+    let file = create_vhdx(
+        &format!("dc-folder-{}-{}", std::process::id(), nanos()),
+        &format!("assign mount=\"{}\"", text(dir).replace('/', "\\")),
+    );
+    OtherVolume(dir.to_path_buf(), file)
+}
+
+#[cfg(unix)]
+fn on_another_test_volume(_real: &Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn on_another_test_volume(real: &Path) -> bool {
+    OTHER_DRIVES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|root| real.starts_with(root))
+}
+
 pub fn ram_root() -> &'static Path {
     &RAM.get_or_init(|| {
         let disk = attach_ram_disk();
@@ -174,10 +306,36 @@ pub fn ram_root() -> &'static Path {
     .mount
 }
 
+#[cfg(unix)]
+pub fn real_path(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+#[cfg(windows)]
+pub fn real_path(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path).map(|real| PathBuf::from(text(&real)))
+}
+
+#[cfg(unix)]
+pub fn text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+#[cfg(windows)]
+pub fn text(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let plain = raw.strip_prefix("//?/").unwrap_or(&raw);
+    let mut chars = plain.chars();
+    match (chars.next(), chars.next()) {
+        (Some(letter), Some(':')) => format!("{}{}", letter.to_ascii_uppercase(), &plain[1..]),
+        _ => plain.to_string(),
+    }
+}
+
 pub fn assert_inside_ram_disk(path: &Path) {
-    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let real = real_path(path).unwrap_or_else(|_| path.to_path_buf());
     assert!(
-        real.starts_with(ram_root()),
+        real.starts_with(ram_root()) || on_another_test_volume(&real),
         "{} is outside the test RAM disk {}",
         real.display(),
         ram_root().display()
@@ -209,6 +367,13 @@ pub fn bin(home: &Path) -> Command {
     cmd.env_remove("XDG_CACHE_HOME")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME");
+    #[cfg(windows)]
+    cmd.env("HOME", text(home))
+        .env("USERPROFILE", home)
+        .env("TEMP", home)
+        .env("TMP", home)
+        .env("LOCALAPPDATA", home.join("AppData\\Local"))
+        .env("APPDATA", home.join("AppData\\Roaming"));
     cmd
 }
 
@@ -246,23 +411,37 @@ pub fn reaped(cmd: &mut Command) -> Reaped {
     Reaped(spawn(cmd))
 }
 
-pub fn temp_dir(tag: &str) -> TempDir {
-    let nanos = std::time::SystemTime::now()
+fn nanos() -> u128 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_nanos();
-    let dir = ram_root().join(format!("disk-clean-{tag}-{nanos}"));
+        .as_nanos()
+}
+
+pub fn temp_dir(tag: &str) -> TempDir {
+    let dir = ram_root().join(format!("disk-clean-{tag}-{}", nanos()));
     std::fs::create_dir_all(&dir).unwrap();
-    TempDir(std::fs::canonicalize(&dir).unwrap())
+    TempDir(real_path(&dir).unwrap())
 }
 
 pub fn levels_past_path_max() -> usize {
     if cfg!(target_os = "macos") { 12 } else { 36 }
 }
 
+#[cfg(unix)]
+fn bash() -> Command {
+    Command::new("bash")
+}
+
+#[cfg(windows)]
+fn bash() -> Command {
+    let program_files = std::env::var("ProgramFiles").unwrap();
+    Command::new(Path::new(&program_files).join("Git\\bin\\bash.exe"))
+}
+
 pub fn sh(cwd: &Path, script: &str) {
     let status = status(
-        Command::new("bash")
+        bash()
             .arg("-ec")
             .arg(script)
             .current_dir(cwd)
@@ -274,6 +453,20 @@ pub fn sh(cwd: &Path, script: &str) {
             .env("GIT_CONFIG_NOSYSTEM", "1"),
     );
     assert!(status.success(), "script failed: {script}");
+}
+
+#[cfg(unix)]
+pub fn sleeper() -> Command {
+    let mut sleep = Command::new("sleep");
+    sleep.arg("300");
+    sleep
+}
+
+#[cfg(windows)]
+pub fn sleeper() -> Command {
+    let mut sleep = Command::new("powershell");
+    sleep.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 300"]);
+    sleep
 }
 
 pub fn cli(args: &[&str], home: &Path, env: &[(&str, &str)]) -> std::process::Output {
@@ -311,6 +504,105 @@ pub fn trash_dir(home: &Path) -> PathBuf {
     home.join(".local/share/Trash/files")
 }
 
+#[cfg(windows)]
+pub fn user_sid() -> String {
+    let who = output(Command::new("whoami").args(["/user", "/fo", "csv", "/nh"]));
+    let line = String::from_utf8(who.stdout).unwrap();
+    line.trim()
+        .rsplit(',')
+        .next()
+        .unwrap()
+        .trim_matches('"')
+        .to_string()
+}
+
+#[cfg(windows)]
+pub fn recycle_bin(root: &Path) -> PathBuf {
+    PathBuf::from(format!("{}$Recycle.Bin/{}", text(root), user_sid()))
+}
+
+#[cfg(windows)]
+pub fn trash_dir(_home: &Path) -> PathBuf {
+    recycle_bin(ram_root())
+}
+
+#[cfg(windows)]
+pub fn powershell(script: &str) -> String {
+    let out = output(Command::new("powershell").args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+    ]));
+    assert!(
+        out.status.success(),
+        "powershell failed: {script}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[cfg(windows)]
+pub fn recycle_by_hand(path: &Path) {
+    assert_inside_ram_disk(path);
+    let method = if path.is_dir() {
+        "DeleteDirectory"
+    } else {
+        "DeleteFile"
+    };
+    powershell(&format!(
+        "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::{method}('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
+        path.display().to_string().replace('\'', "''")
+    ));
+}
+
+#[cfg(windows)]
+pub fn junction(link: &Path, target: &Path) {
+    assert_inside_ram_disk(link.parent().unwrap());
+    assert_inside_ram_disk(target);
+    let native = |p: &Path| text(p).replace('/', "\\");
+    let made =
+        output(Command::new("cmd").args(["/C", "mklink", "/J", &native(link), &native(target)]));
+    assert!(
+        made.status.success(),
+        "mklink /J failed: {}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+}
+
+#[cfg(windows)]
+pub fn short_name(path: &Path) -> String {
+    assert_inside_ram_disk(path);
+    let native = text(path).replace('/', "\\");
+    let short = powershell(&format!(
+        "(New-Object -ComObject Scripting.FileSystemObject).GetFolder('{}').ShortPath",
+        native.replace('\'', "''")
+    ));
+    text(Path::new(&short))
+}
+
+#[cfg(unix)]
+pub fn ino(path: &Path) -> u64 {
+    std::os::unix::fs::MetadataExt::ino(&std::fs::symlink_metadata(path).unwrap())
+}
+
+#[cfg(windows)]
+pub fn ino(path: &Path) -> u64 {
+    let native = text(path).replace('/', "\\");
+    let out = output(Command::new("fsutil").args(["file", "queryFileID", &native]));
+    let line = String::from_utf8(out.stdout).unwrap();
+    let hex = line
+        .trim()
+        .rsplit("0x")
+        .next()
+        .unwrap_or_else(|| panic!("no file id for {native}: {line}"));
+    u64::from_str_radix(&hex[hex.len().saturating_sub(16)..], 16)
+        .unwrap_or_else(|e| panic!("file id {hex:?} for {native}: {e}"))
+}
+
+#[cfg(windows)]
+pub const SYSTEM_FILE: &str = "C:/Windows/System32/drivers/etc/hosts";
+
 #[cfg(target_os = "macos")]
 pub fn app_caches(home: &Path) -> PathBuf {
     home.join("Library/Caches")
@@ -331,4 +623,11 @@ pub fn local_day(secs: u64) -> String {
 pub fn local_day(secs: u64) -> String {
     let date = output(Command::new("date").args(["-d", &format!("@{secs}"), "+%Y-%m-%d"]));
     String::from_utf8(date.stdout).unwrap().trim().to_string()
+}
+
+#[cfg(windows)]
+pub fn local_day(secs: u64) -> String {
+    powershell(&format!(
+        "[DateTimeOffset]::FromUnixTimeSeconds({secs}).LocalDateTime.ToString('yyyy-MM-dd')"
+    ))
 }

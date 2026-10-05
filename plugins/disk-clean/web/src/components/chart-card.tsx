@@ -4,6 +4,7 @@ import {Link, type LinkOptions} from '@tanstack/react-router'
 import {useState, type ReactNode} from 'react'
 import {Button, buttonVariants} from '@/components/ui/button'
 import {formatBytes} from '@/lib/data'
+import {usePlatform} from '@/lib/platform'
 
 export const CARD_TOOLTIP = {
   use: tooltip,
@@ -98,8 +99,9 @@ export function BigBytes({bytes}: {bytes: number}) {
 
 export function CopyPath({path}: {path: string}) {
   const [said, setSaid] = useState('Copy path')
+  const shown = usePlatform().path
   const copy = () =>
-    navigator.clipboard.writeText(path).then(
+    navigator.clipboard.writeText(shown(path)).then(
       () => setSaid('Copied'),
       () => setSaid("Couldn't copy"),
     )

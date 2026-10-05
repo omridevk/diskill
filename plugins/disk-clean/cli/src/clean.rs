@@ -218,7 +218,7 @@ fn rm_rejection(
 }
 
 pub fn is_canonical(p: &str) -> bool {
-    p.strip_prefix('/').is_some_and(|rest| {
+    platform::split_root(p).is_some_and(|(_, rest)| {
         rest.split('/')
             .all(|part| !part.is_empty() && part != "." && part != "..")
     })
@@ -252,7 +252,7 @@ pub fn safe_to_remove(
     let Ok(real_parent) = fs::canonicalize(parent) else {
         return Err("its folder is gone");
     };
-    if real_parent.join(name) != path {
+    if platform::path_text(&real_parent.join(name)).as_deref() != Some(target) {
         return Err(PATH_CHANGED);
     }
     let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
@@ -473,7 +473,7 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
     println!("queued  : {kept} items ({total_bytes} bytes)");
     println!("rejected: {}", rejected.lines().count());
     println!("pid     : {pid}");
-    println!("log     : {}", log_path.display());
+    println!("log     : {}", util::shown(&log_path));
     Ok(0)
 }
 

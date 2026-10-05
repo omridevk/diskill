@@ -2,6 +2,7 @@ import {createColumnHelper, metaHelper, rowSelectionFeature, tableFeatures, type
 import {Loader2} from 'lucide-react'
 import {Checkbox} from '@/components/ui/checkbox'
 import {formatBytes, isExact, isPickable} from '@/lib/data'
+import {usePlatform} from '@/lib/platform'
 import type {CleanupProgress, Outcome} from '@/lib/progress'
 import type {Entry} from '@/lib/scan-feed'
 
@@ -35,8 +36,10 @@ function pendingText(progress: CleanupProgress) {
 
 function ItemStatus({path, progress}: {path: string; progress: CleanupProgress}) {
   const outcome = progress.byKey.get(path)
+  const {bin} = usePlatform()
   if (!outcome) return <span className="text-xs text-muted-foreground">{pendingText(progress)}</span>
-  const [text, tone] = OUTCOME_TEXT[outcome.kind]
+  const [said, tone] = OUTCOME_TEXT[outcome.kind]
+  const text = bin(said)
   return <span className={`text-xs ${tone}`}>{outcome.reason ? `${text}: ${outcome.reason}` : text}</span>
 }
 
@@ -49,10 +52,11 @@ export function toggleRow(row: EntryRow, checked: boolean, event?: Event) {
 }
 
 function RowCheckbox({row, locked}: {row: EntryRow; locked: boolean}) {
+  const {path} = usePlatform()
   if (row.original.checking) return <Loader2 aria-hidden className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
   return (
     <Checkbox
-      aria-label={row.original.label}
+      aria-label={path(row.original.label)}
       checked={row.getIsSelected()}
       disabled={locked || !row.getCanSelect()}
       onCheckedChange={(checked, details) => toggleRow(row, checked, details.event)}
@@ -62,10 +66,11 @@ function RowCheckbox({row, locked}: {row: EntryRow; locked: boolean}) {
 
 function PathCell({row, progress}: {row: EntryRow; progress: CleanupProgress | null}) {
   const item = row.original
+  const {path} = usePlatform()
   return (
     <span className="flex min-w-0 flex-col gap-0.5">
       <span data-label className="truncate font-mono text-[12.5px]">
-        {item.label}
+        {path(item.label)}
       </span>
       {item.checking && (
         <span className="flex min-w-0 gap-1.5 text-xs">

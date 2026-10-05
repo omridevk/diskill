@@ -1,5 +1,6 @@
 mod common;
 
+use common::text;
 use disk_clean::clean::is_allowed;
 use std::fs;
 use std::path::Path;
@@ -339,6 +340,175 @@ fn a_localized_user_dir_from_user_dirs_dirs_is_protected() {
     assert!(bilder.join("Urlaub/f").exists() && beside.join("f").exists());
 }
 
+#[cfg(windows)]
+#[test]
+fn is_allowed_table_on_windows() {
+    let home = "C:/Users/someone";
+    let temp = "C:/Users/someone/AppData/Local/Temp";
+    let sid = common::user_sid();
+    let own_bin = format!("C:/$Recycle.Bin/{sid}/$RABC123.txt");
+    let allowed = [
+        "C:/Users/someone/AppData/Local/Temp/x",
+        "C:/Users/someone/AppData/Local/Temp/ok..name",
+        "C:/Users/someone/AppData/Local/npm-cache/_cacache",
+        "C:/Users/someone/AppData/Local/Microsoft/Windows/INetCache/IE",
+        "C:/Users/someone/AppData/Local/Packages/App_8wekyb3d8bbwe/TempState/x",
+        "C:/Users/someone/code/app/node_modules",
+        "C:/Users/someone/Downloads/big.iso",
+        "C:/Users/someone/Documentsx",
+        own_bin.as_str(),
+    ];
+    let blocked = [
+        "C:/Users/someone",
+        "C:/Users/someone/",
+        "C:/Users",
+        "C:/",
+        "C:",
+        "/",
+        "relative/path",
+        "/etc/hosts",
+        "C:/Users/someone/AppData/Local/Temp",
+        "C:/Users/someone/AppData/Local/Temp/",
+        "C:/Users/someone/AppData/Local/Temp//x",
+        "C:/Users/someone/AppData/Local/Temp/./x",
+        "C:/Users/someone/AppData/Local/Temp/x/",
+        "C:/Users/someone/code/../Documents",
+        "C:/Windows",
+        "C:/Windows/System32/drivers/etc/hosts",
+        "C:/Windows/Temp/x",
+        "C:/Program Files/App",
+        "C:/Program Files (x86)/App",
+        "C:/ProgramData/x",
+        "C:/System Volume Information/x",
+        "C:/$Recycle.Bin/S-1-5-21-1-2-3-1001/$RABC123.txt",
+        "C:/Users/other/thing",
+        "D:/x",
+        "C:/Users/someone/Documents",
+        "C:/Users/someone/Documents/a",
+        "C:/Users/someone/Desktop",
+        "C:/Users/someone/Desktop/a",
+        "C:/Users/someone/Pictures/a",
+        "C:/Users/someone/Music/a",
+        "C:/Users/someone/Videos",
+        "C:/Users/someone/OneDrive/a",
+        "C:/Users/someone/.ssh",
+        "C:/Users/someone/.ssh/id_rsa",
+        "C:/Users/someone/.gnupg/x",
+        "C:/Users/someone/.aws/credentials",
+        "C:/Users/someone/.kube/config",
+        "C:/Users/someone/.azure/x",
+        "C:/Users/someone/.claude/projects",
+        "C:/Users/someone/.docker/config.json",
+        "C:/Users/someone/.cache/disk-clean",
+        "C:/Users/someone/.cache/disk-clean/trashed.jsonl",
+        "C:/Users/someone/AppData/Roaming/gnupg/x",
+        "C:/Users/someone/AppData/Roaming/Microsoft/Protect/x",
+        "C:/Users/someone/AppData/Roaming/Microsoft/Credentials/x",
+        "C:/Users/someone/AppData/Local/Microsoft/Credentials/x",
+        "C:/Users/someone/AppData/Local/Microsoft/Vault/x",
+        "C:/Users/someone/AppData/Roaming/Microsoft/Crypto/x",
+        "C:/Users/someone/AppData/Roaming/Microsoft/SystemCertificates/x",
+        "C:/Users/someone/AppData/Local/Microsoft/Outlook/x.ost",
+        "C:/Users/someone/AppData/Roaming/Thunderbird/Profiles/x",
+        "C:/Users/someone/AppData/Local/Packages/App_8wekyb3d8bbwe/LocalState/x",
+        "C:/Users/someone/code/vault.kdbx",
+        "C:/Users/someone/code/mail.pst",
+        "C:/Users/someone//Documents",
+        "C:/Users/someone/./Documents",
+        "C:/Users/someone/documents",
+        "c:/users/someone/documents/a",
+        "C:/USERS/SOMEONE/DESKTOP/a",
+        "C:/Users/someone/.SSH/id_rsa",
+        "C:/Users/someone/APPDATA/ROAMING/MICROSOFT/PROTECT/x",
+        "C:\\Users\\someone\\Documents\\a",
+        "C:/Users/SOMEON~1/Documents/a",
+    ];
+    for p in allowed {
+        assert!(is_allowed(p, home, Some(temp)), "should allow {p}");
+    }
+    for p in blocked {
+        assert!(!is_allowed(p, home, Some(temp)), "should block {p}");
+    }
+    assert!(!is_allowed(
+        "C:/Users/someone/AppData/Local/Temp/x",
+        home,
+        None
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_home_inside_the_temp_folder_keeps_its_protection_on_windows() {
+    let temp = "C:/Users/someone/AppData/Local/Temp";
+    let home = format!("{temp}/sandbox/home");
+    for p in [
+        home.clone(),
+        format!("{temp}/sandbox"),
+        format!("{home}/Documents"),
+        format!("{home}/.ssh/id_rsa"),
+        format!("{home}/AppData/Roaming/Microsoft/Protect"),
+    ] {
+        assert!(!is_allowed(&p, &home, Some(temp)), "should block {p}");
+    }
+    assert!(is_allowed(
+        &format!("{home}/AppData/Local/x"),
+        &home,
+        Some(temp)
+    ));
+    for bad_home in ["", "C:/", "C:", "relative", "C:/Users/someone/"] {
+        assert!(
+            !is_allowed(&format!("{temp}/x"), bad_home, Some(temp)),
+            "home {bad_home:?} must allow nothing"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn protected_folders_spelled_by_case_or_short_name_are_rejected() {
+    let t = common::temp_dir("clean-spellings");
+    let home = &t.0;
+    for dir in ["Documents/a", "Desktop/b", "AppData/Local/x"] {
+        fs::create_dir_all(home.join(dir)).unwrap();
+        fs::write(home.join(dir).join("f"), b"x").unwrap();
+    }
+    let short = common::short_name(&home.join("Documents"));
+    let short_leaf = short.rsplit('/').next().unwrap().to_string();
+    assert!(short_leaf.contains('~'), "no short name: {short}");
+    let h = text(home);
+    let spellings = [
+        format!("{h}/documents/a"),
+        format!("{h}/DESKTOP/b"),
+        format!("{}/Documents/a", h.to_uppercase()),
+        format!("{h}/{short_leaf}/a"),
+        format!("{h}/{short_leaf}"),
+    ];
+    let control = text(&home.join("AppData/Local/x"));
+    let scan: String = spellings
+        .iter()
+        .chain([&control])
+        .map(|p| scan_row("caches", "rm", p))
+        .collect();
+    let items: Vec<String> = spellings
+        .iter()
+        .chain([&control])
+        .map(|p| selection_item("rm", p))
+        .collect();
+    let run = home.join("run");
+    write_run(&run, &scan, &items, None);
+    let out = common::cli(&["clean", "--dry-run", &text(&run)], home, &[]);
+    let plan = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{plan}");
+    for p in &spellings {
+        assert!(
+            plan.contains(&format!("# rejected (protected path): {p}\n")),
+            "{plan}"
+        );
+    }
+    assert!(plan.contains(&format!("\ntrash -- {control}\n")), "{plan}");
+    assert!(home.join("Documents/a/f").exists() && home.join("Desktop/b/f").exists());
+}
+
 fn scan_row(cat: &str, action: &str, path: &str) -> String {
     format!("{cat}\tTitle\tDesc\tsafe\t1\t{action}\t-\t{path}\t{path}\t4096\tnote\t1\texact\n")
 }
@@ -349,6 +519,7 @@ fn selection_item(action: &str, path: &str) -> String {
     )
 }
 
+#[cfg(unix)]
 #[test]
 fn clean_end_to_end_on_fixture() {
     let t = common::temp_dir("clean");
@@ -362,6 +533,9 @@ fn clean_end_to_end_on_fixture() {
     fs::write(&doomed_file, b"bytes").unwrap();
     let not_in_scan = root.join("not-in-scan");
     fs::create_dir_all(&not_in_scan).unwrap();
+    let protected = root.join(".ssh/id_rsa");
+    fs::create_dir_all(root.join(".ssh")).unwrap();
+    fs::write(&protected, b"key").unwrap();
     common::sh(
         root,
         "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init",
@@ -372,7 +546,7 @@ fn clean_end_to_end_on_fixture() {
     let scan = [
         scan_row("caches", "rm", &p(&doomed)),
         scan_row("caches", "rm", &p(&doomed_file)),
-        scan_row("caches", "rm", "/etc/hosts"),
+        scan_row("caches", "rm", &p(&protected)),
         scan_row("worktrees", "worktree", &p(&repo)),
     ]
     .concat();
@@ -382,7 +556,7 @@ fn clean_end_to_end_on_fixture() {
         selection_item("rm", &p(&doomed)),
         selection_item("rm", &p(&doomed_file)),
         selection_item("rm", &p(&not_in_scan)),
-        selection_item("rm", "/etc/hosts"),
+        selection_item("rm", &p(&protected)),
         selection_item("worktree", &p(&repo)),
         selection_item("rm", &p(&repo)),
         r#"{"action": "cmd", "cmd_id": "rm-rf-everything", "bytes": 1}"#.to_string(),
@@ -416,7 +590,7 @@ fn clean_end_to_end_on_fixture() {
         "{plan}"
     );
     assert!(
-        plan.contains("# rejected (protected path): /etc/hosts"),
+        plan.contains(&format!("# rejected (protected path): {}", p(&protected))),
         "{plan}"
     );
     assert!(
@@ -451,7 +625,7 @@ fn clean_end_to_end_on_fixture() {
         "{rejected}"
     );
     assert!(
-        rejected.contains("protected path\t/etc/hosts\n"),
+        rejected.contains(&format!("protected path\t{}\n", p(&protected))),
         "{rejected}"
     );
     assert!(
@@ -515,7 +689,7 @@ fn clean_end_to_end_on_fixture() {
             .join("nested/deeper/file")
             .exists()
     );
-    assert!(not_in_scan.exists() && repo.join("a").exists() && Path::new("/etc/hosts").exists());
+    assert!(not_in_scan.exists() && repo.join("a").exists() && protected.exists());
 }
 
 #[test]
@@ -523,13 +697,16 @@ fn clean_rejects_everything() {
     let t = common::temp_dir("clean-none");
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
+    let protected = t.0.join(".ssh/id_rsa");
+    fs::create_dir_all(t.0.join(".ssh")).unwrap();
+    fs::write(&protected, b"key").unwrap();
     fs::write(run.join("scan.tsv"), "").unwrap();
     fs::write(
         run.join("selection.json"),
-        r#"{"items": [{"path": "/etc/hosts"}]}"#,
+        format!(r#"{{"items": [{{"path": "{}"}}]}}"#, text(&protected)),
     )
     .unwrap();
-    let out = common::cli(&["clean", &run.to_string_lossy()], &t.0, &[]);
+    let out = common::cli(&["clean", &text(&run)], &t.0, &[]);
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nothing passed validation"));
     assert!(!run.join("clean.log").exists());
@@ -556,7 +733,7 @@ fn dry_run_quotes_paths_and_lists_fixed_commands() {
     fs::create_dir_all(&run).unwrap();
     let odd = t.0.join("it's a dir");
     fs::create_dir_all(&odd).unwrap();
-    let odd_s = odd.to_string_lossy().into_owned();
+    let odd_s = text(&odd);
     fs::write(run.join("scan.tsv"), scan_row("caches", "rm", &odd_s)).unwrap();
     let items = [
         selection_item("rm", &odd_s).replace('\'', "\\u0027"),
@@ -568,7 +745,7 @@ fn dry_run_quotes_paths_and_lists_fixed_commands() {
         format!(r#"{{"items": [{items}]}}"#),
     )
     .unwrap();
-    let out = common::cli(&["clean", "--dry-run", &run.to_string_lossy()], &t.0, &[]);
+    let out = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     let quoted = format!("'{}'", odd_s.replace('\'', r"'\''"));
@@ -587,9 +764,9 @@ fn dry_run_names_the_owning_repo_of_a_linked_worktree() {
         root,
         "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q ../wt",
     );
-    let repo = fs::canonicalize(root.join("repo")).unwrap();
+    let repo = common::real_path(&root.join("repo")).unwrap();
     let wt = root.join("wt");
-    let wt_s = wt.to_string_lossy().into_owned();
+    let wt_s = text(&wt);
     fs::write(
         run.join("scan.tsv"),
         scan_row("worktrees", "worktree", &wt_s),
@@ -600,9 +777,9 @@ fn dry_run_names_the_owning_repo_of_a_linked_worktree() {
         format!(r#"{{"items": [{}]}}"#, selection_item("worktree", &wt_s)),
     )
     .unwrap();
-    let out = common::cli(&["clean", "--dry-run", &run.to_string_lossy()], root, &[]);
+    let out = common::cli(&["clean", "--dry-run", &text(&run)], root, &[]);
     let plan = String::from_utf8_lossy(&out.stdout);
-    let repo_s = repo.to_string_lossy();
+    let repo_s = text(&repo);
     assert!(
         plan.contains(&format!(
             "\n# can't be undone:\ngit -C {repo_s} worktree remove {wt_s}\n"
@@ -624,6 +801,7 @@ fn wait_done(run: &Path) {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn worker_writes_one_event_per_outcome() {
     let t = common::temp_dir("clean-events");
@@ -770,10 +948,6 @@ fn write_run(run: &Path, scan: &str, items: &[String], lists: Option<(&str, &str
     }
 }
 
-fn text(p: &Path) -> String {
-    p.to_string_lossy().into_owned()
-}
-
 #[test]
 fn an_unusable_home_is_refused() {
     let t = common::temp_dir("clean-home");
@@ -799,6 +973,7 @@ fn an_unusable_home_is_refused() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn a_symlink_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
     let home_t = common::temp_dir("swap-home");
@@ -853,6 +1028,7 @@ fn a_symlink_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
     assert_eq!(kept[0]["path"], text(&target));
 }
 
+#[cfg(unix)]
 #[test]
 fn a_leaf_symlink_is_moved_itself_never_followed() {
     let home_t = common::temp_dir("leaf-home");
@@ -885,6 +1061,7 @@ fn a_leaf_symlink_is_moved_itself_never_followed() {
     common::assert_record_inside_ram_disk(home);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_worktree_swapped_for_another_checkout_keeps_the_decoy() {
     let home_t = common::temp_dir("wt-swap-home");
@@ -1025,7 +1202,10 @@ fn dry_run_exit_codes_match_the_real_run() {
         String::from_utf8_lossy(&out.stderr)
     );
     let run = t.0.join("run");
-    write_run(&run, "", &[selection_item("rm", "/etc/hosts")], None);
+    let protected = t.0.join(".ssh/id_rsa");
+    fs::create_dir_all(t.0.join(".ssh")).unwrap();
+    fs::write(&protected, b"key").unwrap();
+    write_run(&run, "", &[selection_item("rm", &text(&protected))], None);
     let dry = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
     assert_eq!(dry.status.code(), Some(3));
     let real = common::cli(&["clean", &text(&run)], &t.0, &[]);
@@ -1058,6 +1238,7 @@ fn planning_ten_thousand_items_takes_well_under_a_second() {
     assert!(took < Duration::from_secs(1), "planning took {took:?}");
 }
 
+#[cfg(unix)]
 #[test]
 fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
     let t = common::temp_dir("clean-lock");
@@ -1127,4 +1308,235 @@ fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
     );
     let last = common::events_of(&run).pop().unwrap();
     assert_eq!(last["event"], "abandoned", "{last}");
+}
+
+#[cfg(windows)]
+#[test]
+fn clean_end_to_end_on_fixture_on_windows() {
+    let t = common::temp_dir("clean-windows");
+    let root = &t.0;
+    let run = root.join("run");
+    fs::create_dir_all(&run).unwrap();
+    let doomed = root.join("doomed");
+    fs::create_dir_all(doomed.join("nested/deeper")).unwrap();
+    fs::write(doomed.join("nested/deeper/file"), vec![1u8; 10_000]).unwrap();
+    let doomed_file = root.join("doomed-file.bin");
+    fs::write(&doomed_file, b"bytes").unwrap();
+    let not_in_scan = root.join("not-in-scan");
+    fs::create_dir_all(&not_in_scan).unwrap();
+    let protected = root.join(".ssh/id_rsa");
+    fs::create_dir_all(root.join(".ssh")).unwrap();
+    fs::write(&protected, b"key").unwrap();
+    common::sh(
+        root,
+        "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init",
+    );
+    let repo = root.join("repo");
+    let p = text;
+    let scan = [
+        scan_row("caches", "rm", &p(&doomed)),
+        scan_row("caches", "rm", &p(&doomed_file)),
+        scan_row("caches", "rm", &p(&protected)),
+        scan_row("worktrees", "worktree", &p(&repo)),
+    ]
+    .concat();
+    fs::write(run.join("scan.tsv"), scan).unwrap();
+    let items = [
+        selection_item("rm", &p(&doomed)),
+        selection_item("rm", &p(&doomed_file)),
+        selection_item("rm", &p(&not_in_scan)),
+        selection_item("rm", &p(&protected)),
+        selection_item("worktree", &p(&repo)),
+        selection_item("rm", &p(&repo)),
+        r#"{"action": "cmd", "cmd_id": "rm-rf-everything", "bytes": 1}"#.to_string(),
+    ]
+    .join(",");
+    fs::write(
+        run.join("selection.json"),
+        format!(r#"{{"items": [{items}], "total_bytes": 0}}"#),
+    )
+    .unwrap();
+
+    let dry = common::cli(&["clean", "--dry-run", &p(&run)], root, &[]);
+    let plan = String::from_utf8_lossy(&dry.stdout);
+    assert!(dry.status.success(), "{plan}");
+    assert!(
+        plan.contains(&format!("\ntrash -- {}\n", p(&doomed))),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("\ntrash -- {}\n", p(&doomed_file))),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("# rejected (protected path): {}", p(&protected))),
+        "{plan}"
+    );
+    assert!(plan.contains("# 3 items, 12288 bytes"), "{plan}");
+
+    let out = common::cli(&["clean", &p(&run)], root, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "clean failed: {stdout} {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("rejected: 4"), "{stdout}");
+    wait_done(&run);
+    let log = fs::read_to_string(run.join("clean.log")).unwrap();
+    common::assert_record_inside_ram_disk(root);
+    let record = disk_clean::trash::read(&p(root));
+    assert_eq!(record.len(), 2);
+    let bin = common::trash_dir(root);
+    for entry in &record {
+        let trashed = Path::new(&entry.trashed);
+        assert_eq!(trashed.parent(), Some(bin.as_path()), "{entry:?}");
+        assert!(
+            trashed
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("$R"),
+            "{entry:?}"
+        );
+        assert!(trashed.exists(), "{entry:?}");
+        assert!(
+            log.contains(&format!(
+                "trashed {} -> {}\n",
+                entry.original, entry.trashed
+            )),
+            "{log}"
+        );
+    }
+    assert!(log.contains("trashed: 2 items, 8192 bytes"), "{log}");
+    assert!(!doomed.exists() && !doomed_file.exists());
+    assert!(not_in_scan.exists() && repo.join("a").exists() && protected.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn a_junction_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
+    let home_t = common::temp_dir("swap-home-windows");
+    let decoy_t = common::temp_dir("swap-decoy-windows");
+    let home = &home_t.0;
+    let app = home.join("AppData/Local/app");
+    let target = app.join("victim");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("cache"), b"x").unwrap();
+    let decoy = decoy_t.0.join("app/victim");
+    fs::create_dir_all(&decoy).unwrap();
+    fs::write(decoy.join("precious"), b"keep me").unwrap();
+    let run = home.join("run");
+    write_run(
+        &run,
+        &scan_row("caches", "rm", &text(&target)),
+        &[selection_item("rm", &text(&target))],
+        Some((&format!("{}\n", text(&target)), "")),
+    );
+    fs::rename(&app, home.join("AppData/Local/app-moved")).unwrap();
+    common::junction(&app, &decoy_t.0.join("app"));
+
+    let dry = common::cli(&["clean", "--dry-run", &text(&run)], home, &[]);
+    let plan = String::from_utf8_lossy(&dry.stdout);
+    assert!(
+        plan.contains(&format!(
+            "# rejected (path changed since the scan): {}",
+            text(&target)
+        )),
+        "{plan}"
+    );
+    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    assert!(out.status.success());
+    let log = fs::read_to_string(run.join("clean.log")).unwrap_or_default()
+        + &String::from_utf8_lossy(&out.stdout);
+    assert!(
+        decoy.join("precious").exists(),
+        "the decoy was deleted\n{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "KEPT    {} (path changed since the scan)",
+            text(&target)
+        )),
+        "{log}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_leaf_junction_is_moved_itself_and_its_target_stays() {
+    let home_t = common::temp_dir("leaf-home-windows");
+    let decoy_t = common::temp_dir("leaf-decoy-windows");
+    let home = &home_t.0;
+    let caches = home.join("AppData/Local");
+    fs::create_dir_all(&caches).unwrap();
+    fs::write(decoy_t.0.join("precious"), b"keep me").unwrap();
+    let link = caches.join("link");
+    common::junction(&link, &decoy_t.0);
+    let run = home.join("run");
+    write_run(
+        &run,
+        &scan_row("caches", "rm", &text(&link)),
+        &[selection_item("rm", &text(&link))],
+        Some((&format!("{}\n", text(&link)), "")),
+    );
+    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    assert!(out.status.success());
+    assert!(
+        fs::symlink_metadata(&link).is_err(),
+        "the junction itself goes"
+    );
+    assert!(decoy_t.0.join("precious").exists(), "its target stays");
+    let record = disk_clean::trash::read(&text(home));
+    assert_eq!(record.len(), 1);
+    assert!(
+        fs::symlink_metadata(&record[0].trashed)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    common::assert_record_inside_ram_disk(home);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_worktree_swapped_for_a_junction_to_another_checkout_keeps_the_decoy() {
+    let home_t = common::temp_dir("wt-swap-home-windows");
+    let decoy_t = common::temp_dir("wt-swap-decoy-windows");
+    let home = &home_t.0;
+    common::sh(
+        home,
+        "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q -b wt ../wts/a/wt main",
+    );
+    common::sh(
+        &decoy_t.0,
+        "git init -q -b main repo2 && cd repo2 && echo b >b && git add b && git commit -qm init && git worktree add -q -b wt2 ../a/wt main",
+    );
+    let target = home.join("wts/a/wt");
+    let decoy = decoy_t.0.join("a/wt");
+    let run = home.join("run");
+    write_run(
+        &run,
+        &scan_row("worktrees", "worktree", &text(&target)),
+        &[selection_item("worktree", &text(&target))],
+        Some(("", &format!("{}\n", text(&target)))),
+    );
+    fs::rename(home.join("wts/a"), home.join("wts/a-moved")).unwrap();
+    common::junction(&home.join("wts/a"), &decoy_t.0.join("a"));
+
+    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    assert!(out.status.success());
+    let log = fs::read_to_string(run.join("clean.log")).unwrap_or_default()
+        + &String::from_utf8_lossy(&out.stdout);
+    assert!(
+        decoy.join("b").exists(),
+        "the decoy checkout was emptied\n{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "KEPT    {} (path changed since the scan)",
+            text(&target)
+        )),
+        "{log}"
+    );
 }

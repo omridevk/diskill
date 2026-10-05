@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 mod common;
 
 use disk_clean::scan::{self, Sink};

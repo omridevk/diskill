@@ -108,7 +108,7 @@ fn percent_encode(path: &[u8]) -> String {
 }
 
 fn trash_one(item: &Checked, home: &str, date: &str) -> Result<String, String> {
-    if same_item(&item.path, item.dev, item.ino) != Some(true) {
+    if same_item(&item.path, item.dev, item.ino, item.ino_hi) != Some(true) {
         return Err("it changed after the check".to_string());
     }
     let path = Path::new(&item.path);

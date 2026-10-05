@@ -31,11 +31,7 @@ git worktree add -q --detach ../detached-orphan main && (cd ../detached-orphan &
 add changed-after-scan
 "#,
     );
-    let mut sleeper = common::spawn(
-        Command::new("sleep")
-            .arg("300")
-            .current_dir(root.join("in-use")),
-    );
+    let mut sleeper = common::spawn(common::sleeper().current_dir(root.join("in-use")));
     std::thread::sleep(std::time::Duration::from_secs(1));
     std::fs::write(root.join("changed-after-scan/late.txt"), "late\n").unwrap();
 
@@ -43,7 +39,7 @@ add changed-after-scan
         .unwrap()
         .flatten()
         .filter(|e| e.path().is_dir() && e.file_name() != "repo")
-        .map(|e| e.path().to_string_lossy().into_owned())
+        .map(|e| common::text(&e.path()))
         .collect();
     paths.sort();
     let mut out = Vec::new();

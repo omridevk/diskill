@@ -114,7 +114,79 @@ leftovers, Steam, core files, new commands) is not in this step.
 - **Test fixtures that depend on a platform limit** (path length for "nested too deep") take the
   limit from a per-platform helper in `tests/common`, not a second copy of the test.
 
+## Release assets and launcher (approved 2026-10-05, after PRs #5, #6, #8)
+
+User stories 27, 28 and 35 of `cross-platform.md` for Linux. Today `release.yml` publishes only
+`disk-clean-macos-universal.tar.gz`, and `run.sh` `download()` returns early on anything but Darwin,
+so every Linux user builds from source.
+
+### Assets
+
+| Asset | Rust target | Built on |
+|---|---|---|
+| `disk-clean-macos-universal.tar.gz` | unchanged | unchanged |
+| `disk-clean-linux-x86_64.tar.gz` | `x86_64-unknown-linux-musl` | `ubuntu-24.04` |
+| `disk-clean-linux-arm64.tar.gz` | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` |
+
+- Each tarball holds one file, `disk-clean` (mode 755), as the macOS one does. Each has a
+  `<asset>.sha256` in the `sha256sum` format (`<hash>  <asset>`), which `shasum -a 256 -c` also reads.
+- **Static musl, not glibc** (approved 2026-10-05). A glibc binary built on Ubuntu 24.04
+  needs glibc 2.39 and does not start on Debian 12, RHEL 9 or Alpine; a static musl binary runs on any
+  Linux kernel the code supports. Every `libc` call the Linux code makes exists for musl in `libc`
+  0.2.189 (`getrandom`, `setpriority`, `statvfs`, `SYS_renameat2`, `RENAME_NOREPLACE` checked). No C
+  dependency, no new crate, no cross toolchain: each architecture builds natively on its own runner
+  with Rust's bundled musl.
+- The source build (launcher fallback, `cargo run`) keeps using the host's default target.
+
+### release.yml
+
+- The macOS job is unchanged except for the name of its uploaded artifact. The tag check (tag matches
+  `plugin.json`) stays in exactly one job.
+- One new job, a two-entry matrix (the table above), each entry: checkout, toolchain 1.93 with the
+  musl target, Socket Firewall fetch and report exactly as the macOS job does them, `cargo build
+  --release --frozen --target <target>`, a step that fails unless the binary is statically linked,
+  tar, sha256, upload as its own artifact. Same pinned action SHAs, `permissions: contents: read`.
+- `publish` needs every build job, downloads all artifacts, checks every `.sha256`, attests all three
+  tarballs in one `attest-build-provenance` call (`subject-path` lists them), and attaches all six
+  files to the one release.
+- zizmor stays clean.
+
+### CI
+
+- The Linux job becomes a matrix over `ubuntu-latest` and `ubuntu-24.04-arm` and runs fmt, clippy and
+  the full suite for the musl target, so the shipped target is what the suite exercises on both
+  architectures ("a platform is not released until its runner is green"). The host-target build
+  stays covered by clippy on the host target.
+
+### run.sh
+
+- The asset comes from `uname -s` and `uname -m`: `Darwin` any arch to the macOS universal asset;
+  `Linux` with `x86_64` to `linux-x86_64`; `Linux` with `aarch64` or `arm64` to `linux-arm64`; anything
+  else skips the download and goes to the source build, as Linux does today.
+- Checksum tool: `sha256sum -c` when present, else `shasum -a 256 -c`; with neither, no download (the
+  source build runs). The existing rules hold: the `.sha256` must name the expected asset, a mismatch
+  exits 1 with the existing message and never runs or builds, a failed download falls back to the
+  source build.
+- Messages stay byte-identical on macOS. `shellcheck` stays clean.
+
+### Docs
+
+- README: requirements say macOS or Linux; the release section lists the three assets and the
+  `gh attestation verify` line for each. SKILL.md drops "On Linux it is built from source with cargo
+  for now."
+
+### Checks
+
+- Local, on the branch: build both musl targets in `rust:1.93` containers (arm64 native, x86_64
+  under `--platform linux/amd64`); `file` reports static; each binary runs a scan in a sandboxed home
+  on `debian:12`, `ubuntu:20.04` and `alpine` (glibc-independence).
+- `run.sh` on Linux in a container for each arch, with `curl` on `PATH` replaced by a stub serving the
+  locally built tarball and its `.sha256`: picks the right asset, installs, runs; a tampered `.sha256`
+  exits 1 with the mismatch message; no `sha256sum`/`shasum` falls to the source build. Same on macOS
+  for the universal asset (unchanged behaviour).
+- `actionlint`/zizmor clean on both workflows. The release workflow itself is first exercised by the
+  next tag; it is not run before that.
+
 ## Not in this step
 
-Launcher and release assets for Linux (next task after this lands), Windows, the page, SKILL.md text
-beyond naming the Linux Trash.
+Windows, the page, SKILL.md text beyond naming the Linux Trash and the launcher line above.
