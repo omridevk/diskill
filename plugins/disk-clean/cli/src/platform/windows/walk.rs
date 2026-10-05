@@ -142,9 +142,22 @@ fn close(handle: HANDLE) {
     let _ = unsafe { CloseHandle(handle) };
 }
 
+pub(super) fn identity(handle: HANDLE) -> Option<(u64, u64, u64)> {
+    let id: FILE_ID_INFO = info(handle, FileIdInfo)?;
+    let file = u128::from_le_bytes(id.FileId.Identifier);
+    Some((id.VolumeSerialNumber, file as u64, (file >> 64) as u64))
+}
+
+pub fn dev_and_ino(path: &str) -> io::Result<(u64, u64, u64)> {
+    let handle = open_attributes(&wide(Path::new(path))).ok_or_else(io::Error::last_os_error)?;
+    let id = identity(handle).ok_or_else(io::Error::last_os_error);
+    close(handle);
+    id
+}
+
 fn volume_of(name: &[u16]) -> Option<Volume> {
     let handle = open_attributes(name)?;
-    let id: Option<FILE_ID_INFO> = info(handle, FileIdInfo);
+    let id = identity(handle);
     close(handle);
     let mut root = [0u16; 1024];
     let (mut sectors, mut bytes) = (0u32, 0u32);
@@ -163,7 +176,7 @@ fn volume_of(name: &[u16]) -> Option<Volume> {
             .map_or(4096, |()| u64::from(sectors) * u64::from(bytes))
     };
     Some(Volume {
-        serial: id?.VolumeSerialNumber,
+        serial: id?.0,
         cluster: cluster.max(1),
     })
 }
@@ -199,12 +212,12 @@ fn meta_from(name: &[u16], e: &Entry, volume: &Volume) -> Meta {
         return meta;
     }
     if let Some(handle) = open_attributes(name) {
-        let id: Option<FILE_ID_INFO> = info(handle, FileIdInfo);
+        let id = identity(handle);
         let standard: Option<FILE_STANDARD_INFO> = info(handle, FileStandardInfo);
         close(handle);
-        if let Some(id) = id {
-            meta.dev = id.VolumeSerialNumber;
-            meta.ino = u64::from_le_bytes(id.FileId.Identifier[..8].try_into().unwrap_or([0; 8]));
+        if let Some((dev, ino, _)) = id {
+            meta.dev = dev;
+            meta.ino = ino;
         }
         if let Some(standard) = standard {
             meta.nlink = u64::from(standard.NumberOfLinks);

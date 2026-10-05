@@ -12,9 +12,7 @@ use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES,
-    FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FileIdInfo, GetDiskFreeSpaceExW, GetDriveTypeW, GetFileInformationByHandleEx,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES, GetDiskFreeSpaceExW, GetDriveTypeW,
     GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, MOVE_FILE_FLAGS,
     MoveFileExW, SetFileAttributesW,
 };
@@ -153,29 +151,10 @@ pub fn uid() -> u32 {
     0
 }
 
-pub fn dev_and_ino(path: &str) -> io::Result<(u64, u64, u64)> {
-    let file = fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES.0)
-        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
-        .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0)
-        .open(long(Path::new(path)))?;
-    let mut info = FILE_ID_INFO::default();
-    // SAFETY: file is an open handle and info is a FILE_ID_INFO of the size passed.
-    unsafe {
-        GetFileInformationByHandleEx(
-            HANDLE(file.as_raw_handle()),
-            FileIdInfo,
-            (&raw mut info).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    }
-    .map_err(io_error)?;
-    let id = u128::from_le_bytes(info.FileId.Identifier);
-    Ok((info.VolumeSerialNumber, id as u64, (id >> 64) as u64))
-}
-
 pub fn same_item(path: &str, dev: u64, ino: u64, ino_hi: u64) -> Option<bool> {
-    dev_and_ino(path).ok().map(|id| id == (dev, ino, ino_hi))
+    super::walk::dev_and_ino(path)
+        .ok()
+        .map(|id| id == (dev, ino, ino_hi))
 }
 
 pub fn is_trash_dir(dir: &Path, _home: &str) -> bool {

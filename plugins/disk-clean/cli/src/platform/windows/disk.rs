@@ -1,8 +1,9 @@
 use super::path::{at_or_within, known_folder, wide, within};
 use crate::platform::{VolumeStats, path_text, split_root};
 use std::fs;
-use std::os::windows::fs::MetadataExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetTempPath2W};
 use windows::Win32::UI::Shell::FOLDERID_Windows;
 use windows::core::PCWSTR;
@@ -62,6 +63,7 @@ pub fn user_tmp_base() -> Option<String> {
     (!in_windows && is_fixed_drive(root)).then_some(tmp)
 }
 
-pub fn file_id(meta: &fs::Metadata) -> u64 {
-    meta.creation_time()
+pub fn file_id(file: &fs::File) -> Option<u128> {
+    let (_, low, high) = super::walk::identity(HANDLE(file.as_raw_handle()))?;
+    Some(u128::from(high) << 64 | u128::from(low))
 }

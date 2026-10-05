@@ -18,7 +18,7 @@ const BIND_FOR: Duration = Duration::from_secs(10);
 const CLOSING_GRACE: Duration = Duration::from_secs(1);
 
 struct Tail {
-    inode: Option<u64>,
+    inode: Option<u128>,
     offset: u64,
     pending: Vec<u8>,
 }
@@ -78,10 +78,11 @@ fn read_from(path: &Path, tail: &mut Tail) -> bool {
     let Ok(meta) = file.metadata() else {
         return false;
     };
-    let replaced = tail.inode != Some(platform::file_id(&meta)) || meta.len() < tail.offset;
+    let id = platform::file_id(&file);
+    let replaced = tail.inode != id || meta.len() < tail.offset;
     if replaced {
         *tail = Tail {
-            inode: Some(platform::file_id(&meta)),
+            inode: id,
             offset: 0,
             pending: Vec::new(),
         };
