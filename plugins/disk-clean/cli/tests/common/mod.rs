@@ -210,7 +210,7 @@ fn detach_vhdx(file: &Path) {
 }
 
 #[cfg(windows)]
-fn free_letter() -> char {
+pub fn free_letter() -> char {
     ('G'..='Z')
         .rev()
         .find(|l| !Path::new(&format!("{l}:\\")).exists())
@@ -373,8 +373,7 @@ pub fn bin(home: &Path) -> Command {
         .env("TEMP", home)
         .env("TMP", home)
         .env("LOCALAPPDATA", home.join("AppData\\Local"))
-        .env("APPDATA", home.join("AppData\\Roaming"))
-        .env("DISK_CLEAN_DRIVES", "");
+        .env("APPDATA", home.join("AppData\\Roaming"));
     cmd
 }
 
@@ -468,6 +467,16 @@ pub fn sleeper() -> Command {
     let mut sleep = Command::new("powershell");
     sleep.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 300"]);
     sleep
+}
+
+#[cfg(unix)]
+pub fn drives_arg(_home: &Path) -> String {
+    "all".to_string()
+}
+
+#[cfg(windows)]
+pub fn drives_arg(home: &Path) -> String {
+    text(home)[..1].to_string()
 }
 
 pub fn cli(args: &[&str], home: &Path, env: &[(&str, &str)]) -> std::process::Output {

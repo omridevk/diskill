@@ -3,6 +3,7 @@ use crate::platform::{VolumeStats, path_text, split_root};
 use std::fs;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
@@ -95,17 +96,42 @@ pub(super) fn is_local_disk(root: &str) -> bool {
     local
 }
 
+static CHOSEN: OnceLock<u32> = OnceLock::new();
+
+pub fn choose_drives(list: &str) -> Result<(), String> {
+    if list.eq_ignore_ascii_case("all") {
+        return Ok(());
+    }
+    let mut chosen = 0u32;
+    for name in list
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|n| !n.is_empty())
+    {
+        let [letter @ (b'a'..=b'z' | b'A'..=b'Z')] = name.as_bytes() else {
+            return Err(format!("--drives {name}: not a drive letter"));
+        };
+        let letter = letter.to_ascii_uppercase();
+        let drive = char::from(letter);
+        if !is_local_disk(&format!("{drive}:/")) {
+            return Err(format!(
+                "--drives: {drive}: is not a fixed local NTFS or ReFS drive"
+            ));
+        }
+        chosen |= 1 << (letter - b'A');
+    }
+    if chosen == 0 {
+        return Err("--drives takes drive letters (C,D or \"C D\") or all".to_string());
+    }
+    let _ = CHOSEN.set(chosen);
+    Ok(())
+}
+
 pub(super) fn local_disks() -> Vec<String> {
-    let chosen = std::env::var("DISK_CLEAN_DRIVES").ok();
     drive_roots()
         .filter(|root| {
-            chosen.as_deref().is_none_or(|list| {
-                list.split(',').any(|d| {
-                    d.trim()
-                        .get(..1)
-                        .is_some_and(|l| root.starts_with(&l.to_ascii_uppercase()))
-                })
-            })
+            CHOSEN
+                .get()
+                .is_none_or(|chosen| chosen & 1 << (root.as_bytes()[0] - b'A') != 0)
         })
         .filter(|root| is_local_disk(root))
         .collect()

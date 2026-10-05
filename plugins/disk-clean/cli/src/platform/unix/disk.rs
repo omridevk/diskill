@@ -18,3 +18,12 @@ pub fn belongs_to_user(_path: &Path, _home: &str) -> bool {
 pub fn file_id(file: &fs::File) -> Option<u128> {
     file.metadata().ok().map(|meta| u128::from(meta.ino()))
 }
+
+pub fn choose_drives(list: &str) -> Result<(), String> {
+    if list.eq_ignore_ascii_case("all") {
+        return Ok(());
+    }
+    Err(format!(
+        "--drives {list}: choosing drives is Windows-only; only --drives all is accepted here"
+    ))
+}

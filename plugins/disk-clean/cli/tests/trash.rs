@@ -1356,13 +1356,12 @@ const ADMINISTRATORS: &str = "S-1-5-32-544";
 #[cfg(windows)]
 fn scan_with_drive(s: &Sandbox, drive: &Path) -> String {
     let out = common::cli(
-        &["scan", &text(&s.run)],
+        &["scan", "--drives", &text(drive)[..1], &text(&s.run)],
         &s.home,
         &[
             ("DISK_CLEAN_SKIP_MAP", "1"),
             ("DISK_CLEAN_MIN_BYTES", "1"),
             ("DISK_CLEAN_NM_MIN_BYTES", "1"),
-            ("DISK_CLEAN_DRIVES", &text(drive)),
         ],
     );
     assert!(
