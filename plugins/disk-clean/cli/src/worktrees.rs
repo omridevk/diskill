@@ -1,3 +1,4 @@
+use crate::platform;
 use crate::scan::Row;
 use crate::util::{self, realpath};
 use rayon::prelude::*;
@@ -469,7 +470,7 @@ pub fn check_repos(
     let threads = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2));
     let Ok(pool) = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
-        .start_handler(|_| util::utility_qos())
+        .start_handler(|_| platform::utility_qos())
         .build()
     else {
         return Vec::new();

@@ -1,7 +1,7 @@
+use crate::platform;
 use crate::util;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -229,13 +229,7 @@ fn turn_away(mut stream: TcpStream) {
 }
 
 fn accept(listener: &TcpListener) -> io::Result<TcpStream> {
-    let mut waiting = libc::pollfd {
-        fd: listener.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: poll reads and writes only the one pollfd it is given.
-    unsafe { libc::poll(&mut waiting, 1, -1) };
+    platform::wait_for_connection(listener);
     let (stream, _) = util::with_fd_lock(|| listener.accept())?;
     stream.set_nonblocking(false)?;
     Ok(stream)

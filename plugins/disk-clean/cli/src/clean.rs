@@ -1,3 +1,4 @@
+use crate::platform;
 use crate::trash;
 use crate::util;
 use crate::worktrees;
@@ -5,8 +6,6 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -17,7 +16,6 @@ const FREE_EVERY: Duration = Duration::from_millis(500);
 const EVENTS: &str = "clean.events";
 const STATUS: &str = "status";
 const LOCK: &str = "clean.lock";
-const LOCK_FD: &str = "DISK_CLEAN_LOCK_FD";
 const LOCK_TRIES: usize = 50;
 const RECORD_TRIES: usize = 1500;
 const ALREADY_RUNNING: i32 = 4;
@@ -191,7 +189,7 @@ pub fn plan(index: &ScanIndex, items: &[Value]) -> Plan {
 
 pub fn plan_in(index: &ScanIndex, items: &[Value], home: &str) -> Plan {
     let home = home.to_string();
-    let tmp_base = util::user_tmp_base();
+    let tmp_base = platform::user_tmp_base();
     let mut plan = Plan::default();
     let mut seen = HashSet::new();
     for item in items {
@@ -406,27 +404,6 @@ fn lock_is_free(dir: &Path) -> bool {
     }
 }
 
-fn pass_lock(cmd: &mut Command, fd: RawFd) {
-    cmd.env(LOCK_FD, fd.to_string());
-    // SAFETY: in the forked child, fcntl only clears close-on-exec on the lock fd so the worker inherits the lock.
-    unsafe {
-        cmd.pre_exec(move || match libc::fcntl(fd, libc::F_SETFD, 0) {
-            -1 => Err(io::Error::last_os_error()),
-            _ => Ok(()),
-        });
-    }
-}
-
-fn keep_lock_from_commands() {
-    if let Some(fd) = std::env::var(LOCK_FD)
-        .ok()
-        .and_then(|v| v.parse::<RawFd>().ok())
-    {
-        // SAFETY: only sets close-on-exec on the inherited lock fd, so commands the worker runs never hold the lock.
-        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    }
-}
-
 fn remove_if_present(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
@@ -554,8 +531,8 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    pass_lock(&mut cmd, lock.as_raw_fd());
-    let child = util::spawn_detached(&mut cmd)?;
+    platform::pass_lock(&mut cmd, &lock);
+    let child = platform::spawn_detached(&mut cmd)?;
     let pid = child.id();
     fs::write(dir.join("worker.pid"), format!("{pid}\n"))?;
 
@@ -799,11 +776,11 @@ fn listed(dir: &Path, name: &str) -> Vec<String> {
 }
 
 pub fn worker(run_dir: &str) -> io::Result<i32> {
-    keep_lock_from_commands();
+    platform::keep_lock_from_commands();
     let dir = Path::new(run_dir);
     let events = Events::open(dir);
     let run = format!("{}-{}", util::now(), std::process::id());
-    println!("started {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
+    println!("started {}", platform::local_time(c"%Y-%m-%d %H:%M:%S"));
 
     let rm_list = listed(dir, "rm-list");
     let now_list = listed(dir, "now-list");
@@ -812,7 +789,7 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
     let planned = planned_bytes(dir);
     let bytes_of = |key: &str| planned.get(key).copied().unwrap_or(0);
     let home = util::home();
-    let tmp_base = util::user_tmp_base();
+    let tmp_base = platform::user_tmp_base();
     trash::synced(&home, &|event, data| events.emit(event, data));
     let rm_check = |target: &str| safe_to_remove("rm", target, &home, tmp_base.as_deref());
     let worktree_check = |target: &str| {
@@ -925,7 +902,7 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
         "free space changed by {} bytes since the cleanup started ({free_at_start} -> {after})",
         after - free_at_start
     );
-    println!("finished {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
+    println!("finished {}", platform::local_time(c"%Y-%m-%d %H:%M:%S"));
     events.emit(
         "done",
         json!({

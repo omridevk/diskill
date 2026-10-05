@@ -1,5 +1,5 @@
 use crate::insights::{self, Ins, Insights};
-use crate::util;
+use crate::platform;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ffi::{CString, OsStr, OsString};
 use std::fs;
@@ -716,7 +716,7 @@ pub fn walk(
     progress: &dyn Fn(&Walk, &Path),
 ) -> Option<u64> {
     let root_meta = meta_of(&fs::symlink_metadata(root).ok()?);
-    let threads = util::efficiency_cores();
+    let threads = platform::efficiency_cores();
     let reader = Reader {
         dev: root_meta.dev,
         ahead: parallel.then(Ahead::default),
@@ -742,7 +742,7 @@ pub fn walk(
         if reader.ahead.is_some() {
             for _ in 0..threads {
                 s.spawn(|| {
-                    util::utility_qos();
+                    platform::utility_qos();
                     read_ahead(&reader)
                 });
             }

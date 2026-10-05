@@ -1,12 +1,12 @@
 use crate::clean;
 use crate::http::{self, constant_eq, query_token, refuse, respond};
+use crate::platform;
 use crate::review::{answer_trash_job, approved_page, run_trash_job};
 use crate::util;
 use serde_json::Value;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -78,10 +78,10 @@ fn read_from(path: &Path, tail: &mut Tail) -> bool {
     let Ok(meta) = file.metadata() else {
         return false;
     };
-    let replaced = tail.inode != Some(meta.ino()) || meta.len() < tail.offset;
+    let replaced = tail.inode != Some(platform::file_id(&meta)) || meta.len() < tail.offset;
     if replaced {
         *tail = Tail {
-            inode: Some(meta.ino()),
+            inode: Some(platform::file_id(&meta)),
             offset: 0,
             pending: Vec::new(),
         };

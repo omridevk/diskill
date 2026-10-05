@@ -1,4 +1,5 @@
 use crate::clean;
+use crate::platform;
 use crate::util;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -630,7 +631,7 @@ fn left_bytes(record: &Record, run: &str) -> (usize, i64) {
 
 pub fn undo(record: &mut Record, ids: &[String], run: &str, emit: Emit) -> io::Result<Report> {
     let home = record.home.clone();
-    let tmp_base = util::user_tmp_base();
+    let tmp_base = platform::user_tmp_base();
     let chosen = record.trashed(ids);
     let job = job_id();
     emit(

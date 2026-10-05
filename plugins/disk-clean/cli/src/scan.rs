@@ -1,4 +1,5 @@
 use crate::insights;
+use crate::platform;
 use crate::review;
 use crate::trash;
 use crate::util::{self, tilde};
@@ -250,7 +251,7 @@ pub fn parse_docker_bytes(s: &str) -> u64 {
 }
 
 fn probe_docker() -> Option<u64> {
-    if !util::which("docker") || !util::output("docker", &["info"])?.0 {
+    if !platform::which("docker") || !util::output("docker", &["info"])?.0 {
         return None;
     }
     let (_, out) = util::output("docker", &["system", "df", "--format", "{{.Reclaimable}}"])?;
@@ -258,7 +259,7 @@ fn probe_docker() -> Option<u64> {
 }
 
 fn has_sims(home: &str) -> bool {
-    util::which("xcrun") && Path::new(&format!("{home}/{SIM_DEVICES}")).is_dir()
+    platform::which("xcrun") && Path::new(&format!("{home}/{SIM_DEVICES}")).is_dir()
 }
 
 fn probe_sims(home: &str) -> usize {
@@ -271,7 +272,7 @@ fn probe_sims(home: &str) -> usize {
 }
 
 fn probe_brew() -> Option<String> {
-    if !util::which("brew") {
+    if !platform::which("brew") {
         return None;
     }
     let (_, out) = util::output("brew", &["--cache"])?;
@@ -385,7 +386,7 @@ pub fn new_run_dir(run_dir: Option<String>) -> io::Result<PathBuf> {
         None => PathBuf::from(format!(
             "{}/.cache/disk-clean/run-{}",
             util::home(),
-            util::local_time(c"%Y%m%d-%H%M%S")
+            platform::local_time(c"%Y%m%d-%H%M%S")
         )),
     };
     fs::create_dir_all(&run_dir)?;
@@ -526,9 +527,9 @@ fn interrupted() -> io::Error {
 }
 
 pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Result<()> {
-    util::utility_qos();
+    platform::utility_qos();
     let _ = rayon::ThreadPoolBuilder::new()
-        .start_handler(|_| util::utility_qos())
+        .start_handler(|_| platform::utility_qos())
         .build_global();
     let cfg = Config::from_env();
     let home = util::home();
@@ -536,7 +537,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     let started = Instant::now();
     eprintln!("  scanning (one parallel walk of the data volume)...");
 
-    let tmp_base = util::user_tmp_base();
+    let tmp_base = platform::user_tmp_base();
     let mount = util::data_mount();
     let start = util::volume_stats(&mount);
     let used = start.as_ref().map_or(0, |s| s.used);
@@ -607,8 +608,8 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     std::thread::scope(|s| {
         let (out, cfg, home) = (&out, &cfg, &home);
         let docker = s.spawn(move || {
-            util::utility_qos();
-            if util::which("docker") {
+            platform::utility_qos();
+            if platform::which("docker") {
                 pend(&[docker_row(0)], out, sink);
             }
             let bytes = probe_docker();
@@ -619,7 +620,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             bytes
         });
         let sims = s.spawn(move || {
-            util::utility_qos();
+            platform::utility_qos();
             if has_sims(home) {
                 pend(&[sims_row("xcrun simctl delete unavailable", 0)], out, sink);
             }
@@ -632,7 +633,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         });
         let (on_listed, on_checked) = (&on_listed, &on_checked);
         let checks = s.spawn(move || {
-            util::utility_qos();
+            platform::utility_qos();
             worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked)
         });
 
