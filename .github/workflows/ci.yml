@@ -184,7 +184,7 @@ jobs:
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
-      - run: cargo test --frozen
+      - run: cargo test --frozen --no-fail-fast
 
   disk-clean-windows-arm:
     name: disk-clean cli (Windows, arm64)
@@ -235,7 +235,7 @@ jobs:
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
-      - run: cargo test --frozen
+      - run: cargo test --frozen --no-fail-fast
 
   zizmor:
     name: zizmor
