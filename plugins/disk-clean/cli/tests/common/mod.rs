@@ -518,7 +518,13 @@ pub fn user_sid() -> String {
 
 #[cfg(windows)]
 pub fn recycle_bin(root: &Path) -> PathBuf {
-    PathBuf::from(format!("{}$Recycle.Bin/{}", text(root), user_sid()))
+    let bin = std::fs::read_dir(root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|name| name.eq_ignore_ascii_case("$Recycle.Bin"))
+        .unwrap_or_else(|| "$Recycle.Bin".to_string());
+    PathBuf::from(format!("{}{bin}/{}", text(root), user_sid()))
 }
 
 #[cfg(windows)]

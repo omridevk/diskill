@@ -1208,12 +1208,11 @@ fn the_recycle_bin_gets_an_r_and_i_pair_and_undo_removes_both() {
 #[test]
 fn items_already_in_the_recycle_bin_are_removed_for_good_not_trashed_again() {
     let s = sandbox("trash-old-windows");
-    let bin = common::trash_dir(&s.home);
     let doomed = s.home.join("old.txt");
     fs::write(&doomed, b"old").unwrap();
-    let before = bin_entries(&bin);
+    let before = bin_entries(&common::trash_dir(&s.home));
     common::recycle_by_hand(&doomed);
-    let old = recycled_by_hand(&bin, &before);
+    let old = recycled_by_hand(&common::trash_dir(&s.home), &before);
     let info = info_of_recycled(&old);
     assert!(info.is_file());
     approve(&s, &[("rm", &old, 4096)]);
@@ -1231,14 +1230,13 @@ fn items_already_in_the_recycle_bin_are_removed_for_good_not_trashed_again() {
 #[test]
 fn the_confirm_plan_lists_trash_moves_apart_from_steps_that_cannot_be_undone_on_windows() {
     let s = sandbox("trash-preview-windows");
-    let bin = common::trash_dir(&s.home);
     let a = s.home.join("AppData/Local/a");
     make(&a, 100);
     let doomed = s.home.join("old");
     make(&doomed, 100);
-    let before = bin_entries(&bin);
+    let before = bin_entries(&common::trash_dir(&s.home));
     common::recycle_by_hand(&doomed);
-    let old = recycled_by_hand(&bin, &before);
+    let old = recycled_by_hand(&common::trash_dir(&s.home), &before);
     let scan = scan_row("caches", "rm", &text(&a), 4096)
         + &scan_row("trash", "rm", &text(&old), 10)
         + "docker\tDocker\tD\treview\t0\tcmd\tdocker-prune\tdocker system prune -f\tcmd:docker-prune\t7\tn\t-\tvm\n";
@@ -1351,10 +1349,10 @@ fn an_item_on_another_drive_goes_to_that_drives_recycle_bin() {
     let (a, b) = (other.0.join("a"), other.0.join("b"));
     make(&a, 100);
     make(&b, 200);
-    let other_bin = common::recycle_bin(&other.0);
 
     approve(&s, &[("rm", &a, 4096)]);
     clean(&s);
+    let other_bin = common::recycle_bin(&other.0);
     let entry = record(&s).remove(0);
     let trashed = PathBuf::from(&entry.trashed);
     assert_eq!(trashed.parent(), Some(other_bin.as_path()), "{entry:?}");
