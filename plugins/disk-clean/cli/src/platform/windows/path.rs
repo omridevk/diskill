@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 use windows::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{FOLDERID_Profile, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
@@ -57,6 +58,17 @@ pub(super) fn from_wide(buf: &[u16]) -> OsString {
 }
 
 pub(super) fn known_folder(id: &GUID) -> Option<String> {
+    static RESOLVED: Mutex<Vec<(GUID, Option<String>)>> = Mutex::new(Vec::new());
+    let mut resolved = RESOLVED.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, path)) = resolved.iter().find(|(known, _)| known == id) {
+        return path.clone();
+    }
+    let path = resolve_known_folder(id);
+    resolved.push((*id, path.clone()));
+    path
+}
+
+fn resolve_known_folder(id: &GUID) -> Option<String> {
     // SAFETY: SHGetKnownFolderPath returns a NUL-terminated string we read once and free with CoTaskMemFree.
     let text = unsafe {
         let raw = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
