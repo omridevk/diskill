@@ -2,6 +2,7 @@ import {useRef, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
 import {formatBytes, plural} from '@/lib/data'
+import {usePlatform} from '@/lib/platform'
 
 export function EmptyDialog({
   count,
@@ -21,6 +22,7 @@ export function EmptyDialog({
   returnFocus?: RefObject<HTMLButtonElement | null>
 }) {
   const keep = useRef<HTMLButtonElement>(null)
+  const {restoreByHand} = usePlatform()
   return (
     <Dialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-md" initialFocus={keep} finalFocus={returnFocus}>
@@ -28,7 +30,7 @@ export function EmptyDialog({
           <DialogTitle>Empty these from the Trash?</DialogTitle>
           <DialogDescription>
             This deletes the {plural(count, 'item', 'items')} ({formatBytes(bytes)}) disk-clean put in the Trash, for good. It can't be undone:
-            Undo and Finder's Put Back stop working for them. Nothing else in your Trash is touched.
+            Undo and {restoreByHand} stop working for them. Nothing else in your Trash is touched.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

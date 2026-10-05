@@ -1,3 +1,4 @@
+use crate::platform;
 use crate::trash;
 use crate::util;
 use crate::worktrees;
@@ -5,8 +6,6 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -17,51 +16,13 @@ const FREE_EVERY: Duration = Duration::from_millis(500);
 const EVENTS: &str = "clean.events";
 const STATUS: &str = "status";
 const LOCK: &str = "clean.lock";
-const LOCK_FD: &str = "DISK_CLEAN_LOCK_FD";
 const LOCK_TRIES: usize = 50;
 const RECORD_TRIES: usize = 1500;
 const ALREADY_RUNNING: i32 = 4;
 pub const PATH_CHANGED: &str = "path changed since the scan";
 
-const PERSONAL: &[&str] = &[
-    "documents",
-    "desktop",
-    "pictures",
-    "movies",
-    "music",
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".kube",
-    ".claude",
-    "library/mail",
-    "library/messages",
-];
-const SYSTEM: &[&str] = &[
-    "/System",
-    "/Library",
-    "/Applications",
-    "/usr",
-    "/bin",
-    "/sbin",
-    "/etc",
-    "/var",
-    "/private",
-    "/opt",
-];
-
-const COMMANDS: &[(&str, &str, &[&str])] = &[
-    (
-        "xcode-unavailable-sims",
-        "xcrun",
-        &["simctl", "delete", "unavailable"],
-    ),
-    ("docker-prune", "docker", &["system", "prune", "-f"]),
-    ("brew-cleanup", "brew", &["cleanup", "--prune=all", "-s"]),
-];
-
 fn command(id: &str) -> Option<(&'static str, &'static [&'static str])> {
-    COMMANDS
+    platform::COMMANDS
         .iter()
         .find(|(known, _, _)| *known == id)
         .map(|(_, program, args)| (*program, *args))
@@ -191,7 +152,7 @@ pub fn plan(index: &ScanIndex, items: &[Value]) -> Plan {
 
 pub fn plan_in(index: &ScanIndex, items: &[Value], home: &str) -> Plan {
     let home = home.to_string();
-    let tmp_base = util::user_tmp_base();
+    let tmp_base = platform::user_tmp_base();
     let mut plan = Plan::default();
     let mut seen = HashSet::new();
     for item in items {
@@ -263,46 +224,16 @@ pub fn is_canonical(p: &str) -> bool {
     })
 }
 
-fn inside(p: &str, root: &str) -> bool {
+pub(crate) fn inside(p: &str, root: &str) -> bool {
     p.strip_prefix(root)
         .is_some_and(|rest| rest.starts_with('/'))
-}
-
-fn is_protected(p: &str, home: &str) -> bool {
-    let (p, home) = (p.to_ascii_lowercase(), home.to_ascii_lowercase());
-    if p == home || inside(&home, &p) {
-        return true;
-    }
-    let Some(rest) = p.strip_prefix(&format!("{home}/")) else {
-        return false;
-    };
-    let personal = PERSONAL
-        .iter()
-        .any(|name| rest == *name || inside(rest, name));
-    let keychains = rest == "library"
-        || rest
-            .strip_prefix("library/")
-            .is_some_and(|r| r.contains("keychains"));
-    personal || keychains
-}
-
-fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
-    let in_user_temp = tmp_base.filter(|b| !b.is_empty()).is_some_and(|base| {
-        ["T", "C", "X"]
-            .iter()
-            .any(|sub| inside(p, &format!("{base}/{sub}")))
-    });
-    if inside(p, "/private/tmp") || in_user_temp {
-        return true;
-    }
-    inside(p, home) && !SYSTEM.iter().any(|s| p == *s || inside(p, s))
 }
 
 pub fn is_allowed(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
     is_canonical(p)
         && is_canonical(home)
-        && !is_protected(p, home)
-        && in_allowed_root(p, home, tmp_base)
+        && !platform::is_protected(p, home)
+        && platform::in_allowed_root(p, home, tmp_base)
 }
 
 pub fn safe_to_remove(
@@ -359,7 +290,8 @@ fn print_dry_run(plan: &Plan, mode: Mode) {
     );
     if !to_trash.is_empty() {
         println!(
-            "# moved to the Trash (undo in the page, with disk-clean undo RUN_DIR, or Finder's Put Back):"
+            "# moved to the Trash (undo in the page, with disk-clean undo RUN_DIR, or {}):",
+            platform::RESTORE_BY_HAND
         );
         for path in &to_trash {
             println!("trash -- {}", shell_quote(path));
@@ -403,27 +335,6 @@ fn lock_is_free(dir: &Path) -> bool {
     match fs::File::open(dir.join(LOCK)) {
         Ok(file) => file.try_lock_shared().is_ok(),
         Err(_) => true,
-    }
-}
-
-fn pass_lock(cmd: &mut Command, fd: RawFd) {
-    cmd.env(LOCK_FD, fd.to_string());
-    // SAFETY: in the forked child, fcntl only clears close-on-exec on the lock fd so the worker inherits the lock.
-    unsafe {
-        cmd.pre_exec(move || match libc::fcntl(fd, libc::F_SETFD, 0) {
-            -1 => Err(io::Error::last_os_error()),
-            _ => Ok(()),
-        });
-    }
-}
-
-fn keep_lock_from_commands() {
-    if let Some(fd) = std::env::var(LOCK_FD)
-        .ok()
-        .and_then(|v| v.parse::<RawFd>().ok())
-    {
-        // SAFETY: only sets close-on-exec on the inherited lock fd, so commands the worker runs never hold the lock.
-        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
 }
 
@@ -554,8 +465,8 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    pass_lock(&mut cmd, lock.as_raw_fd());
-    let child = util::spawn_detached(&mut cmd)?;
+    platform::pass_lock(&mut cmd, &lock);
+    let child = platform::spawn_detached(&mut cmd)?;
     let pid = child.id();
     fs::write(dir.join("worker.pid"), format!("{pid}\n"))?;
 
@@ -643,7 +554,13 @@ pub fn remove_path(path: &Path) -> io::Result<()> {
 
 type Check<'a> = &'a (dyn Fn(&str) -> Result<(), &'static str> + Sync);
 
-fn remove_one(target: &str, bytes: i64, events: &Events, check: Check) -> (String, bool) {
+fn remove_one(
+    target: &str,
+    bytes: i64,
+    events: &Events,
+    check: Check,
+    home: &str,
+) -> (String, bool) {
     if let Err(reason) = check(target) {
         events.emit(
             "kept",
@@ -652,7 +569,11 @@ fn remove_one(target: &str, bytes: i64, events: &Events, check: Check) -> (Strin
         return (format!("KEPT    {target} ({reason})"), false);
     }
     let start = Instant::now();
-    let result = remove_path(Path::new(target));
+    let result = if already_trashed(target, home) {
+        trash::remove_for_good(Path::new(target), home)
+    } else {
+        remove_path(Path::new(target))
+    };
     if fs::symlink_metadata(target).is_ok() {
         let reason = match &result {
             Err(e) => format!("still present after removal: {}", e.kind()),
@@ -799,11 +720,11 @@ fn listed(dir: &Path, name: &str) -> Vec<String> {
 }
 
 pub fn worker(run_dir: &str) -> io::Result<i32> {
-    keep_lock_from_commands();
+    platform::keep_lock_from_commands();
     let dir = Path::new(run_dir);
     let events = Events::open(dir);
     let run = format!("{}-{}", util::now(), std::process::id());
-    println!("started {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
+    println!("started {}", platform::local_time(c"%Y-%m-%d %H:%M:%S"));
 
     let rm_list = listed(dir, "rm-list");
     let now_list = listed(dir, "now-list");
@@ -812,7 +733,7 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
     let planned = planned_bytes(dir);
     let bytes_of = |key: &str| planned.get(key).copied().unwrap_or(0);
     let home = util::home();
-    let tmp_base = util::user_tmp_base();
+    let tmp_base = platform::user_tmp_base();
     trash::synced(&home, &|event, data| events.emit(event, data));
     let rm_check = |target: &str| safe_to_remove("rm", target, &home, tmp_base.as_deref());
     let worktree_check = |target: &str| {
@@ -853,7 +774,7 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
             let lines = Mutex::new(Vec::new());
             util::in_parallel(&now_list, parallel, |target| {
                 let bytes = bytes_of(target);
-                let (line, ok) = remove_one(target, bytes, &events, &rm_check);
+                let (line, ok) = remove_one(target, bytes, &events, &rm_check, &home);
                 if ok {
                     tally(1, bytes);
                 }
@@ -925,7 +846,7 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
         "free space changed by {} bytes since the cleanup started ({free_at_start} -> {after})",
         after - free_at_start
     );
-    println!("finished {}", util::local_time(c"%Y-%m-%d %H:%M:%S"));
+    println!("finished {}", platform::local_time(c"%Y-%m-%d %H:%M:%S"));
     events.emit(
         "done",
         json!({

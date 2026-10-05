@@ -6,9 +6,12 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
 const HOME: &str = "/Users/someone";
+#[cfg(target_os = "macos")]
 const BASE: &str = "/private/var/folders/ab/xyz";
 
+#[cfg(target_os = "macos")]
 #[test]
 fn is_allowed_table() {
     let allowed = [
@@ -101,6 +104,7 @@ fn is_allowed_table() {
     assert!(is_allowed("/private/tmp/ok..name", HOME, None));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn a_home_inside_the_temp_folder_keeps_its_protection() {
     let home = format!("{BASE}/T/sandbox/home");
@@ -125,6 +129,214 @@ fn a_home_inside_the_temp_folder_keeps_its_protection() {
             "home {bad_home:?} must allow nothing"
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn is_allowed_table_on_linux() {
+    let home = "/home/someone";
+    let allowed = [
+        "/tmp/x",
+        "/tmp/some/deep/dir",
+        "/tmp/ok..name",
+        "/var/tmp/x",
+        "/home/someone/.cache/thing",
+        "/home/someone/.cache/pip",
+        "/home/someone/.npm/_cacache",
+        "/home/someone/code/app/node_modules",
+        "/home/someone/.local/share/Trash/files/old",
+        "/home/someone/Downloads/big.iso",
+        "/home/someone/Documentsx",
+        "/home/someone/.config/ghx",
+    ];
+    let blocked = [
+        "/tmp/",
+        "/tmp",
+        "/var/tmp",
+        "/tmp/../etc",
+        "/tmp//x",
+        "/tmp/./x",
+        "/tmp/x/",
+        "/home/someone/code/../Documents",
+        "/home/someone",
+        "/home/someone/",
+        "/home",
+        "/home/other/thing",
+        "/",
+        "relative/path",
+        "/usr/local/lib",
+        "/bin/ls",
+        "/sbin/mount",
+        "/lib/x",
+        "/lib64/x",
+        "/etc/hosts",
+        "/var/log",
+        "/var/cache/apt",
+        "/opt/x",
+        "/boot/x",
+        "/root/x",
+        "/srv/x",
+        "/snap/x",
+        "/proc/1",
+        "/sys/x",
+        "/dev/null",
+        "/run/user/1000",
+        "/nix/store/x",
+        "/media/someone/usb/x",
+        "/mnt/x",
+        "/private/tmp/x",
+        "/home/someone/Desktop",
+        "/home/someone/Desktop/a",
+        "/home/someone/Documents",
+        "/home/someone/Documents/a",
+        "/home/someone/Pictures/a",
+        "/home/someone/Music/a",
+        "/home/someone/Videos",
+        "/home/someone/Templates/a",
+        "/home/someone/Public",
+        "/home/someone/.ssh",
+        "/home/someone/.ssh/id_rsa",
+        "/home/someone/.gnupg/x",
+        "/home/someone/.aws/credentials",
+        "/home/someone/.kube/config",
+        "/home/someone/.claude",
+        "/home/someone/.claude/projects",
+        "/home/someone/.config/gh",
+        "/home/someone/.config/gh/hosts.yml",
+        "/home/someone/.config/gcloud",
+        "/home/someone/.local/share/keyrings",
+        "/home/someone/.local/share/keyrings/login.keyring",
+        "/home/someone/.gnome2/keyrings",
+        "/home/someone/.local/share/kwalletd",
+        "/home/someone/.local/share/evolution/mail",
+        "/home/someone/Maildir/cur",
+        "/home/someone/mail",
+        "/home/someone/.password-store",
+        "/home/someone/.pki/nssdb",
+        "/home/someone/.config/google-chrome",
+        "/home/someone/.config/chromium/Default",
+        "/home/someone/.mozilla/firefox",
+        "/home/someone/.thunderbird",
+        "/home/someone/.docker",
+        "/home/someone/.cache/disk-clean",
+        "/home/someone/.cache/disk-clean/trashed.jsonl",
+        "/home/someone/.cache/huggingface/token",
+        "/home/someone/.android",
+        "/home/someone//Documents",
+        "/home/someone/./Documents",
+        "/home/someone/documents",
+        "/home/someone/DESKTOP/a",
+        "/home/someone/.SSH/id_rsa",
+        "/home/someone/.Config/GH",
+    ];
+    for p in allowed {
+        assert!(is_allowed(p, home, None), "should allow {p}");
+    }
+    for p in blocked {
+        assert!(!is_allowed(p, home, None), "should block {p}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn is_allowed_table_for_a_home_under_var_on_linux() {
+    let home = "/var/home/someone";
+    let allowed = [
+        "/var/home/someone/.cache/thing",
+        "/var/home/someone/code/app/node_modules",
+        "/var/home/someone/.local/share/Trash/files/old",
+        "/var/tmp/x",
+        "/tmp/x",
+    ];
+    let blocked = [
+        "/var/home/someone",
+        "/var/home",
+        "/var",
+        "/var/home/other/thing",
+        "/var/log",
+        "/var/lib/flatpak/x",
+        "/var/home/someone/Documents/a",
+        "/var/home/someone/.ssh/id_rsa",
+        "/home/someone/.cache/thing",
+        "/etc/hosts",
+        "/usr/lib/x",
+    ];
+    for p in allowed {
+        assert!(is_allowed(p, home, None), "should allow {p}");
+    }
+    for p in blocked {
+        assert!(!is_allowed(p, home, None), "should block {p}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_home_inside_the_temp_folder_keeps_its_protection_on_linux() {
+    let home = "/tmp/sandbox/home".to_string();
+    for p in [
+        home.clone(),
+        "/tmp/sandbox".to_string(),
+        format!("{home}/Documents"),
+        format!("{home}/.ssh/id_rsa"),
+        format!("{home}/.config/gh"),
+    ] {
+        assert!(!is_allowed(&p, &home, None), "should block {p}");
+    }
+    assert!(is_allowed(&format!("{home}/.cache/x"), &home, None));
+    for bad_home in ["", "/", "relative", "/home/someone/"] {
+        assert!(
+            !is_allowed("/tmp/x", bad_home, None),
+            "home {bad_home:?} must allow nothing"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_localized_user_dir_from_user_dirs_dirs_is_protected() {
+    let t = common::temp_dir("clean-user-dirs");
+    let home = &t.0;
+    fs::create_dir_all(home.join(".config")).unwrap();
+    fs::write(
+        home.join(".config/user-dirs.dirs"),
+        "# written by xdg-user-dirs-update\nXDG_PICTURES_DIR=\"$HOME/Bilder\"\n",
+    )
+    .unwrap();
+    let (bilder, inside, pictures, beside) = (
+        home.join("Bilder"),
+        home.join("Bilder/Urlaub"),
+        home.join("Pictures/a"),
+        home.join("Bildschirm"),
+    );
+    for dir in [&inside, &pictures, &beside] {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("f"), b"x").unwrap();
+    }
+    let run = home.join("run");
+    let paths = [&bilder, &inside, &pictures, &beside];
+    let scan: String = paths
+        .iter()
+        .map(|p| scan_row("caches", "rm", &text(p)))
+        .collect();
+    let items: Vec<String> = paths
+        .iter()
+        .map(|p| selection_item("rm", &text(p)))
+        .collect();
+    write_run(&run, &scan, &items, None);
+    let out = common::cli(&["clean", "--dry-run", &text(&run)], home, &[]);
+    let plan = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{plan}");
+    for p in [&bilder, &inside, &pictures] {
+        assert!(
+            plan.contains(&format!("# rejected (protected path): {}\n", text(p))),
+            "{plan}"
+        );
+    }
+    assert!(
+        plan.contains(&format!("\ntrash -- {}\n", text(&beside))),
+        "{plan}"
+    );
+    assert!(bilder.join("Urlaub/f").exists() && beside.join("f").exists());
 }
 
 fn scan_row(cat: &str, action: &str, path: &str) -> String {
@@ -262,7 +474,7 @@ fn clean_end_to_end_on_fixture() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let log = fs::read_to_string(run.join("clean.log")).unwrap();
-    let bin = p(&common::trash_dir());
+    let bin = p(&common::trash_dir(root));
     assert!(
         log.contains(&format!("trashed {} -> {bin}/doomed\n", p(&doomed))),
         "{log}"

@@ -1,5 +1,6 @@
 use crate::clean;
 use crate::http::{self, constant_eq, query_token, refuse, respond};
+use crate::platform;
 use crate::scan::{self, Sink};
 use crate::selection::{self, Listed};
 use crate::trash;
@@ -153,12 +154,7 @@ pub fn categories_of(lines: &[String]) -> Vec<Category> {
 }
 
 fn disk_stats() -> (u64, u64) {
-    for mount in ["/System/Volumes/Data", "/"] {
-        if let Some(s) = util::volume_stats(Path::new(mount)) {
-            return (s.avail, s.total);
-        }
-    }
-    (0, 0)
+    platform::volume_stats(&platform::data_mount()).map_or((0, 0), |s| (s.avail, s.total))
 }
 
 pub fn load_facts(run_dir: &Path) -> HashMap<String, i64> {
@@ -283,8 +279,7 @@ fn build(
 
 pub fn token() -> String {
     let mut raw = [0u8; 16];
-    // SAFETY: arc4random_buf fills exactly raw.len() bytes of the local buffer.
-    unsafe { libc::arc4random_buf(raw.as_mut_ptr().cast(), raw.len()) };
+    platform::fill_random(&mut raw);
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::new();
     for chunk in raw.chunks(3) {
@@ -309,6 +304,7 @@ fn attribute(text: &str) -> String {
 pub fn render(data: &Value, token: &str) -> String {
     let json = data.to_string().replace('<', "\\u003c");
     PAGE.replacen("__TOKEN__", token, 1)
+        .replacen("__PLATFORM__", platform::PAGE_PLATFORM, 1)
         .replacen("__HOME__", &attribute(&util::home()), 1)
         .replacen("__DATA__", &json, 1)
 }
@@ -875,15 +871,14 @@ fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(
     if std::env::var("DISK_CLEAN_NO_BROWSER").is_ok_and(|v| v == "1") {
         eprintln!("DISK_CLEAN_NO_BROWSER=1, not opening a browser");
     } else {
-        let _ =
-            util::spawn(std::process::Command::new("open").arg(&url)).and_then(|mut c| c.wait());
+        let _ = platform::open_in_browser(&url);
     }
     Ok(served)
 }
 
 fn watch_after_approval(dir: &Path, (port, token): (u16, String)) {
     let spawned = std::env::current_exe().and_then(|exe| {
-        util::spawn_detached(
+        platform::spawn_detached(
             std::process::Command::new(exe)
                 .arg("watch")
                 .arg(dir)

@@ -59,6 +59,44 @@ jobs:
           jq empty .claude-plugin/marketplace.json
           jq empty plugins/disk-clean/.claude-plugin/plugin.json
 
+  disk-clean-linux:
+    name: disk-clean cli (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: plugins/disk-clean/cli
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: "1.93"
+          components: rustfmt, clippy
+      - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
+        with:
+          mode: firewall-free
+      - name: fetch crates through Socket Firewall
+        run: sfw cargo fetch --locked
+      - name: Socket Firewall report
+        if: ${{ !cancelled() }}
+        run: |
+          crates=$(grep -c '^name = ' Cargo.lock)
+          blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
+          unparsed=$(jq '.parseFail // [] | length' "$SFW_JSON_REPORT_PATH")
+          {
+            echo "### Socket Firewall"
+            echo "$crates crates in Cargo.lock fetched through sfw: $blocked blocked, $unparsed unparsed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          jq . "$SFW_JSON_REPORT_PATH"
+          [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
+      - run: cargo fmt --check
+      - run: cargo clippy --frozen --all-targets -- -D warnings
+      - run: cargo test --frozen
+
   zizmor:
     name: zizmor
     runs-on: ubuntu-latest

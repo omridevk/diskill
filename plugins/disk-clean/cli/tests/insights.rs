@@ -3,7 +3,6 @@ mod common;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 const KIB: u64 = 1024;
@@ -89,8 +88,7 @@ fn scan_writes_insights() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let date = common::output(Command::new("date").args(["-r", &secs.to_string(), "+%Y-%m-%d"]));
-    let day = String::from_utf8(date.stdout).unwrap().trim().to_string();
+    let day = common::local_day(secs);
     let entry = data["modified_by_day"]
         .as_array()
         .unwrap()

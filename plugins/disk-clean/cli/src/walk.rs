@@ -1,10 +1,8 @@
 use crate::insights::{self, Ins, Insights};
-use crate::util;
+use crate::platform;
 use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,28 +27,6 @@ pub struct Meta {
     pub size: u64,
     pub mtime: i64,
     pub kind: Kind,
-}
-
-pub fn meta_of(m: &fs::Metadata) -> Meta {
-    let t = m.file_type();
-    let kind = if t.is_symlink() {
-        Kind::Symlink
-    } else if t.is_dir() {
-        Kind::Dir
-    } else if t.is_file() {
-        Kind::File
-    } else {
-        Kind::Other
-    };
-    Meta {
-        dev: m.dev(),
-        ino: m.ino(),
-        nlink: m.nlink(),
-        blocks: m.blocks(),
-        size: m.size(),
-        mtime: m.mtime(),
-        kind,
-    }
 }
 
 #[derive(Default)]
@@ -94,8 +70,6 @@ fn plausible(mtime: i64, now: i64) -> i64 {
 }
 
 const NM_TOP: &[&str] = &[
-    "Library",
-    ".Trash",
     "Applications",
     ".claude",
     ".nvm",
@@ -113,8 +87,6 @@ const NM_TOP: &[&str] = &[
     "Desktop",
 ];
 const DEV_TOP: &[&str] = &[
-    "Library",
-    ".Trash",
     "Applications",
     ".cargo",
     ".gradle",
@@ -145,8 +117,6 @@ const DEV_NAMES: &[&str] = &[
     ".ruff_cache",
 ];
 const REPO_SKIP: &[&str] = &[
-    "Library",
-    ".Trash",
     "node_modules",
     ".cache",
     ".npm",
@@ -195,8 +165,9 @@ struct Found {
 fn repo_step(repo_depth: usize, parent_depth: usize, name: Option<&str>) -> bool {
     let hidden_top =
         parent_depth == 0 && name.is_some_and(|n| n.starts_with('.') && n != ".claude");
-    name.is_none_or(|n| n != ".git" && !REPO_SKIP.contains(&n))
-        && parent_depth < repo_depth
+    name.is_none_or(|n| {
+        n != ".git" && !platform::HOME_SYSTEM_DIRS.contains(&n) && !REPO_SKIP.contains(&n)
+    }) && parent_depth < repo_depth
         && !hidden_top
 }
 
@@ -266,19 +237,21 @@ fn classify(plan: &Plan, parent: Option<&Frame>, name: Option<&str>, meta: &Meta
     }
     if meta.kind != Kind::Dir {
         let pruned =
-            (d == 1 && (is("Library") || is(".Trash"))) || is(".git") || is("node_modules");
+            (d == 1 && any(platform::HOME_SYSTEM_DIRS)) || is(".git") || is("node_modules");
         found.big_file = ph.big && !pruned && meta.kind == Kind::File && meta.size > plan.big_bytes;
         return found;
     }
-    let nm_pruned = (d == 1 && any(NM_TOP)) || is(".git");
+    let nm_pruned = (d == 1 && (any(platform::HOME_SYSTEM_DIRS) || any(NM_TOP))) || is(".git");
     let is_nm = is("node_modules");
     found.node_modules = ph.nm && !nm_pruned && is_nm;
-    let dev_pruned = (d == 1 && any(DEV_TOP)) || (d == 2 && ph.is_go && is("pkg")) || is(".git");
+    let dev_pruned = (d == 1 && (any(platform::HOME_SYSTEM_DIRS) || any(DEV_TOP)))
+        || (d == 2 && ph.is_go && is("pkg"))
+        || is(".git");
     let dev_match = any(DEV_NAMES);
     found.artifact =
         ph.dev && !dev_pruned && dev_match && (plan.now - meta.mtime) / 86400 > plan.stale_days;
     let big_pruned =
-        (d == 1 && (is("Library") || is(".Trash"))) || is(".git") || is("node_modules");
+        (d == 1 && any(platform::HOME_SYSTEM_DIRS)) || is(".git") || is("node_modules");
     found.home = Some(Home {
         depth: d,
         nm: ph.nm && !nm_pruned && !is_nm && d < plan.nm_depth,
@@ -306,19 +279,6 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     }
     f.blocks
 }
-
-const COMMON: u32 = libc::ATTR_CMN_RETURNED_ATTRS
-    | libc::ATTR_CMN_NAME
-    | libc::ATTR_CMN_DEVID
-    | libc::ATTR_CMN_OBJTYPE
-    | libc::ATTR_CMN_MODTIME
-    | libc::ATTR_CMN_FILEID;
-const DIR_ATTRS: u32 = libc::ATTR_DIR_MOUNTSTATUS | libc::ATTR_DIR_ALLOCSIZE;
-const FILE_ATTRS: u32 =
-    libc::ATTR_FILE_LINKCOUNT | libc::ATTR_FILE_ALLOCSIZE | libc::ATTR_FILE_DATALENGTH;
-const VREG: u32 = 1;
-const VDIR: u32 = 2;
-const VLNK: u32 = 5;
 
 struct Entry {
     name: OsString,
@@ -410,139 +370,6 @@ fn claim(job: &Job) -> Option<PathBuf> {
     }
 }
 
-fn take<const N: usize>(buf: &[u8], at: &mut usize) -> Option<[u8; N]> {
-    let bytes = buf.get(*at..*at + N)?.try_into().ok()?;
-    *at += N;
-    Some(bytes)
-}
-
-fn u32_at(buf: &[u8], at: &mut usize) -> Option<u32> {
-    take(buf, at).map(u32::from_ne_bytes)
-}
-
-fn u64_at(buf: &[u8], at: &mut usize) -> Option<u64> {
-    take(buf, at).map(u64::from_ne_bytes)
-}
-
-fn blocks_of(alloc: u64) -> u64 {
-    alloc.div_ceil(512)
-}
-
-fn parse_entry(rec: &[u8]) -> Option<(OsString, Option<Meta>)> {
-    let mut at = 4;
-    let common = u32_at(rec, &mut at)?;
-    let [_, dirattr, fileattr, _] = [(); 4].map(|_| u32_at(rec, &mut at).unwrap_or(0));
-    let has = |bit: u32| common & bit == bit;
-    if !has(libc::ATTR_CMN_NAME) {
-        return None;
-    }
-    let name_at = at;
-    let offset = i32::from_ne_bytes(take(rec, &mut at)?);
-    let len = u32_at(rec, &mut at)? as usize;
-    let start = name_at.checked_add_signed(offset as isize)?;
-    let name = rec.get(start..start + len.saturating_sub(1))?;
-    let name = OsString::from_vec(name.to_vec());
-    let wanted = libc::ATTR_CMN_DEVID
-        | libc::ATTR_CMN_OBJTYPE
-        | libc::ATTR_CMN_MODTIME
-        | libc::ATTR_CMN_FILEID;
-    if !has(wanted) {
-        return Some((name, None));
-    }
-    let dev = i32::from_ne_bytes(take(rec, &mut at)?) as u64;
-    let objtype = u32_at(rec, &mut at)?;
-    let mtime = i64::from_ne_bytes(take(rec, &mut at)?);
-    at += 8;
-    let ino = u64_at(rec, &mut at)?;
-    let mut meta = Meta {
-        dev,
-        ino,
-        mtime,
-        kind: match objtype {
-            VREG => Kind::File,
-            VDIR => Kind::Dir,
-            VLNK => Kind::Symlink,
-            _ => Kind::Other,
-        },
-        ..Meta::default()
-    };
-    if meta.kind == Kind::Dir {
-        if dirattr & DIR_ATTRS != DIR_ATTRS {
-            return Some((name, None));
-        }
-        let mount = u32_at(rec, &mut at)?;
-        if mount & libc::DIR_MNTSTATUS_MNTPOINT != 0 {
-            return Some((name, None));
-        }
-        meta.blocks = blocks_of(u64_at(rec, &mut at)?);
-    } else {
-        if fileattr & FILE_ATTRS != FILE_ATTRS {
-            return Some((name, None));
-        }
-        meta.nlink = u64::from(u32_at(rec, &mut at)?);
-        meta.blocks = blocks_of(u64_at(rec, &mut at)?);
-        meta.size = u64_at(rec, &mut at)?;
-    }
-    Some((name, Some(meta)))
-}
-
-fn read_dir_bulk(dir: &Path) -> std::io::Result<Vec<(OsString, Option<Meta>)>> {
-    let mut out = Vec::new();
-    let Ok(c) = CString::new(dir.as_os_str().as_bytes()) else {
-        return Ok(out);
-    };
-    // SAFETY: open has no memory preconditions beyond a valid C string.
-    let fd = unsafe {
-        libc::open(
-            c.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-        )
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let mut list = libc::attrlist {
-        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
-        reserved: 0,
-        commonattr: COMMON,
-        volattr: 0,
-        dirattr: DIR_ATTRS,
-        fileattr: FILE_ATTRS,
-        forkattr: 0,
-    };
-    let mut buf = vec![0u8; 128 * 1024];
-    loop {
-        // SAFETY: getattrlistbulk writes at most buf.len() bytes into buf.
-        let n = unsafe {
-            libc::getattrlistbulk(
-                fd,
-                (&mut list as *mut libc::attrlist).cast(),
-                buf.as_mut_ptr().cast(),
-                buf.len(),
-                0,
-            )
-        };
-        if n <= 0 {
-            break;
-        }
-        let mut at = 0usize;
-        for _ in 0..n {
-            let mut cursor = at;
-            let Some(len) = u32_at(&buf, &mut cursor).map(|l| l as usize) else {
-                break;
-            };
-            if len == 0 || at + len > buf.len() {
-                break;
-            }
-            out.extend(parse_entry(&buf[at..at + len]));
-            at += len;
-        }
-    }
-    // SAFETY: fd was opened above and is closed once.
-    unsafe { libc::close(fd) };
-    Ok(out)
-}
-
 struct Reader {
     dev: u64,
     ahead: Option<Ahead>,
@@ -553,10 +380,10 @@ struct Reader {
 }
 
 fn read_listing(dir: &Path, reader: &Reader) -> Vec<(OsString, Option<Meta>)> {
-    match read_dir_bulk(dir) {
+    match platform::read_dir_bulk(dir) {
         Ok(listing) => listing,
         Err(e) => {
-            if e.raw_os_error() == Some(libc::ENAMETOOLONG) {
+            if e.kind() == std::io::ErrorKind::InvalidFilename {
                 reader.too_deep.fetch_add(1, Ordering::Relaxed);
             }
             Vec::new()
@@ -574,7 +401,7 @@ fn list(dir: &Path, from: Option<&Job>, reader: &Reader) -> Vec<Entry> {
             let meta = meta.or_else(|| {
                 fs::symlink_metadata(dir.join(&name))
                     .ok()
-                    .map(|m| meta_of(&m))
+                    .map(|m| platform::meta_of(&m))
             })?;
             Some((name, meta))
         })
@@ -715,8 +542,8 @@ pub fn walk(
     out: &mut Walk,
     progress: &dyn Fn(&Walk, &Path),
 ) -> Option<u64> {
-    let root_meta = meta_of(&fs::symlink_metadata(root).ok()?);
-    let threads = util::efficiency_cores();
+    let root_meta = platform::meta_of(&fs::symlink_metadata(root).ok()?);
+    let threads = platform::efficiency_cores();
     let reader = Reader {
         dev: root_meta.dev,
         ahead: parallel.then(Ahead::default),
@@ -742,7 +569,7 @@ pub fn walk(
         if reader.ahead.is_some() {
             for _ in 0..threads {
                 s.spawn(|| {
-                    util::utility_qos();
+                    platform::utility_qos();
                     read_ahead(&reader)
                 });
             }

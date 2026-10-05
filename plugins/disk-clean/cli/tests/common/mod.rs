@@ -52,13 +52,20 @@ pub fn connect(port: u16) -> TcpStream {
     }
 }
 
+#[cfg(target_os = "macos")]
 struct RamDisk {
     device: String,
     mount: PathBuf,
 }
 
+#[cfg(target_os = "linux")]
+struct RamDisk {
+    mount: PathBuf,
+}
+
 static RAM: OnceLock<RamDisk> = OnceLock::new();
 
+#[cfg(target_os = "macos")]
 extern "C" fn detach_ram_disk() {
     if let Some(disk) = RAM.get() {
         let _ = Command::new("hdiutil")
@@ -67,6 +74,7 @@ extern "C" fn detach_ram_disk() {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn attach_ram_disk() -> RamDisk {
     let attach = output(Command::new("hdiutil").args(["attach", "-nomount", "ram://2097152"]));
     assert!(attach.status.success(), "hdiutil attach failed");
@@ -87,6 +95,73 @@ fn attach_ram_disk() -> RamDisk {
     let mount = std::fs::canonicalize(format!("/Volumes/{name}")).unwrap();
     std::fs::write(mount.join(".metadata_never_index"), b"").unwrap();
     RamDisk { device, mount }
+}
+
+#[cfg(target_os = "linux")]
+fn as_root(program: &str) -> Command {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return Command::new(program);
+    }
+    let mut sudo = Command::new("sudo");
+    sudo.args(["-n", program]);
+    sudo
+}
+
+#[cfg(target_os = "linux")]
+fn mount_tmpfs(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let mounted = output(
+        as_root("mount")
+            .args(["-t", "tmpfs", "-o", "size=1g,mode=0777", "tmpfs"])
+            .arg(dir),
+    );
+    assert!(
+        mounted.status.success(),
+        "mount -t tmpfs {} failed (needs root or passwordless sudo): {}",
+        dir.display(),
+        String::from_utf8_lossy(&mounted.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn unmount(dir: &Path) {
+    let _ = as_root("umount").arg(dir).output();
+    let _ = std::fs::remove_dir(dir);
+}
+
+#[cfg(target_os = "linux")]
+extern "C" fn detach_ram_disk() {
+    if let Some(disk) = RAM.get() {
+        unmount(&disk.mount);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn attach_ram_disk() -> RamDisk {
+    let dir =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("dc-test-{}", std::process::id()));
+    mount_tmpfs(&dir);
+    RamDisk {
+        mount: std::fs::canonicalize(dir).unwrap(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub struct OtherVolume(pub PathBuf);
+
+#[cfg(target_os = "linux")]
+impl Drop for OtherVolume {
+    fn drop(&mut self) {
+        unmount(&self.0);
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn other_volume(dir: &Path) -> OtherVolume {
+    assert_inside_ram_disk(dir.parent().unwrap());
+    mount_tmpfs(dir);
+    OtherVolume(std::fs::canonicalize(dir).unwrap())
 }
 
 pub fn ram_root() -> &'static Path {
@@ -130,6 +205,10 @@ pub fn bin(home: &Path) -> Command {
         .env("TMPDIR", home)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1");
+    #[cfg(target_os = "linux")]
+    cmd.env_remove("XDG_CACHE_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME");
     cmd
 }
 
@@ -177,6 +256,10 @@ pub fn temp_dir(tag: &str) -> TempDir {
     TempDir(std::fs::canonicalize(&dir).unwrap())
 }
 
+pub fn levels_past_path_max() -> usize {
+    if cfg!(target_os = "macos") { 12 } else { 36 }
+}
+
 pub fn sh(cwd: &Path, script: &str) {
     let status = status(
         Command::new("bash")
@@ -216,8 +299,36 @@ pub fn events_of(run: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-pub fn trash_dir() -> PathBuf {
+#[cfg(target_os = "macos")]
+pub fn trash_dir(_home: &Path) -> PathBuf {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     ram_root().join(".Trashes").join(uid.to_string())
+}
+
+#[cfg(target_os = "linux")]
+pub fn trash_dir(home: &Path) -> PathBuf {
+    home.join(".local/share/Trash/files")
+}
+
+#[cfg(target_os = "macos")]
+pub fn app_caches(home: &Path) -> PathBuf {
+    home.join("Library/Caches")
+}
+
+#[cfg(target_os = "linux")]
+pub fn app_caches(home: &Path) -> PathBuf {
+    home.join(".cache")
+}
+
+#[cfg(target_os = "macos")]
+pub fn local_day(secs: u64) -> String {
+    let date = output(Command::new("date").args(["-r", &secs.to_string(), "+%Y-%m-%d"]));
+    String::from_utf8(date.stdout).unwrap().trim().to_string()
+}
+
+#[cfg(target_os = "linux")]
+pub fn local_day(secs: u64) -> String {
+    let date = output(Command::new("date").args(["-d", &format!("@{secs}"), "+%Y-%m-%d"]));
+    String::from_utf8(date.stdout).unwrap().trim().to_string()
 }

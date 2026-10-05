@@ -1,3 +1,4 @@
+use crate::platform;
 use crate::scan::Row;
 use crate::util::{self, realpath};
 use rayon::prelude::*;
@@ -104,19 +105,6 @@ pub fn list_worktrees(repo: &Path) -> Vec<Entry> {
         .filter(|e| e.get("worktree").is_some_and(|w| !w.is_empty()))
         .collect();
     entries.into_iter().skip(1).collect()
-}
-
-pub fn process_cwds() -> Vec<String> {
-    // SAFETY: getuid has no preconditions.
-    let uid = unsafe { libc::getuid() }.to_string();
-    util::output("lsof", &["-a", "-d", "cwd", "-u", &uid, "-Fn"])
-        .map(|(_, out)| {
-            out.lines()
-                .filter_map(|l| l.strip_prefix('n'))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 pub fn real_cwds(cwds: &[String]) -> Vec<String> {
@@ -464,12 +452,12 @@ pub fn check_repos(
     on_listed: &(dyn Fn(&[Entry]) + Sync),
     on_checked: &(dyn Fn(&Checked) + Sync),
 ) -> Vec<Checked> {
-    let real = real_cwds(&process_cwds());
+    let real = real_cwds(&platform::process_cwds());
     let done: Mutex<Vec<(usize, Vec<Checked>)>> = Mutex::new(Vec::new());
     let threads = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2));
     let Ok(pool) = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
-        .start_handler(|_| util::utility_qos())
+        .start_handler(|_| platform::utility_qos())
         .build()
     else {
         return Vec::new();
@@ -650,7 +638,7 @@ pub fn remove(
     still_safe: &dyn Fn(&str) -> Result<(), String>,
     on_outcome: &mut dyn FnMut(&str, Option<&str>),
 ) -> std::io::Result<()> {
-    let real = real_cwds(&process_cwds());
+    let real = real_cwds(&platform::process_cwds());
     let mut touched: Vec<PathBuf> = Vec::new();
     for path_s in paths {
         let repo = match removable(path_s, &real).and_then(|repo| still_safe(path_s).map(|()| repo))

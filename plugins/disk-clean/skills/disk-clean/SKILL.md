@@ -1,6 +1,6 @@
 ---
 name: disk-clean
-description: Find reclaimable disk space on this Mac, show a browser UI listing exactly what will be deleted, and run the approved cleanup in the background (approved items go to the macOS Trash, so they can be undone until the Trash is emptied). Use when the user asks to clean up disk space, free space, find what is eating the disk, or invokes /disk-clean.
+description: Find reclaimable disk space on this computer (macOS or Linux), show a browser UI listing exactly what will be deleted, and run the approved cleanup in the background (approved items go to the Trash, the macOS Trash or the freedesktop.org Trash on Linux, so they can be undone until the Trash is emptied). Use when the user asks to clean up disk space, free space, find what is eating the disk, or invokes /disk-clean.
 ---
 
 # Disk Clean
@@ -9,7 +9,8 @@ Scan and review (stages 1 and 2) run as one command, then stage 3 deletes. Never
 
 Every stage goes through one launcher. It runs the `disk-clean` binary for this plugin version,
 fetching it on first use (the published release, checksum-verified, or a `cargo build` from the
-bundled source when no release exists). The first run may print a download or build line on stderr.
+bundled source when no release exists). On Linux it is built from source with cargo for now. The
+first run may print a download or build line on stderr.
 
 ## Stages 1 and 2 — Scan and review
 
@@ -67,9 +68,9 @@ The page has four tabs, a summary strip (disk donut, selected total, scan status
   largest folders under `~`, bytes by file kind, cleanup sections by idle time, and the largest files.
 - **Trash** — every item disk-clean put in the Trash, across runs, from its record after a sync:
   path from `~`, size, when, which cleanup, and its state (in the Trash, put back by our Undo, put
-  back in Finder, emptied, or failed with the reason). Undo or Empty per item, per cleanup or for the
-  ticked items; a cleanup filter. Empty always asks first and never touches anything else in the
-  Trash.
+  back in Finder or, on Linux, the file manager's Restore, emptied, or failed with the reason).
+  Undo or Empty per item, per cleanup or for the ticked items; a cleanup filter. Empty always asks
+  first and never touches anything else in the Trash.
 - **Addresses** — everything you see is in the page address, so reload, Back/Forward and a copied
   link all restore it: the tab and the open section or zoomed folder are the path
   (`/cleanup/<section>`, `/storage/<folder path>`, `/insights`), filters, sort, view and the
@@ -136,7 +137,9 @@ bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean "$RUN_DI
 
 Returns immediately with a pid and a log path. The cleanup runs detached: each approved path is
 resolved again and then moved to the macOS Trash through the system API (NSFileManager, the same
-call Finder uses; a name clash in the Trash gets a new name, and Finder's Put Back works). Each item
+call Finder uses; a name clash in the Trash gets a new name, and Finder's Put Back works). On Linux
+it goes to the freedesktop.org Trash (`~/.local/share/Trash`, or `.Trash-$UID` at the top of another
+volume) with its `.trashinfo` written first, so the file manager's Restore works. Each item
 is written to `~/.cache/disk-clean/trashed.jsonl` before the move and completed after it, with where
 it landed. A path the Trash refuses is reported `NOT TRASHED` with the reason and left where it is.
 When the user chose Delete immediately (`"mode": "now"` in `selection.json`), paths are removed for
@@ -183,8 +186,8 @@ bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" empty "$RUN_DI
   (another clean, undo or empty). The review page offers the same actions, per item, per cleanup or
   for a selection, in the footer and the Trash tab.
 - The record is synced on every `disk-clean` command and every page load: an item the user put back
-  in Finder becomes "put back", one that left the Trash becomes "emptied", anything ambiguous is
-  marked failed with the reason and never acted on.
+  in Finder (on Linux, restored from the file manager) becomes "put back", one that left the Trash
+  becomes "emptied", anything ambiguous is marked failed with the reason and never acted on.
 - Held runs from older versions (the `~/.cache/disk-clean/held` folder) are moved to the Trash item
   by item on the first command after the update, recorded like any other item (so Undo still puts
   them back), and the holding folder is removed once empty; it says so on stderr.
@@ -248,7 +251,12 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
 - Hard-blocked regardless of selection: `$HOME` itself and every folder above it, anything outside
   `$HOME` other than `/private/tmp` entries and the per-user `$TMPDIR` tree, and
   `Documents`, `Desktop`, `Pictures`, `Movies`, `Music`, `.ssh`, `.gnupg`, `.aws`, `.kube`,
-  `.claude`, `Library/Mail`, `Library/Messages`, Keychains (names matched case-insensitively). These
+  `.claude`, `Library/Mail`, `Library/Messages`, Keychains (names matched case-insensitively). On
+  Linux the temp folders are `/tmp` and `/var/tmp`, and the protected folders are the XDG user
+  folders read from `~/.config/user-dirs.dirs` (Desktop, Documents, Pictures, Music, Videos,
+  Templates, Public, under their localized names and their English ones), `.ssh`, `.gnupg`, `.aws`,
+  `.kube`, `.claude`, keyrings, KWallet, `.password-store`, `.pki`, browser and mail profiles,
+  `.docker`, `.android` and Hugging Face tokens. These
   protections apply even when `$HOME` itself lives inside the temp folders. Rejects land in
   `$RUN_DIR/rejected`.
 - Right before each removal (files, folders and worktrees alike) the path is resolved again: its
@@ -264,9 +272,10 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
   only changes to the Trash are Undo and Empty (`POST /undo`, `POST /empty`), which also require
   the page's `Origin` and act only on ids in the Trash record.
 - No `sudo`, ever. System-level caches under `/Library` and `/private/var` are out of scope.
-- Approved paths go to the macOS Trash, never deleted directly, unless the user chose Delete
-  immediately, which is labelled "can't be undone" everywhere. Git worktree removals and the three
-  fixed commands can't go to the Trash and are labelled "can't be undone" too.
+- Approved paths go to the Trash (the macOS Trash, or the freedesktop.org Trash on Linux), never
+  deleted directly, unless the user chose Delete immediately, which is labelled "can't be undone"
+  everywhere. Git worktree removals and the fixed commands (three on macOS, only Docker prune on
+  Linux) can't go to the Trash and are labelled "can't be undone" too.
 
 ## Re-running
 

@@ -1,4 +1,5 @@
 use crate::insights;
+use crate::platform;
 use crate::review;
 use crate::trash;
 use crate::util::{self, tilde};
@@ -8,7 +9,6 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -47,8 +47,8 @@ impl Config {
     }
 }
 
-struct Ctx {
-    home: String,
+pub(crate) struct Ctx {
+    pub(crate) home: String,
     now: i64,
     walk: Walk,
     parallel: bool,
@@ -63,19 +63,19 @@ fn early(home: &str, now: i64, parallel: bool) -> Ctx {
     }
 }
 
-struct Cat<'a> {
-    id: &'a str,
-    title: &'a str,
-    desc: &'a str,
-    risk: &'a str,
-    pre: &'a str,
+pub(crate) struct Cat<'a> {
+    pub(crate) id: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) desc: &'a str,
+    pub(crate) risk: &'a str,
+    pub(crate) pre: &'a str,
 }
 
 fn kb_bytes(blocks: u64) -> u64 {
     blocks.div_ceil(2) * 1024
 }
 
-fn size_bytes(ctx: &Ctx, path: &Path) -> Option<u64> {
+pub(crate) fn size_bytes(ctx: &Ctx, path: &Path) -> Option<u64> {
     if let Some(r) = ctx.walk.sizes.get(path) {
         return Some(kb_bytes(*r));
     }
@@ -90,14 +90,14 @@ fn size_bytes(ctx: &Ctx, path: &Path) -> Option<u64> {
     walk::size_with(path, ctx.parallel).map(kb_bytes)
 }
 
-fn age_of(ctx: &Ctx, path: &Path) -> String {
+pub(crate) fn age_of(ctx: &Ctx, path: &Path) -> String {
     match fs::symlink_metadata(path) {
-        Ok(m) => ((ctx.now - m.mtime()) / 86400).to_string(),
+        Ok(m) => ((ctx.now - platform::meta_of(&m).mtime) / 86400).to_string(),
         Err(_) => "-".to_string(),
     }
 }
 
-fn children_of(ctx: &Ctx, dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn children_of(ctx: &Ctx, dir: &Path) -> Vec<PathBuf> {
     if let Some(list) = ctx.walk.children.get(dir) {
         return list.clone();
     }
@@ -107,7 +107,7 @@ fn children_of(ctx: &Ctx, dir: &Path) -> Vec<PathBuf> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn row(
+pub(crate) fn row(
     cat: &Cat,
     action: &str,
     cmd_id: &str,
@@ -135,7 +135,14 @@ fn row(
     ]
 }
 
-fn sized(ctx: &Ctx, out: &mut Vec<Row>, cat: &Cat, paths: &[PathBuf], note: &str, min: u64) {
+pub(crate) fn sized(
+    ctx: &Ctx,
+    out: &mut Vec<Row>,
+    cat: &Cat,
+    paths: &[PathBuf],
+    note: &str,
+    min: u64,
+) {
     for p in paths {
         if !p.exists() {
             continue;
@@ -161,58 +168,13 @@ fn sized(ctx: &Ctx, out: &mut Vec<Row>, cat: &Cat, paths: &[PathBuf], note: &str
     }
 }
 
-fn h(ctx: &Ctx, rel: &str) -> PathBuf {
+pub(crate) fn h(ctx: &Ctx, rel: &str) -> PathBuf {
     PathBuf::from(format!("{}/{rel}", ctx.home))
 }
 
-fn existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+pub(crate) fn existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths.into_iter().filter(|p| p.exists()).collect()
 }
-
-const PKG_CACHE: &[&str] = &[
-    ".npm/_cacache",
-    "Library/Caches/Yarn",
-    ".yarn/berry/cache",
-    "Library/Caches/pnpm",
-    ".bun/install/cache",
-    "Library/Caches/pip",
-    ".cache/pip",
-    ".cache/uv",
-    "Library/Caches/Homebrew",
-];
-const PKG_CACHE_TAIL: &[&str] = &[
-    "Library/Caches/go-build",
-    ".cargo/registry/cache",
-    ".cache/ms-playwright",
-    "Library/Caches/ms-playwright",
-    ".cache/puppeteer",
-    "Library/Caches/CocoaPods",
-    ".composer/cache",
-    ".cache/yarn",
-    "Library/Caches/electron",
-    "Library/Caches/node-gyp",
-    "Library/Caches/deno",
-];
-const PKG_STORE: &[&str] = &[
-    ".cargo/registry/src",
-    "go/pkg/mod",
-    ".m2/repository",
-    ".gradle/caches",
-    ".gem",
-];
-const PNPM_STORE: &[&str] = &["Library/pnpm/store", ".local/share/pnpm/store"];
-const XCODE: &[&str] = &[
-    "Library/Developer/Xcode/DerivedData",
-    "Library/Developer/CoreSimulator/Caches",
-    "Library/Developer/Xcode/iOS DeviceSupport",
-    "Library/Developer/Xcode/watchOS DeviceSupport",
-    "Library/Developer/Xcode/UserData/IB Support",
-];
-const XCODE_ARCHIVES: &str = "Library/Developer/Xcode/Archives";
-const SIM_DEVICES: &str = "Library/Developer/CoreSimulator/Devices";
-const CRASH_REPORTER: &str = "Library/Application Support/CrashReporter";
-const DIAGNOSTIC_REPORTS: &str = "Library/Logs/DiagnosticReports";
-const IOS_BACKUP: &str = "Library/Application Support/MobileSync/Backup";
 
 pub fn parse_docker_bytes(s: &str) -> u64 {
     let b = s.as_bytes();
@@ -250,75 +212,16 @@ pub fn parse_docker_bytes(s: &str) -> u64 {
 }
 
 fn probe_docker() -> Option<u64> {
-    if !util::which("docker") || !util::output("docker", &["info"])?.0 {
+    if !platform::which("docker") || !util::output("docker", &["info"])?.0 {
         return None;
     }
     let (_, out) = util::output("docker", &["system", "df", "--format", "{{.Reclaimable}}"])?;
     Some(parse_docker_bytes(out.lines().next().unwrap_or("")))
 }
 
-fn has_sims(home: &str) -> bool {
-    util::which("xcrun") && Path::new(&format!("{home}/{SIM_DEVICES}")).is_dir()
-}
-
-fn probe_sims(home: &str) -> usize {
-    if !has_sims(home) {
-        return 0;
-    }
-    util::output("xcrun", &["simctl", "list", "devices"])
-        .map(|(_, out)| out.lines().filter(|l| l.contains("unavailable")).count())
-        .unwrap_or(0)
-}
-
-fn probe_brew() -> Option<String> {
-    if !util::which("brew") {
-        return None;
-    }
-    let (_, out) = util::output("brew", &["--cache"])?;
-    let out = out.trim_end_matches('\n').to_string();
-    (!out.is_empty()).then_some(out)
-}
-
-fn probe_snapshots() -> usize {
-    util::output("tmutil", &["listlocalsnapshots", "/"])
-        .map(|(_, out)| out.lines().filter(|l| l.contains("com.apple")).count())
-        .unwrap_or(0)
-}
-
 fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
-    let hp = |rel: &str| PathBuf::from(format!("{home}/{rel}"));
-    let mut exact: HashSet<PathBuf> = [PKG_CACHE, PKG_CACHE_TAIL, PKG_STORE, PNPM_STORE, XCODE]
-        .concat()
-        .iter()
-        .map(|r| hp(r))
-        .collect();
-    exact.extend(
-        [
-            XCODE_ARCHIVES,
-            SIM_DEVICES,
-            CRASH_REPORTER,
-            DIAGNOSTIC_REPORTS,
-        ]
-        .iter()
-        .map(|r| hp(r)),
-    );
+    let (mut exact, parents) = platform::plan_locations(home, tmp_base);
     exact.insert(PathBuf::from(home));
-    let mut parents: HashSet<PathBuf> = [
-        ".Trash",
-        "Library/Caches",
-        "Library/Logs",
-        IOS_BACKUP,
-        "Downloads",
-    ]
-    .iter()
-    .map(|r| hp(r))
-    .collect();
-    parents.insert(PathBuf::from("/private/tmp"));
-    if let Some(base) = tmp_base {
-        for sub in ["T", "C", "X"] {
-            parents.insert(PathBuf::from(format!("{base}/{sub}")));
-        }
-    }
     Plan {
         home: PathBuf::from(home),
         map_depth: (!cfg.skip_map).then_some(cfg.map_depth),
@@ -360,7 +263,7 @@ fn run_walk(
     let mut out = Walk::default();
     let mut seen = HashSet::new();
     if cfg.skip_map {
-        let mut roots = vec![PathBuf::from(home), PathBuf::from("/private/tmp")];
+        let mut roots = vec![PathBuf::from(home), PathBuf::from(platform::SYSTEM_TMP)];
         roots.extend(tmp_base.map(PathBuf::from));
         for root in roots.iter().filter(|r| r.is_dir()) {
             walk::walk(root, root, &plan, true, &mut seen, &mut out, progress);
@@ -385,7 +288,7 @@ pub fn new_run_dir(run_dir: Option<String>) -> io::Result<PathBuf> {
         None => PathBuf::from(format!(
             "{}/.cache/disk-clean/run-{}",
             util::home(),
-            util::local_time(c"%Y%m%d-%H%M%S")
+            platform::local_time(c"%Y%m%d-%H%M%S")
         )),
     };
     fs::create_dir_all(&run_dir)?;
@@ -526,9 +429,9 @@ fn interrupted() -> io::Error {
 }
 
 pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Result<()> {
-    util::utility_qos();
+    platform::utility_qos();
     let _ = rayon::ThreadPoolBuilder::new()
-        .start_handler(|_| util::utility_qos())
+        .start_handler(|_| platform::utility_qos())
         .build_global();
     let cfg = Config::from_env();
     let home = util::home();
@@ -536,11 +439,11 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     let started = Instant::now();
     eprintln!("  scanning (one parallel walk of the data volume)...");
 
-    let tmp_base = util::user_tmp_base();
-    let mount = util::data_mount();
-    let start = util::volume_stats(&mount);
+    let tmp_base = platform::user_tmp_base();
+    let mount = platform::data_mount();
+    let start = platform::volume_stats(&mount);
     let used = start.as_ref().map_or(0, |s| s.used);
-    let snapshots = probe_snapshots();
+    let snapshots = platform::probe_snapshots();
     emit(
         sink,
         started,
@@ -607,8 +510,8 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     std::thread::scope(|s| {
         let (out, cfg, home) = (&out, &cfg, &home);
         let docker = s.spawn(move || {
-            util::utility_qos();
-            if util::which("docker") {
+            platform::utility_qos();
+            if platform::which("docker") {
                 pend(&[docker_row(0)], out, sink);
             }
             let bytes = probe_docker();
@@ -619,32 +522,28 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             bytes
         });
         let sims = s.spawn(move || {
-            util::utility_qos();
-            if has_sims(home) {
-                pend(&[sims_row("xcrun simctl delete unavailable", 0)], out, sink);
+            platform::utility_qos();
+            if platform::has_sims(home) {
+                pend(&[platform::sims_row(platform::SIMS_COMMAND, 0)], out, sink);
             }
-            let sims = probe_sims(home);
+            let sims = platform::probe_sims(home);
             let mut rows = Vec::new();
-            scan_sims(&early(home, now, true), &mut rows, sims);
+            platform::scan_sims(&early(home, now, true), &mut rows, sims);
             preview(&rows, out, sink);
-            unpend([SIMS_KEY.to_string()], out, sink);
+            unpend([platform::SIMS_KEY.to_string()], out, sink);
             sims
         });
         let (on_listed, on_checked) = (&on_listed, &on_checked);
         let checks = s.spawn(move || {
-            util::utility_qos();
+            platform::utility_qos();
             worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked)
         });
 
-        let brew_cache = probe_brew();
+        let pkg_cache = platform::probe_pkg_cache();
         let fixed = early(home, now, true);
         let mut rows: Vec<Row> = Vec::new();
-        scan_trash(&fixed, &mut rows);
-        scan_pkg(&fixed, &mut rows, cfg, brew_cache.as_deref());
-        scan_xcode(&fixed, &mut rows, cfg);
-        scan_ios_backups(&fixed, &mut rows, cfg);
-        scan_caches(&fixed, &mut rows, cfg);
-        scan_logs(&fixed, &mut rows, cfg);
+        platform::scan_trash_and_tools(&fixed, &mut rows, cfg, pkg_cache.as_deref());
+        platform::scan_app_data(&fixed, &mut rows, cfg);
         preview(&rows, out, sink);
         eprintln!(
             "  sized {} fixed locations in {:.1}s",
@@ -677,16 +576,11 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         };
 
         let mut rows: Vec<Row> = Vec::new();
-        scan_trash(ctx, &mut rows);
-        scan_pkg(ctx, &mut rows, cfg, brew_cache.as_deref());
-        scan_xcode(ctx, &mut rows, cfg);
+        platform::scan_trash_and_tools(ctx, &mut rows, cfg, pkg_cache.as_deref());
         scan_node_modules(ctx, &mut rows, cfg);
         scan_dev_artifacts(ctx, &mut rows, cfg);
-        scan_ios_backups(ctx, &mut rows, cfg);
-        scan_caches(ctx, &mut rows, cfg);
-        scan_logs(ctx, &mut rows, cfg);
-        scan_user_tmpdir(ctx, &mut rows, cfg, tmp_base.as_deref());
-        scan_private_tmp(ctx, &mut rows, cfg);
+        platform::scan_app_data(ctx, &mut rows, cfg);
+        platform::scan_temp(ctx, &mut rows, cfg, tmp_base.as_deref());
         scan_big_files(ctx, &mut rows, cfg);
         settle(&rows, out, sink);
         show_worktrees(ctx, &finished_early);
@@ -730,7 +624,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         );
         let mut rows = worktrees::rows(&checked, home, |p| size_bytes(ctx, p).unwrap_or(0));
         scan_old_downloads(ctx, &mut rows, cfg);
-        scan_sims(ctx, &mut rows, sims.join().unwrap_or(0));
+        platform::scan_sims(ctx, &mut rows, sims.join().unwrap_or(0));
         scan_docker(&mut rows, cfg, docker.join().ok().flatten());
         settle(&rows, out, sink);
         settle(&unsettled(ctx, out), out, sink);
@@ -761,7 +655,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             }
         }
         util::write_atomic(&run_dir.join("scan.tsv"), scan.as_bytes())?;
-        let stats = util::volume_stats(&mount);
+        let stats = platform::volume_stats(&mount);
         let (total, used, free) = stats
             .as_ref()
             .map(|s| (s.total, s.used, s.avail))
@@ -779,177 +673,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     })
 }
 
-fn scan_trash(ctx: &Ctx, rows: &mut Vec<Row>) {
-    let cat = Cat {
-        id: "trash",
-        title: "Trash",
-        desc: "Items already in the macOS Trash.",
-        risk: "safe",
-        pre: "1",
-    };
-    let list = children_of(ctx, &h(ctx, ".Trash"));
-    sized(ctx, rows, &cat, &list, "Permanently removed.", 1);
-}
-
-fn scan_caches(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let cat = Cat {
-        id: "caches",
-        title: "Application caches",
-        desc: "~/Library/Caches — regenerated automatically by each app.",
-        risk: "safe",
-        pre: "1",
-    };
-    let list = children_of(ctx, &h(ctx, "Library/Caches"));
-    sized(
-        ctx,
-        rows,
-        &cat,
-        &list,
-        "App rebuilds this on next launch.",
-        cfg.min_bytes,
-    );
-}
-
-fn scan_logs(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let cat = Cat {
-        id: "logs",
-        title: "Logs and crash reports",
-        desc: "Diagnostic output kept by apps and macOS.",
-        risk: "safe",
-        pre: "1",
-    };
-    let mut list = children_of(ctx, &h(ctx, "Library/Logs"));
-    list.extend(existing(vec![
-        h(ctx, CRASH_REPORTER),
-        h(ctx, DIAGNOSTIC_REPORTS),
-    ]));
-    sized(ctx, rows, &cat, &list, "Diagnostics only.", cfg.min_bytes);
-}
-
-fn scan_pkg(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, brew_cache: Option<&str>) {
-    let mut list: Vec<PathBuf> = PKG_CACHE.iter().map(|r| h(ctx, r)).collect();
-    list.extend(brew_cache.map(PathBuf::from));
-    list.extend(PKG_CACHE_TAIL.iter().map(|r| h(ctx, r)));
-    let cat = Cat {
-        id: "pkg-cache",
-        title: "Package manager caches",
-        desc: "Download caches for npm, brew, pip, cargo, go and friends.",
-        risk: "safe",
-        pre: "1",
-    };
-    sized(
-        ctx,
-        rows,
-        &cat,
-        &existing(list),
-        "Re-downloaded on next install.",
-        cfg.min_bytes,
-    );
-
-    let cat = Cat {
-        id: "pkg-store",
-        title: "Package manager stores",
-        desc: "Extracted dependency sources. Safe to delete but slower to restore.",
-        risk: "review",
-        pre: "0",
-    };
-    let list = existing(PKG_STORE.iter().map(|r| h(ctx, r)).collect());
-    sized(
-        ctx,
-        rows,
-        &cat,
-        &list,
-        "Re-downloaded and re-extracted on next build.",
-        cfg.min_bytes,
-    );
-
-    let cat = Cat {
-        id: "pnpm-store",
-        title: "pnpm content store",
-        desc: "The store that existing node_modules hard-link into.",
-        risk: "review",
-        pre: "0",
-    };
-    let list = existing(PNPM_STORE.iter().map(|r| h(ctx, r)).collect());
-    sized(
-        ctx,
-        rows,
-        &cat,
-        &list,
-        "Breaks every existing node_modules on this Mac until each project reinstalls.",
-        cfg.min_bytes,
-    );
-}
-
-fn scan_xcode(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let cat = Cat {
-        id: "xcode",
-        title: "Xcode build data",
-        desc: "Derived data, simulator caches and device support files.",
-        risk: "safe",
-        pre: "1",
-    };
-    let list = existing(XCODE.iter().map(|r| h(ctx, r)).collect());
-    sized(
-        ctx,
-        rows,
-        &cat,
-        &list,
-        "Xcode regenerates on next build or device connect.",
-        cfg.min_bytes,
-    );
-
-    let cat = Cat {
-        id: "xcode-archives",
-        title: "Xcode archives",
-        desc: "Built .xcarchive bundles. Needed to re-submit or symbolicate an old build.",
-        risk: "review",
-        pre: "0",
-    };
-    let list = existing(vec![h(ctx, XCODE_ARCHIVES)]);
-    sized(
-        ctx,
-        rows,
-        &cat,
-        &list,
-        "Not recoverable without rebuilding that exact commit.",
-        cfg.min_bytes,
-    );
-}
-
-const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
 const DOCKER_KEY: &str = "cmd:docker-prune";
-
-fn sims_row(label: &str, bytes: u64) -> Row {
-    let cat = Cat {
-        id: "xcode-sims",
-        title: "Unavailable simulators",
-        desc: "Simulator devices whose runtime is no longer installed.",
-        risk: "safe",
-        pre: "1",
-    };
-    row(
-        &cat,
-        "cmd",
-        "xcode-unavailable-sims",
-        label,
-        SIMS_KEY,
-        bytes,
-        "Rough estimate. Removes only devices macOS already marks unavailable.",
-        "-",
-        "estimate",
-    )
-}
-
-fn scan_sims(ctx: &Ctx, rows: &mut Vec<Row>, sims: usize) {
-    if sims > 0 {
-        let bytes = size_bytes(ctx, &h(ctx, SIM_DEVICES)).unwrap_or(0) / 3;
-        rows.push(sims_row(
-            &format!("xcrun simctl delete unavailable ({sims} devices)"),
-            bytes,
-        ));
-    }
-}
 
 fn scan_dev_artifacts(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
     let list: Vec<PathBuf> = ctx
@@ -983,7 +707,10 @@ fn scan_dev_artifacts(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
 }
 
 fn scan_node_modules(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let desc = "Every node_modules folder on this Mac, whatever its age. Each one is fully rebuildable from its lockfile.";
+    let desc = format!(
+        "Every node_modules folder on {}, whatever its age. Each one is fully rebuildable from its lockfile.",
+        platform::THIS_COMPUTER
+    );
     for p in &ctx.walk.node_modules {
         let Some(bytes) = size_bytes(ctx, p) else {
             continue;
@@ -1009,7 +736,7 @@ fn scan_node_modules(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
         let mut measurement = "exact";
         if mgr == "pnpm" {
             measurement = "estimate";
-            note.push_str(" Size is apparent: pnpm clones package files from ~/Library/pnpm/store, so deleting frees only blocks no other project or the store still holds.");
+            note.push_str(platform::PNPM_STORE_NOTE);
         }
         let (Some(s), Some(ps)) = (p.to_str(), parent.to_str()) else {
             continue;
@@ -1017,7 +744,7 @@ fn scan_node_modules(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
         let cat = Cat {
             id: "node-modules",
             title: "node_modules",
-            desc,
+            desc: &desc,
             risk: "safe",
             pre: if pre { "1" } else { "0" },
         };
@@ -1033,25 +760,6 @@ fn scan_node_modules(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
             measurement,
         ));
     }
-}
-
-fn scan_ios_backups(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let cat = Cat {
-        id: "ios-backups",
-        title: "iOS device backups",
-        desc: "Local iPhone and iPad backups.",
-        risk: "review",
-        pre: "0",
-    };
-    let list = children_of(ctx, &h(ctx, IOS_BACKUP));
-    sized(
-        ctx,
-        rows,
-        &cat,
-        &list,
-        "Not recoverable. Only delete if the device backs up to iCloud.",
-        cfg.min_bytes,
-    );
 }
 
 fn scan_docker(rows: &mut Vec<Row>, cfg: &Config, bytes: Option<u64>) {
@@ -1075,7 +783,7 @@ fn docker_row(bytes: u64) -> Row {
         "docker system prune -f",
         DOCKER_KEY,
         bytes,
-        "Frees space INSIDE Docker's sparse VM disk image, which does not shrink — macOS gets little or none of it back. Reclaim it on the host by resetting the Docker VM disk in Docker Desktop. Named volumes are never touched.",
+        platform::DOCKER_NOTE,
         "-",
         "vm",
     )
@@ -1124,11 +832,12 @@ fn scan_big_files(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
 }
 
 fn scan_old_downloads(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let list: Vec<PathBuf> = children_of(ctx, &h(ctx, "Downloads"))
+    let list: Vec<PathBuf> = children_of(ctx, &platform::downloads_dir(&ctx.home))
         .into_iter()
         .filter(|p| {
-            fs::symlink_metadata(p)
-                .is_ok_and(|m| (ctx.now - m.mtime()) / 86400 > cfg.old_download_days)
+            fs::symlink_metadata(p).is_ok_and(|m| {
+                (ctx.now - platform::meta_of(&m).mtime) / 86400 > cfg.old_download_days
+            })
         })
         .take(cfg.max_report_items)
         .collect();
@@ -1144,82 +853,4 @@ fn scan_old_downloads(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
         pre: "0",
     };
     sized(ctx, rows, &cat, &list, "Review manually.", cfg.min_bytes);
-}
-
-fn scan_private_tmp(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let tmp = Path::new("/private/tmp");
-    if !tmp.is_dir() {
-        return;
-    }
-    // SAFETY: getuid has no preconditions.
-    let uid = unsafe { libc::getuid() };
-    let list: Vec<PathBuf> = children_of(ctx, tmp)
-        .into_iter()
-        .filter(|p| fs::symlink_metadata(p).is_ok_and(|m| m.uid() == uid))
-        .collect();
-    let cat = Cat {
-        id: "private-tmp",
-        title: "Temp files in /private/tmp",
-        desc: "Entries in /private/tmp that belong to you. Tools recreate what they need, but a running process may still be using one.",
-        risk: "review",
-        pre: "0",
-    };
-    sized(
-        ctx,
-        rows,
-        &cat,
-        &list,
-        "Recreated on demand.",
-        cfg.min_bytes,
-    );
-}
-
-fn scan_user_tmpdir(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, base: Option<&str>) {
-    let Some(base) = base.filter(|b| Path::new(b).is_dir()) else {
-        return;
-    };
-    let mut list = children_of(ctx, &PathBuf::from(format!("{base}/T")));
-    list.extend(children_of(ctx, &PathBuf::from(format!("{base}/C"))));
-    let cat = Cat {
-        id: "user-tmpdir",
-        title: "Your macOS temp and cache folder",
-        desc: "The per-user $TMPDIR tree. Rebuilt automatically, but a running process may still be using one.",
-        risk: "review",
-        pre: "0",
-    };
-    sized(ctx, rows, &cat, &list, "Rebuilt on demand.", cfg.min_bytes);
-
-    let cat = Cat {
-        id: "code-sign-clones",
-        title: "App code-signing clones",
-        desc: "Copies macOS makes of an app bundle while the app runs. They pile up and are rarely cleaned. Sizes are apparent — clones share disk blocks with the app, so the space actually returned is only the blocks of app versions no longer on disk.",
-        risk: "review",
-        pre: "0",
-    };
-    for d in children_of(ctx, &PathBuf::from(format!("{base}/X"))) {
-        let Some(name) = d.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if name.starts_with('.') || !name.ends_with(".code_sign_clone") || !d.is_dir() {
-            continue;
-        }
-        let Some(bytes) = size_bytes(ctx, &d) else {
-            continue;
-        };
-        if bytes < cfg.min_bytes {
-            continue;
-        }
-        let Some(s) = d.to_str() else { continue };
-        rows.push(row(
-            &cat,
-            "rm",
-            "-",
-            &format!("$TMPDIR/../X/{name}"),
-            s,
-            bytes,
-            "Quit the app first. Frees far less than the size shown.",
-            &age_of(ctx, &d),
-            "estimate",
-        ));
-    }
 }

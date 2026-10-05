@@ -1,4 +1,3 @@
-import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
 import {useDebouncer} from '@tanstack/react-pacer/debouncer'
 import {Link, useNavigate, useParams} from '@tanstack/react-router'
 import type {RowSelectionState, Updater} from '@tanstack/react-table'
@@ -15,9 +14,10 @@ import {counted, formatBytes, isPickable, RISK_LABEL, type Risk} from '@/lib/dat
 import {useDb, type Db} from '@/lib/db'
 import type {CleanupProgress, Removal} from '@/lib/progress'
 import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
-import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
+import {CLEANUP_DEFAULTS, MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import {isFiltering, predicateOf, useShaped, type SectionTotal} from '@/lib/shaping'
 import {useScanState, useSections} from '@/lib/views'
 import {DataTable} from './data-table'
@@ -33,14 +33,17 @@ const RISK_BADGE: Record<Risk, string> = {
   report: 'bg-muted text-muted-foreground',
 }
 export const RISK_BAR: Record<Risk, string> = {safe: 'bg-blue-400', review: 'bg-amber-500', report: 'bg-zinc-600'}
-const SORT_LABEL: Record<Sort, string> = {
+export const SORT_LABEL: Record<Sort, string> = {
   'size-desc': 'Largest first',
   'size-asc': 'Smallest first',
   'name-asc': 'Name',
   'age-desc': 'Oldest first',
   'age-asc': 'Newest first',
 }
-const QUICK_SELECT_MIN = 4
+export const SIZE_LABEL = (n: number) => (n === 0 ? 'Any size' : `≥ ${formatBytes(n)}`)
+export const AGE_LABEL = (n: number) => (n === -1 ? 'Any age' : `Idle ${n}+ days`)
+export const QUICK_SELECT_MIN = 4
+export const toggled = (risks: readonly Risk[], risk: Risk) => (risks.includes(risk) ? risks.filter(r => r !== risk) : [...risks, risk])
 
 const SEARCH_WAIT = 150
 
@@ -57,14 +60,14 @@ interface Shown {
   picked: number
 }
 
-interface Group {
+export interface Group {
   category: Section
   shown: Shown
 }
 
 type Keep = (entry: Item) => boolean
 
-type Choose = (section: string | null, wanted: Keep) => void
+export type Choose = (section: string | null, wanted: Keep) => void
 
 function sectionProgress(removal: Removal | undefined, total: number) {
   const done = removal?.count ?? 0
@@ -169,7 +172,7 @@ function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
   )
 }
 
-type ChangeList = (patch: Partial<CleanupSearch>, how?: {replace: boolean}) => void
+export type ChangeList = (patch: Partial<CleanupSearch>, how?: {replace: boolean}) => void
 
 function SectionLink({section, ...props}: {section: string; className?: string; children?: ReactNode}) {
   return <Link to="/cleanup/$section" params={{section}} search activeOptions={{includeSearch: false}} {...props} />
@@ -337,6 +340,7 @@ function useTyped(value: string) {
 
 function SearchBox({value, onChange, inputRef}: {value: string; onChange: (q: string) => void; inputRef: RefObject<HTMLInputElement | null>}) {
   const {typed, setTyped, setSent} = useTyped(value)
+  const {label} = usePlatform()
   const send = (q: string) => {
     setSent(q)
     onChange(q)
@@ -364,7 +368,7 @@ function SearchBox({value, onChange, inputRef}: {value: string; onChange: (q: st
         aria-label="Filter paths"
         className="pr-8 pl-8"
       />
-      <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">/</Kbd>
+      <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">{label('/')}</Kbd>
     </div>
   )
 }
@@ -378,15 +382,14 @@ function Toggle({on, label, onClick}: {on: boolean; label: string; onClick: () =
 }
 
 function Toolbar({list, onList, onSearch, searchRef}: {list: CleanupSearch; onList: ChangeList; onSearch: (q: string) => void; searchRef: RefObject<HTMLInputElement | null>}) {
-  const toggleRisk = (risk: Risk) => onList({risk: list.risk.includes(risk) ? list.risk.filter(r => r !== risk) : [...list.risk, risk]})
   return (
     <div className="flex items-center gap-2 border-b px-7 py-3">
       <SearchBox value={list.q} onChange={onSearch} inputRef={searchRef} />
       {RISKS.map(risk => (
-        <Toggle key={risk} on={list.risk.includes(risk)} label={RISK_LABEL[risk]} onClick={() => toggleRisk(risk)} />
+        <Toggle key={risk} on={list.risk.includes(risk)} label={RISK_LABEL[risk]} onClick={() => onList({risk: toggled(list.risk, risk)})} />
       ))}
-      <FilterSelect label="Minimum size" value={list.minSize} options={MIN_SIZES} render={n => (n === 0 ? 'Any size' : `≥ ${formatBytes(n)}`)} onChange={minSize => onList({minSize})} />
-      <FilterSelect label="Minimum idle time" value={list.minAge} options={MIN_AGES} render={n => (n === -1 ? 'Any age' : `Idle ${n}+ days`)} onChange={minAge => onList({minAge})} />
+      <FilterSelect label="Minimum size" value={list.minSize} options={MIN_SIZES} render={SIZE_LABEL} onChange={minSize => onList({minSize})} />
+      <FilterSelect label="Minimum idle time" value={list.minAge} options={MIN_AGES} render={AGE_LABEL} onChange={minAge => onList({minAge})} />
       <FilterSelect label="Sort" value={list.sort} options={SORTS} render={s => SORT_LABEL[s]} onChange={sort => onList({sort})} />
       <Toggle on={list.only} label="Only selected" onClick={() => onList({only: !list.only})} />
       <span className="grow" />
@@ -456,7 +459,7 @@ function groupsOf(sections: readonly Section[], {totals, shadow, picked}: Shapin
   )
 }
 
-function useListChange(): ChangeList {
+export function useListChange(): ChangeList {
   const navigate = useNavigate()
   return (patch, how) => navigate({to: '.', search: prev => ({...prev, ...patch}), replace: how?.replace})
 }
@@ -476,8 +479,21 @@ interface ListState {
 
 const ListContext = createContext<ListState | null>(null)
 
-function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep) {
+export interface Listing {
+  list: CleanupSearch
+  groups: Group[]
+  listed: ReadonlySet<string>
+  rows: readonly Item[]
+  choose: Choose
+  search: RefObject<HTMLInputElement | null>
+}
+
+export const ListingContext = createContext<Listing | null>(null)
+
+export function useListing(db: Db, list: CleanupSearch, selection: Selection): Listing {
   const on = selection.rowSelection
+  const keep = useMemo(() => predicateOf(list, on), [list, on])
+  const search = useRef<HTMLInputElement>(null)
   const heads = useSections(db)
   const section = useParams({strict: false, select: params => params.section})
   const open = useMemo(() => heads.find(head => head.id === section) ?? null, [heads, section])
@@ -489,28 +505,8 @@ function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep
   const nests = db.scan.nests.version()
   const shadow = useMemo(() => shadowOf(db, keep), [db, keep, items, nests])
   const listed = useMemo(() => new Set(sections.filter(section => section.count > 0).map(section => section.id)), [sections])
-  return {groups: groupsOf(sections, {totals, shadow, picked: filtering ? null : selection.picked}), listed, rows}
-}
-
-const LAYER = '[role="dialog"], [role="listbox"], [role="menu"]'
-
-const layerOpen = () => document.querySelector('[aria-expanded="true"]') !== null || [...document.querySelectorAll(LAYER)].some(layer => layer.checkVisibility())
-
-const inOverlay = (event: KeyboardEvent) => layerOpen() || (event.target instanceof Element && event.target.closest(LAYER) !== null)
-
-function useShortcuts(actions: [Hotkey, () => void, boolean][]) {
-  useHotkeys(
-    actions.map(([hotkey, action, enabled]) => ({
-      hotkey,
-      callback: (event: KeyboardEvent) => {
-        if (inOverlay(event)) return
-        event.preventDefault()
-        action()
-      },
-      options: {enabled},
-    })),
-    {preventDefault: false, stopPropagation: false, ignoreInputs: true},
-  )
+  const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
+  return {list, groups: groupsOf(sections, {totals, shadow, picked: filtering ? null : selection.picked}), listed, rows, choose, search}
 }
 
 function Body({groups, list, progressed, choose, children}: {groups: Group[]; list: CleanupSearch; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
@@ -529,27 +525,16 @@ function Body({groups, list, progressed, choose, children}: {groups: Group[]; li
   )
 }
 
-export function Cleanup({list, children}: {list: CleanupSearch; children: ReactNode}) {
-  const db = useDb()
+export function Cleanup({children}: {children: ReactNode}) {
+  const listing = use(ListingContext)
   const selection = useSelection()
   const {progress} = useProgress()
   const onList = useListChange()
-  const search = useRef<HTMLInputElement>(null)
-  const replay = useReveal(list.view)
-  const on = selection.rowSelection
-  const keep = useMemo(() => predicateOf(list, on), [list, on])
-  const {groups, listed, rows} = useGroups(db, list, selection, keep)
+  const replay = useReveal(listing?.list.view ?? CLEANUP_DEFAULTS.view)
+  if (!listing) return null
+  const {list, groups, listed, rows, choose, search} = listing
   const progressed = progress && {progress, removals: progress.removals}
-  const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
-  const open = !progress
-
-  useShortcuts([
-    ['/', () => search.current?.focus(), true],
-    ['A', () => choose(null, () => true), open],
-    ['D', () => selection.setRowSelection({}), open],
-    ['R', () => selection.reset(), open],
-    ['V', () => onList({view: list.view === 'list' ? 'cards' : 'list'}), true],
-  ])
+  const on = selection.rowSelection
 
   return (
     <ListContext value={{groups, progressed, list, onList, listed, rows, selected: selection.selected.length, on, setRowSelection: selection.setRowSelection, choose}}>

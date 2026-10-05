@@ -1,10 +1,10 @@
+use crate::platform;
 use crate::util::tilde;
 use crate::walk::Meta;
 use serde_json::{Value, json};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 const KINDS: [&str; 11] = [
@@ -49,35 +49,7 @@ pub struct Insights {
 
 // Local midnights for today and the DAYS-1 days before it, newest first.
 pub fn midnights(now: i64) -> Vec<i64> {
-    // SAFETY: localtime_r/mktime read and write only the local tm.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&now, &mut tm) };
-    let today = tm.tm_mday;
-    (0..DAYS as i32)
-        .map(|d| {
-            let mut t = tm;
-            (t.tm_hour, t.tm_min, t.tm_sec, t.tm_isdst) = (0, 0, 0, -1);
-            t.tm_mday = today - d;
-            // SAFETY: as above.
-            unsafe { libc::mktime(&mut t) }
-        })
-        .collect()
-}
-
-fn day_label(midnight: i64) -> String {
-    let mut buf = [0u8; 16];
-    // SAFETY: localtime_r/strftime write only into the locals passed to them.
-    let len = unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        libc::localtime_r(&midnight, &mut tm);
-        libc::strftime(
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-            c"%Y-%m-%d".as_ptr(),
-            &tm,
-        )
-    };
-    String::from_utf8_lossy(&buf[..len]).into_owned()
+    platform::local_midnights(now, DAYS)
 }
 
 fn dir_kind(name: &[u8], parent: &Path, depth: usize) -> Option<u8> {
@@ -147,7 +119,7 @@ pub fn enter(acc: &mut Insights, parent: Ins, parent_path: &Path, name: &OsStr) 
         folder,
         kind: parent
             .kind
-            .or_else(|| dir_kind(name.as_bytes(), parent_path, depth)),
+            .or_else(|| dir_kind(name.as_encoded_bytes(), parent_path, depth)),
     }
 }
 
@@ -161,7 +133,9 @@ pub fn add(
     path: impl FnOnce() -> PathBuf,
 ) {
     let bytes = meta.blocks * 512;
-    let kind = ins.kind.unwrap_or_else(|| ext_kind(name.as_bytes()));
+    let kind = ins
+        .kind
+        .unwrap_or_else(|| ext_kind(name.as_encoded_bytes()));
     let k = &mut acc.kinds[kind as usize];
     *k = (k.0 + bytes, k.1 + 1);
     let age = (now - meta.mtime) / 86400;
@@ -186,7 +160,7 @@ pub fn to_json(acc: Insights, days: &[i64], now: i64, home: &str) -> Value {
         .iter()
         .zip(days)
         .filter(|((_, files), _)| *files > 0)
-        .map(|((bytes, files), m)| json!({"day": day_label(*m), "bytes": bytes, "files": files}))
+        .map(|((bytes, files), m)| json!({"day": platform::day_label(*m), "bytes": bytes, "files": files}))
         .collect();
     let mut folders = acc.folders;
     folders.sort_by_key(|(_, b)| Reverse(b.iter().sum::<u64>()));

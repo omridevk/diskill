@@ -484,6 +484,11 @@ export function ProgressFooter({progress, phase, actions}: {progress: CleanupPro
   )
 }
 
+export function trashOffer(progress: CleanupProgress, phase: Phase, busy: boolean) {
+  const away = progress.link !== 'live'
+  return {offered: phase === 'trashed', away, waiting: busy || jobRunning(progress) || away}
+}
+
 export function TrashActions({
   progress,
   phase,
@@ -499,10 +504,8 @@ export function TrashActions({
   onUndo: () => void
   onEmpty: () => void
 }) {
-  const offered = phase === 'trashed'
+  const {offered, away, waiting} = trashOffer(progress, phase, busy)
   if (!offered && !error) return null
-  const away = progress.link !== 'live'
-  const waiting = busy || jobRunning(progress) || away
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
       {error}

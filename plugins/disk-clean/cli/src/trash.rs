@@ -1,15 +1,13 @@
 use crate::clean;
+use crate::platform;
+pub use crate::platform::is_trash_dir;
 use crate::util;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -20,32 +18,13 @@ const LOCK: &str = "trashed.lock";
 const LOCK_TRIES: usize = 50;
 pub const BATCH: usize = 64;
 const FREE_EVERY: Duration = Duration::from_millis(500);
-const RENAME_NOFOLLOW_ANY: libc::c_uint = 0x10;
 pub const STILL_THERE: &str = "the original path exists again, so it stays in the Trash";
-pub const INTERRUPTED: &str =
-    "the move to the Trash did not finish; if it landed there, Finder's Put Back can restore it";
 
 pub const TRASHED: &str = "trashed";
 pub const RESTORED: &str = "restored";
 pub const PUT_BACK: &str = "put-back";
 pub const EMPTIED: &str = "emptied";
 pub const FAILED: &str = "failed";
-
-const OSASCRIPT_SCRIPT_LIMIT: usize = 800;
-const MOVE_TO_TRASH: &str = r#"ObjC.import('Foundation')
-function run() {
-  const files = $.NSFileManager.defaultManager
-  const input = $.NSString.alloc.initWithDataEncoding($.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile, 4)
-  return JSON.stringify(JSON.parse(ObjC.unwrap(input)).map(({path, dev, ino}) => {
-    const now = ObjC.deepUnwrap(files.attributesOfItemAtPathError(path, null)) || {}
-    if (now.NSFileSystemNumber !== dev || now.NSFileSystemFileNumber !== ino) return {error: 'it changed after the check'}
-    const landed = $()
-    const error = $()
-    const moved = files.trashItemAtURLResultingItemURLError($.NSURL.fileURLWithPath(path), landed, error)
-    return moved ? {trashed: ObjC.unwrap(landed.path)} : {error: ObjC.unwrap(error.localizedDescription)}
-  }))
-}"#;
-const _: () = assert!(MOVE_TO_TRASH.len() < OSASCRIPT_SCRIPT_LIMIT);
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -72,22 +51,13 @@ pub fn record_path(home: &str) -> PathBuf {
     cache_dir(home).join(RECORD)
 }
 
-fn no_follow() -> fs::OpenOptions {
-    let mut options = fs::OpenOptions::new();
-    options.custom_flags(libc::O_NOFOLLOW);
-    options
-}
-
 pub fn is_real_dir(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
         && fs::canonicalize(path).is_ok_and(|real| real == path)
 }
 
 fn make_dir(dir: &Path) -> io::Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
+    platform::create_private_dir(dir)?;
     if is_real_dir(dir) {
         Ok(())
     } else {
@@ -99,7 +69,7 @@ fn make_dir(dir: &Path) -> io::Result<()> {
 }
 
 pub fn lock_file(path: &Path, tries: usize) -> io::Result<Option<fs::File>> {
-    let file = no_follow()
+    let file = platform::no_follow()
         .create(true)
         .truncate(false)
         .write(true)
@@ -159,7 +129,7 @@ impl Record {
     }
 
     fn append(&self, entries: &[Entry]) -> io::Result<()> {
-        let mut file = no_follow()
+        let mut file = platform::no_follow()
             .create(true)
             .append(true)
             .open(record_path(&self.home))?;
@@ -181,7 +151,7 @@ impl Record {
         let path = record_path(&self.home);
         let tmp = cache_dir(&self.home).join(format!("{RECORD}.tmp"));
         let _ = fs::remove_file(&tmp);
-        no_follow()
+        platform::no_follow()
             .create_new(true)
             .write(true)
             .open(&tmp)?
@@ -246,33 +216,12 @@ fn new_id(original: &str, n: usize) -> String {
     )
 }
 
-fn uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
-}
-
-pub fn is_trash_dir(dir: &Path, home: &str) -> bool {
-    let home_trash = Path::new(home).join(".Trash");
-    let volume_trash = dir.file_name().and_then(|n| n.to_str()) == Some(&uid().to_string())
-        && dir
-            .parent()
-            .and_then(Path::file_name)
-            .is_some_and(|n| n == ".Trashes");
-    (dir == home_trash || volume_trash) && is_real_dir(dir)
-}
-
-fn same_item(path: &str, dev: u64, ino: u64) -> Option<bool> {
-    fs::symlink_metadata(path)
-        .ok()
-        .map(|m| m.dev() == dev && m.ino() == ino)
-}
-
 fn still_in_trash(entry: &Entry, home: &str) -> Result<(), String> {
     let trashed = Path::new(&entry.trashed);
     if !trashed.parent().is_some_and(|dir| is_trash_dir(dir, home)) {
         return Err("the record names a path outside the Trash, not touched".to_string());
     }
-    match same_item(&entry.trashed, entry.dev, entry.ino) {
+    match platform::same_item(&entry.trashed, entry.dev, entry.ino) {
         Some(true) => Ok(()),
         Some(false) => Err("the item in the Trash was replaced, not touched".to_string()),
         None => Err("no longer in the Trash".to_string()),
@@ -283,8 +232,8 @@ fn classify(entry: &Entry, home: &str) -> Option<Entry> {
     if entry.state != TRASHED || still_in_trash(entry, home).is_ok() {
         return None;
     }
-    let in_trash = same_item(&entry.trashed, entry.dev, entry.ino);
-    let at_original = same_item(&entry.original, entry.dev, entry.ino);
+    let in_trash = platform::same_item(&entry.trashed, entry.dev, entry.ino);
+    let at_original = platform::same_item(&entry.original, entry.dev, entry.ino);
     let (state, reason) = match (in_trash, at_original) {
         (_, Some(true)) => (PUT_BACK, ""),
         (None, None) => (EMPTIED, ""),
@@ -332,82 +281,25 @@ pub fn synced(home: &str, emit: Emit) -> Vec<Entry> {
     read(home)
 }
 
-#[derive(Deserialize)]
-struct Landed {
-    trashed: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Serialize, Clone)]
-struct Checked {
-    path: String,
-    dev: u64,
-    ino: u64,
-}
-
-fn move_batch(paths: &[Checked]) -> Vec<Result<String, String>> {
-    let mut landed = call_trash(paths);
+fn move_batch(paths: &[platform::Checked]) -> Vec<Result<String, String>> {
+    let mut landed = platform::call_trash(paths);
     let again: Vec<usize> = landed
         .iter()
         .enumerate()
         .filter(|(i, l)| {
-            l.is_err() && same_item(&paths[*i].path, paths[*i].dev, paths[*i].ino) == Some(true)
+            l.is_err()
+                && platform::same_item(&paths[*i].path, paths[*i].dev, paths[*i].ino) == Some(true)
         })
         .map(|(i, _)| i)
         .collect();
     if again.is_empty() {
         return landed;
     }
-    let retry: Vec<Checked> = again.iter().map(|i| paths[*i].clone()).collect();
-    for (i, result) in again.into_iter().zip(call_trash(&retry)) {
+    let retry: Vec<platform::Checked> = again.iter().map(|i| paths[*i].clone()).collect();
+    for (i, result) in again.into_iter().zip(platform::call_trash(&retry)) {
         landed[i] = result;
     }
     landed
-}
-
-fn call_trash(paths: &[Checked]) -> Vec<Result<String, String>> {
-    let failed = |why: String| paths.iter().map(|_| Err(why.clone())).collect();
-    let Ok(input) = serde_json::to_vec(paths) else {
-        return failed("a path could not be encoded".to_string());
-    };
-    let spawned = util::spawn(
-        Command::new("/usr/bin/osascript")
-            .args(["-l", "JavaScript", "-e", MOVE_TO_TRASH])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    );
-    let mut child = match spawned {
-        Ok(child) => child,
-        Err(e) => return failed(format!("could not start osascript: {e}")),
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(&input);
-    }
-    let out = match child.wait_with_output() {
-        Ok(out) => out,
-        Err(e) => return failed(format!("osascript failed: {e}")),
-    };
-    let landed: Vec<Landed> = match serde_json::from_slice(out.stdout.trim_ascii()) {
-        Ok(landed) if out.status.success() => landed,
-        _ => {
-            return failed(format!(
-                "the Trash call failed ({}): {}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-    };
-    if landed.len() != paths.len() {
-        return failed("the Trash call answered for a different list".to_string());
-    }
-    landed
-        .into_iter()
-        .map(|l| match (l.trashed, l.error) {
-            (Some(path), _) => Ok(path),
-            (None, why) => Err(why.unwrap_or_else(|| "refused".to_string())),
-        })
-        .collect()
 }
 
 pub struct Wanted {
@@ -424,6 +316,7 @@ pub type Check<'a> = &'a (dyn Fn(&str) -> Result<(), String> + Sync);
 
 fn pending(record_run: &str, wanted: &Wanted, n: usize) -> Result<Entry, String> {
     let meta = fs::symlink_metadata(&wanted.original).map_err(|e| e.kind().to_string())?;
+    let (dev, ino) = platform::dev_and_ino(&meta);
     Ok(Entry {
         id: new_id(&wanted.original, n),
         run: record_run.to_string(),
@@ -431,10 +324,13 @@ fn pending(record_run: &str, wanted: &Wanted, n: usize) -> Result<Entry, String>
         trashed: String::new(),
         bytes: wanted.bytes,
         at: util::now(),
-        dev: meta.dev(),
-        ino: meta.ino(),
+        dev,
+        ino,
         state: FAILED.to_string(),
-        reason: INTERRUPTED.to_string(),
+        reason: format!(
+            "the move to the Trash did not finish; if it landed there, {} can restore it",
+            platform::RESTORE_BY_HAND
+        ),
     })
 }
 
@@ -509,9 +405,9 @@ impl Record {
             return out;
         }
         self.entries.extend(ready.iter().cloned());
-        let paths: Vec<Checked> = ready
+        let paths: Vec<platform::Checked> = ready
             .iter()
-            .map(|e| Checked {
+            .map(|e| platform::Checked {
                 path: e.original.clone(),
                 dev: e.dev,
                 ino: e.ino,
@@ -574,28 +470,10 @@ fn restore_problem(entry: &Entry, home: &str, tmp_base: Option<&str>) -> Option<
     }
 }
 
-pub fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
-    let from = CString::new(from.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    let to = CString::new(to.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    // SAFETY: renamex_np only reads the two NUL-terminated paths.
-    let rc = unsafe {
-        libc::renamex_np(
-            from.as_ptr(),
-            to.as_ptr(),
-            libc::RENAME_EXCL | RENAME_NOFOLLOW_ANY,
-        )
-    };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
 fn why_not_restored(e: &io::Error) -> String {
-    match e.raw_os_error() {
-        Some(libc::EEXIST | libc::ENOTEMPTY) => STILL_THERE.to_string(),
-        Some(libc::EACCES | libc::EPERM) => {
+    match e.kind() {
+        io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty => STILL_THERE.to_string(),
+        io::ErrorKind::PermissionDenied => {
             "permission denied, so it stays in the Trash".to_string()
         }
         _ => format!("{e}, so it stays in the Trash"),
@@ -607,8 +485,10 @@ fn restore(entry: &Entry, home: &str, tmp_base: Option<&str>) -> Result<(), Stri
     if let Some(problem) = restore_problem(entry, home, tmp_base) {
         return Err(problem.to_string());
     }
-    rename_excl(Path::new(&entry.trashed), Path::new(&entry.original))
-        .map_err(|e| why_not_restored(&e))
+    platform::rename_excl(Path::new(&entry.trashed), Path::new(&entry.original))
+        .map_err(|e| why_not_restored(&e))?;
+    platform::drop_trash_info(Path::new(&entry.trashed));
+    Ok(())
 }
 
 fn finished(entry: &Entry, home: &str, state: &str) -> Entry {
@@ -630,7 +510,7 @@ fn left_bytes(record: &Record, run: &str) -> (usize, i64) {
 
 pub fn undo(record: &mut Record, ids: &[String], run: &str, emit: Emit) -> io::Result<Report> {
     let home = record.home.clone();
-    let tmp_base = util::user_tmp_base();
+    let tmp_base = platform::user_tmp_base();
     let chosen = record.trashed(ids);
     let job = job_id();
     emit(
@@ -694,9 +574,18 @@ pub fn with_free_samples<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
     })
 }
 
+pub fn remove_for_good(path: &Path, home: &str) -> io::Result<()> {
+    platform::make_removable(path);
+    let result = clean::remove_path(path);
+    if fs::symlink_metadata(path).is_err() && path.parent().is_some_and(|d| is_trash_dir(d, home)) {
+        platform::drop_trash_info(path);
+    }
+    result
+}
+
 fn empty_one(entry: &Entry, home: &str) -> Result<(), String> {
     still_in_trash(entry, home)?;
-    let result = clean::remove_path(Path::new(&entry.trashed));
+    let result = remove_for_good(Path::new(&entry.trashed), home);
     match (fs::symlink_metadata(&entry.trashed).is_ok(), result) {
         (false, _) => Ok(()),
         (true, Err(e)) => Err(format!("could not delete: {}", e.kind())),
@@ -805,7 +694,7 @@ fn locate(dir: &Path, held: &Held) -> Option<PathBuf> {
         .find(|path| {
             path.parent() == Some(dir)
                 && !BOOKKEEPING.iter().any(|b| path.ends_with(b))
-                && same_item(&path.to_string_lossy(), held.dev, held.ino) == Some(true)
+                && platform::same_item(&path.to_string_lossy(), held.dev, held.ino) == Some(true)
         })
 }
 
@@ -817,7 +706,7 @@ fn readable_name(dir: &Path, found: &Path, held: &Held) -> PathBuf {
     if target != found
         && !BOOKKEEPING.iter().any(|b| target.ends_with(b))
         && fs::symlink_metadata(&target).is_err()
-        && rename_excl(found, &target).is_ok()
+        && platform::rename_excl(found, &target).is_ok()
     {
         return target;
     }
@@ -879,7 +768,7 @@ fn migrate_run(record: &mut Record, dir: &Path) -> (usize, usize) {
                         copy.original, entry.reason
                     );
                     if current != found {
-                        let _ = rename_excl(&current, &found);
+                        let _ = platform::rename_excl(&current, &found);
                     }
                     left += 1;
                 }

@@ -267,6 +267,16 @@ fn render_keeps_hostile_paths_inside_the_data_script() {
     assert!(page.contains(r#"<meta name="disk-clean-token" content="tok""#));
 }
 
+#[test]
+fn render_tells_the_page_its_platform() {
+    let page = clean_disk_render(&serde_json::json!({}));
+    let meta = format!(
+        r#"<meta name="disk-clean-platform" content="{}""#,
+        std::env::consts::OS
+    );
+    assert!(page.contains(&meta), "{meta}");
+}
+
 fn clean_disk_render(data: &Value) -> String {
     disk_clean::review::render(data, "tok")
 }
@@ -328,6 +338,7 @@ fn post_to(port: u16, route: &str, body: &str) -> u16 {
     request(port, raw).0
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn review_without_run_dir_streams_the_scan() {
     let t = common::temp_dir("live");
@@ -487,6 +498,169 @@ fn review_without_run_dir_streams_the_scan() {
     assert!(sel.contains(cache.to_str().unwrap()));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn review_without_run_dir_streams_the_scan_on_linux() {
+    let t = common::temp_dir("live");
+    let home = t.0.join("home");
+    let bin = t.0.join("bin");
+    let gate = t.0.join("gate");
+    fs::create_dir_all(home.join(".cache/app")).unwrap();
+    fs::write(home.join(".cache/app/blob"), vec![7u8; 64 * 1024]).unwrap();
+    fs::create_dir_all(home.join("code")).unwrap();
+    common::sh(
+        &home.join("code"),
+        "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init && git worktree add -q -b wt ../wt main",
+    );
+    blocking_docker(&bin, &gate);
+    let (mut child, port, token) = spawn_live(&home, &bin);
+
+    let (status, page) = get(port, "/");
+    assert_eq!(status, 200);
+    let json = page
+        .split_once(r#"<script id="disk-clean-data" type="application/json">"#)
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(json, _)| json)
+        .expect("data script");
+    let data = serde_json::from_str::<Value>(json).unwrap();
+    assert_eq!(data["live"], true);
+    assert_eq!(data["trash"], serde_json::json!([]));
+    assert!(data["run"].as_str().unwrap().starts_with("run-"), "{data}");
+    assert!(page.contains(&token));
+    assert_eq!(get(port, "/events?token=wrong").0, 403);
+
+    let mut first = events(port, &token, "walked");
+    let run = live_run(&home);
+    let caught_up = events(port, &token, "replayed");
+    assert!(
+        caught_up.len() >= first.len() - 1 && caught_up.iter().all(|(n, _)| n != "replayed"),
+        "a connection replays its backlog, then says it has caught up"
+    );
+    let listed = Some(lines_in(&run));
+    assert_eq!(
+        post_to(port, "/preview", &picks_body(&token, "", &run, &[], listed)),
+        200
+    );
+    assert_eq!(
+        post_to(
+            port,
+            "/decide",
+            &picks_body(&token, "approve", &run, &[], listed)
+        ),
+        409
+    );
+    fs::write(&gate, "").unwrap();
+    let rest = events(port, &token, "done");
+    let replay_of_first = rest[..first.len()].to_vec();
+    assert_eq!(
+        replay_of_first, first,
+        "a new connection replays from the start"
+    );
+    first = rest;
+
+    let docker_rows: Vec<&(String, Value)> = first
+        .iter()
+        .filter(|(n, d)| {
+            d["item"]["path"] == "cmd:docker-prune"
+                || (n == "unlisted" && d["path"] == "cmd:docker-prune")
+        })
+        .collect();
+    assert_eq!(docker_rows.len(), 2, "{docker_rows:?}");
+    assert_eq!(docker_rows[0].1["item"]["checking"], true);
+    assert_eq!(docker_rows[1].0, "unlisted", "docker answered nothing");
+    let wt = home.join("code/wt");
+    let wt_rows: Vec<&Value> = first
+        .iter()
+        .filter(|(n, d)| n == "item" && d["item"]["path"] == wt.to_str().unwrap())
+        .map(|(_, d)| d)
+        .collect();
+    assert_eq!(wt_rows[0]["item"]["checking"], true, "{wt_rows:?}");
+    assert!(wt_rows.last().unwrap()["item"].get("checking").is_none());
+    let whole = first.clone();
+    first.retain(|(n, d)| n != "unlisted" && d["item"]["checking"] != true);
+
+    let names: Vec<&str> = first.iter().map(|(n, _)| n.as_str()).collect();
+    let walked = names.iter().position(|n| *n == "walked").unwrap();
+    assert_eq!(names[0], "disk");
+    assert_eq!(names.last(), Some(&"done"));
+    assert_eq!(names.iter().filter(|n| **n == "walked").count(), 1);
+    assert!(
+        names[1..walked]
+            .iter()
+            .all(|n| *n == "item" || *n == "progress"),
+        "{names:?}"
+    );
+    assert!(
+        names[walked + 1..names.len() - 1]
+            .iter()
+            .all(|n| *n == "item")
+    );
+    let mut last = 0;
+    for (name, data) in &first {
+        let ms = data["elapsed_ms"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{name} lacks elapsed_ms"));
+        assert!(ms >= last, "{name} went back in time");
+        last = ms;
+    }
+    assert!(first[walked].1["worktrees"].as_u64().unwrap() <= 1);
+    let item = |path: &Path| {
+        first
+            .iter()
+            .position(|(n, d)| n == "item" && d["item"]["path"] == path.to_str().unwrap())
+            .unwrap_or_else(|| panic!("no item for {}", path.display()))
+    };
+    let cache = home.join(".cache/app");
+    let first_progress = names
+        .iter()
+        .position(|n| *n == "progress")
+        .unwrap_or(walked);
+    assert!(
+        item(&cache) < first_progress,
+        "fixed locations come before the walk"
+    );
+    item(&home.join("code/wt"));
+    assert_eq!(
+        first[item(&cache)].1["item"]["preselect"],
+        false,
+        "an unnamed child of ~/.cache is shown, not ticked"
+    );
+
+    let second = events(port, &token, "done");
+    assert_eq!(second, whole, "a reconnect replays every event");
+
+    let lines: Vec<u64> = first
+        .iter()
+        .filter_map(|(_, d)| d["item"]["line"].as_u64())
+        .collect();
+    assert_eq!(
+        lines,
+        (1..=lines.len() as u64).collect::<Vec<_>>(),
+        "every recorded item carries its line in scan.tsv"
+    );
+    assert_eq!(
+        post_to(port, "/preview", &picks_body(&token, "", &run, &[], None)),
+        200
+    );
+    let approve = picks_body(&token, "approve", &run, &[cache.to_str().unwrap()], None);
+    assert_eq!(post_to(port, "/decide", &approve), 200);
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    let run = Path::new(lines[0]);
+    assert!(run.starts_with(home.join(".cache/disk-clean")), "{stdout}");
+    assert!(run.join("scan.tsv").is_file() && run.join("disk.tsv").is_file());
+    assert_eq!(Path::new(lines[1]), run.join("selection.json"));
+    let sel = fs::read_to_string(run.join("selection.json")).unwrap();
+    assert!(sel.contains(cache.to_str().unwrap()));
+}
+
 fn spawn_live(home: &Path, bin: &Path) -> (common::Reaped, u16, String) {
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let mut child = common::reaped(
@@ -540,8 +714,8 @@ fn rescan_restarts_the_scan_in_place() {
     let home = t.0.join("home");
     let bin = t.0.join("bin");
     let gate = t.0.join("gate");
-    let old = home.join("Library/Caches/old");
-    let new = home.join("Library/Caches/new");
+    let old = common::app_caches(&home).join("old");
+    let new = common::app_caches(&home).join("new");
     fs::create_dir_all(&old).unwrap();
     fs::write(old.join("blob"), vec![7u8; 64 * 1024]).unwrap();
     blocking_docker(&bin, &gate);
@@ -946,8 +1120,8 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
     let t = common::temp_dir("midscan");
     let home = t.0.join("home");
     let (bin, gate) = (t.0.join("bin"), t.0.join("gate"));
-    let take = home.join("Library/Caches/take");
-    let keep = home.join("Library/Caches/keep");
+    let take = common::app_caches(&home).join("take");
+    let keep = common::app_caches(&home).join("keep");
     let never = home.join("never-listed");
     for dir in [&take, &keep, &never] {
         fs::create_dir_all(dir).unwrap();

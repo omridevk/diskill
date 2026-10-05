@@ -15,7 +15,7 @@ export const MIN_AGES = [-1, 30, 90, 365]
 export const LOG_FILTERS: LogFilter[] = ['all', 'removed', 'problems', 'commands']
 const VIEWS: View[] = ['list', 'cards']
 const OVERLAYS: Overlay[] = ['progress', 'movie']
-const SHAPES: Shape[] = ['sunburst', 'treemap']
+export const SHAPES: Shape[] = ['sunburst', 'treemap']
 
 export interface RootSearch {
   overlay?: Overlay

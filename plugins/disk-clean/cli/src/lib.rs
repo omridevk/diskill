@@ -1,6 +1,7 @@
 pub mod clean;
 pub mod http;
 pub mod insights;
+pub mod platform;
 pub mod review;
 pub mod scan;
 pub mod selection;

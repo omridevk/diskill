@@ -9,9 +9,8 @@ export const Route = createFileRoute('/_tabs/cleanup')({
 })
 
 function CleanupTab() {
-  const list = Route.useSearch()
   return (
-    <Cleanup list={list}>
+    <Cleanup>
       <Outlet />
     </Cleanup>
   )

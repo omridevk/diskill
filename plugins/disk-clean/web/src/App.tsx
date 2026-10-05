@@ -1,8 +1,10 @@
+import {HotkeysProvider} from '@tanstack/react-hotkeys'
 import {createRouter, RouterProvider, type RouterHistory} from '@tanstack/react-router'
 import {useState} from 'react'
 import type {Loaded} from './lib/data'
 import {createDb, type Db} from './lib/db'
 import {knownPicks} from './lib/page-data'
+import {hotkeyPlatform} from './lib/platform'
 import {parseSearch, stringifySearch} from './lib/search'
 import {createTabMemory} from './lib/tab-memory'
 import {routeTree} from './routeTree.gen'
@@ -50,5 +52,9 @@ declare module '@tanstack/react-router' {
 
 export function App({loaded, history}: {loaded: Loaded; history: RouterHistory}) {
   const [router] = useState(() => createAppRouter(loaded, history))
-  return <RouterProvider router={router} />
+  return (
+    <HotkeysProvider defaultOptions={{hotkey: {platform: hotkeyPlatform(loaded)}}}>
+      <RouterProvider router={router} />
+    </HotkeysProvider>
+  )
 }

@@ -15,8 +15,9 @@ import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatBytes, plural, tilde, type TreeNode} from '@/lib/data'
 import {useDb} from '@/lib/db'
 import {zoomLink, type Folder} from '@/lib/folders'
-import type {Shape} from '@/lib/search'
+import {SHAPES, type Shape} from '@/lib/search'
 import {useHome, useSelection} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import type {Disk} from '@/lib/scan-feed'
 import {useCleanable, useDisk, useFolders, useInside, useScanState} from '@/lib/views'
 import {squarifyInBounds} from '@/lib/treemap-tile'
@@ -30,6 +31,8 @@ interface Row {
 }
 
 const renderer = motion({initial: false})
+
+export const SHAPE_LABEL: Record<Shape, string> = {sunburst: 'Sunburst', treemap: 'Treemap'}
 
 const HUES = [210, 28, 152, 340, 265, 46, 190, 120, 8, 300, 172, 65]
 
@@ -159,12 +162,13 @@ function branchFocus<T extends {id: string; ancestorIds: readonly string[]}, X e
 }
 
 function Reconciliation({data}: {data: Figures}) {
+  const {otherHint, reserved: reservedName, reservedHint, sharedBlocks} = usePlatform()
   const other = Math.max(0, data.used - data.home)
   const reserved = Math.max(0, data.total - data.used - data.free)
   const rows: [string, number, string, string][] = [
     ['Your home folder', data.home, 'bg-blue-400', 'everything under ~, mapped above'],
-    ['Rest of the data volume', other, 'bg-zinc-500', '/Applications, other users, /usr/local, system-wide caches'],
-    ['macOS system volume and APFS reserve', reserved, 'bg-amber-500', 'sealed system, Preboot, Recovery, swap and snapshots; not user-deletable'],
+    ['Rest of the data volume', other, 'bg-zinc-500', otherHint],
+    [reservedName, reserved, 'bg-amber-500', reservedHint],
     ['Free right now', data.free, 'bg-emerald-500/50', ''],
   ]
   return (
@@ -172,7 +176,7 @@ function Reconciliation({data}: {data: Figures}) {
       <h3 className="pb-2 text-sm font-semibold">Where your {formatBytes(data.total)} went</h3>
       {data.home > data.used && (
         <p className="pb-2 text-xs text-muted-foreground">
-          du counts {formatBytes(data.home - data.used)} more than the disk holds: APFS clones and snapshots share blocks.
+          du counts {formatBytes(data.home - data.used)} more than the disk holds: {sharedBlocks}
         </p>
       )}
       {rows.map(([name, bytes, color, hint]) => (
@@ -352,6 +356,7 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const navigate = useNavigate()
   const [hover, setHover] = useState<TreeNode | null>(null)
   const {definition, onRender} = useStorageDefinition(flat, tree, shape, focus, cleanable)
+  const reshape = (next: Shape) => navigate({to: '.', search: prev => ({...prev, shape: next})})
 
   if (!tree || !flat || !definition) {
     return <div className="p-10 text-center text-sm text-muted-foreground">No storage map in this run. Re-run the scan to build one.</div>
@@ -365,9 +370,12 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
     <div className="flex flex-col gap-5 overflow-auto px-7 py-5">
       <div className="flex items-center gap-3">
         <Crumbs chain={chain} folders={folders} />
-        <ToggleGroup value={[shape]} onValueChange={v => v[0] && navigate({to: '.', search: prev => ({...prev, shape: v[0] as Shape})})} variant="outline" size="sm" aria-label="Chart">
-          <ToggleGroupItem value="sunburst">Sunburst</ToggleGroupItem>
-          <ToggleGroupItem value="treemap">Treemap</ToggleGroupItem>
+        <ToggleGroup value={[shape]} onValueChange={v => v[0] && reshape(v[0] as Shape)} variant="outline" size="sm" aria-label="Chart">
+          {SHAPES.map(next => (
+            <ToggleGroupItem key={next} value={next}>
+              {SHAPE_LABEL[next]}
+            </ToggleGroupItem>
+          ))}
         </ToggleGroup>
       </div>
       <div className="grid grid-cols-[minmax(0,1fr)_280px] gap-6">

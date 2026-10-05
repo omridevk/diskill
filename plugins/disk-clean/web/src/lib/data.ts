@@ -61,6 +61,8 @@ export interface EventSourceLike extends EventTarget {
 
 export type OpenEvents = (url: string) => EventSourceLike
 
+export type Platform = 'macos' | 'linux'
+
 export type TrashState = 'trashed' | 'restored' | 'put-back' | 'emptied' | 'failed'
 
 export interface TrashEntry {
@@ -85,6 +87,7 @@ export interface Loaded {
   data: ScanData
   token: string
   home: string
+  platform?: Platform
   live?: boolean
   approved?: string[]
   trash?: TrashEntry[]
@@ -94,12 +97,15 @@ export interface Loaded {
 
 export const NO_DATA: ScanData = {categories: [], reclaimable: 0, free: 0, total: 0, used: 0, home: 0, snapshots: 0, tree: null, insights: null}
 
+const platformOf = (name: string): Platform => (name === 'linux' ? 'linux' : 'macos')
+
 async function loadDev(): Promise<Loaded> {
   const params = new URLSearchParams(location.search)
-  if (params.has('live')) return {data: NO_DATA, token: params.get('token') ?? '', home: '', live: true}
+  const platform = platformOf(params.get('platform') ?? '')
+  if (params.has('live')) return {data: NO_DATA, token: params.get('token') ?? '', home: '', platform, live: true}
   const response = await fetch('/dev/fixture.json')
   const loaded: Loaded = await response.json()
-  return {...loaded, home: ''}
+  return {...loaded, home: '', platform}
 }
 
 function metaOf(name: string) {
@@ -110,9 +116,10 @@ export async function load(): Promise<Loaded> {
   const text = document.getElementById('disk-clean-data')?.textContent ?? ''
   const token = metaOf('disk-clean-token')
   const home = metaOf('disk-clean-home')
+  const platform = platformOf(metaOf('disk-clean-platform'))
   if (import.meta.env.DEV && text.trim() === '__DATA__') return loadDev()
   const parsed: (ScanData | {live: true} | (ScanData & {approved: true; selection: string[]})) & TrashRecord = JSON.parse(text)
-  const record = {trash: parsed.trash ?? [], run: parsed.run ?? ''}
+  const record = {platform, trash: parsed.trash ?? [], run: parsed.run ?? ''}
   if ('live' in parsed) return {data: NO_DATA, token, home, live: true, ...record}
   return 'approved' in parsed ? {data: parsed, token, home, approved: parsed.selection, ...record} : {data: parsed, token, home, ...record}
 }
