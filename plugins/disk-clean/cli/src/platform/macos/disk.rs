@@ -1,15 +1,8 @@
+use crate::platform::VolumeStats;
 use crate::util::output;
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-
-pub struct VolumeStats {
-    pub total: u64,
-    pub used: u64,
-    pub avail: u64,
-}
 
 pub fn volume_stats(path: &Path) -> Option<VolumeStats> {
     let c = CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -83,8 +76,4 @@ pub fn user_tmp_base() -> Option<String> {
     } else {
         None
     }
-}
-
-pub fn file_id(meta: &fs::Metadata) -> u64 {
-    meta.ino()
 }
