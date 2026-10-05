@@ -1219,7 +1219,7 @@ fn items_already_in_the_recycle_bin_are_removed_for_good_not_trashed_again() {
     approve(&s, &[("rm", &old, 4096)]);
     let dry = stdout(&cli(&s, &["clean", "--dry-run", &text(&s.run)]));
     assert!(
-        dry.contains(&format!("rm -rf -- {}\n", text(&old))),
+        dry.contains(&format!("rm -rf -- '{}'\n", text(&old))),
         "{dry}"
     );
     clean(&s);
