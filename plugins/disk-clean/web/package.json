@@ -7,7 +7,9 @@
     "build": "pnpm run lint && tsc --noEmit && vite build && mv ../cli/assets/index.html ../cli/assets/page.html",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src",
-    "test": "vitest run --project 'app *' && vitest run --project 'perf chromium' && vitest run --project 'perf firefox' && pnpm run frames",
+    "test": "vitest run --project 'app *' && vitest run --project 'perf chromium' && vitest run --project 'perf firefox' && pnpm run realtime && pnpm run frames",
+    "realtime": "vitest run --project 'realtime chromium' && vitest run --project 'realtime firefox' && vitest run --project 'realtime chromium-retina'",
+    "test:slow": "DISK_CLEAN_SLOW=1 vitest run --project 'app *'",
     "frames": "vitest run --project 'frames chromium' && vitest run --project 'frames firefox' && vitest run --project 'frames chromium reduced' && vitest run --project 'frames firefox reduced'"
   },
   "dependencies": {
