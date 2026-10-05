@@ -135,7 +135,7 @@ jobs:
           info=$(file "plugins/disk-clean/cli/target/$TARGET/release/disk-clean")
           echo "$info"
           case "$info" in
-            *"statically linked"*) ;;
+            *"statically linked"* | *"static-pie linked"*) ;;
             *)
               echo "::error::disk-clean for $TARGET is not statically linked"
               exit 1
