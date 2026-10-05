@@ -114,7 +114,7 @@ leftovers, Steam, core files, new commands) is not in this step.
 - **Test fixtures that depend on a platform limit** (path length for "nested too deep") take the
   limit from a per-platform helper in `tests/common`, not a second copy of the test.
 
-## Release assets and launcher (draft 2026-10-05, after PRs #5, #6, #8)
+## Release assets and launcher (approved 2026-10-05, after PRs #5, #6, #8)
 
 User stories 27, 28 and 35 of `cross-platform.md` for Linux. Today `release.yml` publishes only
 `disk-clean-macos-universal.tar.gz`, and `run.sh` `download()` returns early on anything but Darwin,
@@ -130,7 +130,7 @@ so every Linux user builds from source.
 
 - Each tarball holds one file, `disk-clean` (mode 755), as the macOS one does. Each has a
   `<asset>.sha256` in the `sha256sum` format (`<hash>  <asset>`), which `shasum -a 256 -c` also reads.
-- **Static musl, not glibc** (proposed, the user's to confirm). A glibc binary built on Ubuntu 24.04
+- **Static musl, not glibc** (approved 2026-10-05). A glibc binary built on Ubuntu 24.04
   needs glibc 2.39 and does not start on Debian 12, RHEL 9 or Alpine; a static musl binary runs on any
   Linux kernel the code supports. Every `libc` call the Linux code makes exists for musl in `libc`
   0.2.189 (`getrandom`, `setpriority`, `statvfs`, `SYS_renameat2`, `RENAME_NOREPLACE` checked). No C
