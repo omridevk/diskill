@@ -158,6 +158,14 @@ disk (with how to compact), P6 per-drive pnpm stores.
   shared-blocks "hard links share blocks."; key labels from `formatForDisplay` with platform
   `windows` (`Ctrl+K`).
 - Path display and copy in Windows form (decision 1).
+- Every user-facing "Trash" on the page reads "Recycle Bin" on Windows (tab name, dialog titles and
+  notes, progress verbs, "Move to the Trash", "Empty these from the Trash?", "space comes back when the
+  Trash is emptied", palette action names); route paths and ids stay `trash`. macOS and Linux text
+  unchanged. (Added 2026-10-05 after the page task found wording outside the first table.)
+- A drive root (`C:/`) is the "Whole disk" root like `/`; the Storage breadcrumb separator is `\` on
+  Windows; the path filter accepts `\` (typed `AppData\Local` matches `AppData/Local`).
+- The confirm dialog's delete-for-good lines read `Remove-Item -LiteralPath '<path>' -Recurse -Force`
+  on Windows in place of `rm -rf -- <path>`.
 - `cli/assets/page.html` rebuilt and committed.
 
 ## Tests
