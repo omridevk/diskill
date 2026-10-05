@@ -74,6 +74,28 @@ Inventory of today's actions, routes and hotkeys: research done 2026-10-05 again
   each action's shortcut label on the right, fuzzy-searches names and keywords.
 - While the palette is open, other page hotkeys do not fire (it is a dialog; the existing guards
   already skip while a dialog is open).
+- Nested pages (cmdk's pages pattern). An action either runs or opens a page of child actions
+  (`children` in place of `run`; its name ends in "…"). Enter on a page action shows its children; the
+  path shows as a breadcrumb above the input ("Sort by"); Backspace in an empty input, or Escape, goes
+  back one page (Escape on the top page closes). Opening a page clears the input.
+- Typing on the top page searches every level: nested leaves show with their path ("Sort by ›
+  Largest first") in one ranked list, so nothing needs drilling down to be found.
+- The top page stays short. Nested:
+
+| Top-level entry | Opens |
+|---|---|
+| Go to section… | the cleanup sections |
+| Filter… | Risk: safe / review / report only (toggles), Minimum size…, Minimum idle…, Only selected, Clear filters |
+| Sort by… | the five orders |
+| Select… | Select all shown, Clear selection, Reset to recommended, In this section… (all, idle 90+ days, idle 1+ year, none) |
+| Show cleanup… (Trash tab) | All cleanups, then each run |
+| Cleanup… (after approval) | Show details, Watch the movie, Undo this cleanup, Empty these from Trash… |
+| Chart… (Storage tab) | Sunburst, Treemap |
+
+  At the top level with no page: Go to Cleanup / Storage / Insights / Trash, Filter paths, Switch to
+  list / cards, Delete…, Delete immediately…, Rescan, Undo selected / Empty selected… (Trash tab),
+  Keyboard shortcuts, How Delete works. Actions with a hotkey keep it wherever they sit; the
+  cheatsheet lists them by their own name.
 
 ### Palette actions
 
