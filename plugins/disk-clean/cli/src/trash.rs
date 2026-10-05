@@ -485,7 +485,9 @@ fn restore(entry: &Entry, home: &str, tmp_base: Option<&str>) -> Result<(), Stri
         return Err(problem.to_string());
     }
     platform::rename_excl(Path::new(&entry.trashed), Path::new(&entry.original))
-        .map_err(|e| why_not_restored(&e))
+        .map_err(|e| why_not_restored(&e))?;
+    platform::drop_trash_info(Path::new(&entry.trashed));
+    Ok(())
 }
 
 fn finished(entry: &Entry, home: &str, state: &str) -> Entry {
@@ -573,9 +575,13 @@ pub fn with_free_samples<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
 
 fn empty_one(entry: &Entry, home: &str) -> Result<(), String> {
     still_in_trash(entry, home)?;
+    platform::make_removable(Path::new(&entry.trashed));
     let result = clean::remove_path(Path::new(&entry.trashed));
     match (fs::symlink_metadata(&entry.trashed).is_ok(), result) {
-        (false, _) => Ok(()),
+        (false, _) => {
+            platform::drop_trash_info(Path::new(&entry.trashed));
+            Ok(())
+        }
         (true, Err(e)) => Err(format!("could not delete: {}", e.kind())),
         (true, Ok(())) => Err("still present after removal".to_string()),
     }

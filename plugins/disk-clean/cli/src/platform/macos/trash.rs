@@ -1,11 +1,10 @@
+use crate::platform::{Checked, uid};
 use crate::trash::is_real_dir;
 use crate::util;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::ffi::CString;
-use std::fs;
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -27,24 +26,6 @@ function run() {
 }"#;
 const _: () = assert!(MOVE_TO_TRASH.len() < OSASCRIPT_SCRIPT_LIMIT);
 
-pub fn no_follow() -> fs::OpenOptions {
-    let mut options = fs::OpenOptions::new();
-    options.custom_flags(libc::O_NOFOLLOW);
-    options
-}
-
-pub fn create_private_dir(dir: &Path) -> io::Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-}
-
-pub fn uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
-}
-
 pub fn is_trash_dir(dir: &Path, home: &str) -> bool {
     let home_trash = Path::new(home).join(".Trash");
     let volume_trash = dir.file_name().and_then(|n| n.to_str()) == Some(&uid().to_string())
@@ -55,27 +36,10 @@ pub fn is_trash_dir(dir: &Path, home: &str) -> bool {
     (dir == home_trash || volume_trash) && is_real_dir(dir)
 }
 
-pub fn dev_and_ino(meta: &fs::Metadata) -> (u64, u64) {
-    (meta.dev(), meta.ino())
-}
-
-pub fn same_item(path: &str, dev: u64, ino: u64) -> Option<bool> {
-    fs::symlink_metadata(path)
-        .ok()
-        .map(|m| dev_and_ino(&m) == (dev, ino))
-}
-
 #[derive(Deserialize)]
 struct Landed {
     trashed: Option<String>,
     error: Option<String>,
-}
-
-#[derive(Serialize, Clone)]
-pub struct Checked {
-    pub path: String,
-    pub dev: u64,
-    pub ino: u64,
 }
 
 pub fn call_trash(paths: &[Checked]) -> Vec<Result<String, String>> {
@@ -140,3 +104,7 @@ pub fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+
+pub fn make_removable(_path: &Path) {}
+
+pub fn drop_trash_info(_trashed: &Path) {}
