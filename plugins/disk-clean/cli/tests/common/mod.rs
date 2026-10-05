@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -43,8 +43,9 @@ pub fn free_port() -> u16 {
 
 pub fn connect(port: u16) -> TcpStream {
     let deadline = Instant::now() + Duration::from_secs(10);
+    let addr = (Ipv4Addr::LOCALHOST, port).into();
     loop {
-        match with_fd_lock(|| TcpStream::connect(("127.0.0.1", port))) {
+        match with_fd_lock(|| TcpStream::connect_timeout(&addr, Duration::from_millis(50))) {
             Ok(stream) => return stream,
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => panic!("nothing listened on {port}: {e}"),
