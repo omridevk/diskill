@@ -41,14 +41,25 @@ Inventory of today's actions, routes and hotkeys: research done 2026-10-05 again
 
 ## 3. One action list feeds hotkeys, the palette and the cheatsheet
 
-- A small registry: components declare their actions with one hook (for example
-  `useCommands([...])`), each `{id, name, group, keywords?, hotkey?, enabled, run}`. The hook
-  registers the hotkeys through `useHotkeys` with `meta: {name, group}` (TanStack Hotkeys' own
-  metadata) and adds the actions to a shared list the palette reads. Actions appear and disappear
-  with the component that owns them, so the palette is always in context (Trash actions only on the
-  Trash tab, Undo only after a cleanup). Adding an action is one entry in the owning component.
-- The existing hotkeys (`cleanup.tsx:547-551`, `action-bar.tsx:137-160`) move into this hook with
-  their current guards (`ignoreInputs`, the dialog/overlay checks), behaviour unchanged.
+- Data flows down (React, "You Might Not Need an Effect": "let the parent component fetch that data,
+  and pass it down"). The action list is derived during render by one plain function,
+  `commandsFor(page)`, from state the page already holds: the route and its search params, the scan,
+  the selection, cleanup progress and the Trash record. Each action is `{id, name, group,
+  keywords?, hotkey?, checked?, enabled, run}`. Context-dependence (Trash actions only on the Trash
+  tab, Undo only after a cleanup) is part of that derivation. Adding an action is one entry there.
+- The one parent that has that state (`Shell`, or the root layout if Shell does not) calls
+  `commandsFor`, registers the hotkeys once with `useHotkeys` (TanStack Hotkeys) and passes the same
+  list to the palette and the cheatsheet as a prop.
+- No registry, no subscription, no child pushing data up, no writes during render: no
+  `useSyncExternalStore` for this, no shared mutable owner objects.
+- Component-local state an action needs is lifted to that parent (the "How Delete works" popover's
+  open state becomes a prop). An action that only touches the DOM does it in its `run`, which is an
+  event handler (focusing the search box).
+- Shortcuts that only live inside one element (Backspace/Delete in the item table) stay as that
+  element's own scoped `useHotkeys`; `commandsFor` still lists them as hotkey-only entries (not shown
+  in the palette) so the cheatsheet reads one list.
+- The existing hotkeys (`cleanup.tsx:547-551`, `action-bar.tsx:137-160`) keep their current guards
+  (`ignoreInputs`, the dialog/overlay checks), behaviour unchanged.
 - No action in the palette or a hotkey ever commits a destructive step. Delete, Delete immediately and
   Empty open their existing confirm dialogs; the confirm buttons are not palette actions.
 
@@ -93,9 +104,9 @@ buttons; row checkboxes; chart pin, copy path, zoom (they need a pointed-at item
 
 ## 5. Shortcut cheatsheet
 
-- `?` (Shift+/) opens a dialog listing every registered shortcut, read from TanStack Hotkeys'
-  `useHotkeyRegistrations()`, grouped by `meta.group`, labelled with `formatForDisplay` for the
-  platform. It shows only shortcuts that exist in the current context, plus `Mod+K` and `?`.
+- `?` (Shift+/) opens a dialog listing every entry with a hotkey in the `commandsFor` output it gets
+  as a prop, grouped by `group`, labelled with `formatForDisplay` for the platform. It shows only
+  shortcuts that exist in the current context, plus `Mod+K` and `?`.
 - Not fired while typing in a field. Escape closes it. Opening it does not change the URL.
 
 ## Tests
