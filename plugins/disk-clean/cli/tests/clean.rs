@@ -387,6 +387,7 @@ fn is_allowed_table_on_windows() {
         "C:/hiberfil.sys",
         "C:/swapfile.sys",
         "C:/$Recycle.Bin/S-1-5-21-1-2-3-1001/$RABC123.txt",
+        "C:/$Recycle.Bin/$RABC123.txt",
         "C:/Users/other/thing",
         "D:/x",
         "C:/Users/someone/Documents",
@@ -1418,7 +1419,11 @@ fn clean_end_to_end_on_fixture_on_windows() {
     let bin = common::trash_dir(root);
     for entry in &record {
         let trashed = Path::new(&entry.trashed);
-        assert_eq!(trashed.parent(), Some(bin.as_path()), "{entry:?}");
+        assert!(
+            [Some(bin.as_path()), bin.parent()].contains(&trashed.parent()),
+            "{entry:?}"
+        );
+        assert_eq!(entry.state, "trashed", "{entry:?}");
         assert!(
             trashed
                 .file_name()

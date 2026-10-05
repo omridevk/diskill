@@ -90,13 +90,15 @@ pub fn same_item(path: &str, dev: u64, ino: u64, ino_hi: u64) -> Option<bool> {
 
 pub fn is_trash_dir(dir: &Path, _home: &str) -> bool {
     let text = dir.to_string_lossy();
-    let [drive, bin, sid] = text.split('/').collect::<Vec<_>>()[..] else {
-        return false;
+    let (drive, bin, sid) = match text.split('/').collect::<Vec<_>>()[..] {
+        [drive, bin] => (drive, bin, None),
+        [drive, bin, sid] => (drive, bin, Some(sid)),
+        _ => return false,
     };
     let drive_letter = matches!(drive.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic());
     drive_letter
         && same_text(bin, RECYCLE_BIN)
-        && user_sid().is_some_and(|me| same_text(sid, &me))
+        && sid.is_none_or(|sid| user_sid().is_some_and(|me| same_text(sid, &me)))
         && is_fixed_drive(&format!("{drive}\\"))
         && is_plain_dir(Path::new(&format!("{drive}/{bin}")))
         && is_plain_dir(dir)
@@ -143,8 +145,9 @@ pub fn find_trashed(item: &Checked, reported: &str) -> Result<String, String> {
     };
     let own = user_sid().map(|sid| format!("{bin}/{sid}"));
     if let Some(found) = own
-        .as_deref()
-        .and_then(|dir| with_identity(dir, item).ok().flatten())
+        .iter()
+        .chain([&bin])
+        .find_map(|dir| with_identity(dir, item).ok().flatten())
     {
         return Ok(found);
     }
