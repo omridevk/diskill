@@ -12,15 +12,15 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  clean-disk:
-    name: clean-disk cli
+  disk-clean:
+    name: disk-clean cli
     runs-on: macos-latest
     timeout-minutes: 30
     permissions:
       contents: read
     defaults:
       run:
-        working-directory: plugins/clean-disk/cli
+        working-directory: plugins/disk-clean/cli
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,12 +52,12 @@ jobs:
       - name: shellcheck run.sh
         run: |
           command -v shellcheck >/dev/null || brew install shellcheck
-          shellcheck ../skills/clean-disk/scripts/run.sh
+          shellcheck ../skills/disk-clean/scripts/run.sh
       - name: manifests are valid JSON
         working-directory: .
         run: |
           jq empty .claude-plugin/marketplace.json
-          jq empty plugins/clean-disk/.claude-plugin/plugin.json
+          jq empty plugins/disk-clean/.claude-plugin/plugin.json
 
   zizmor:
     name: zizmor
@@ -73,3 +73,26 @@ jobs:
         with:
           advanced-security: false
           annotations: true
+
+  review-page:
+    name: disk-clean review page
+    runs-on: macos-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: enable pnpm through corepack
+        run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter disk-clean-review exec playwright install chromium-headless-shell firefox
+      - name: app tests (Chromium and Firefox)
+        run: pnpm --filter disk-clean-review exec vitest run --project 'app *'
+      - run: pnpm --filter disk-clean-review run build
+      - name: committed page.html matches the source
+        run: git diff --exit-code plugins/disk-clean/cli/assets/page.html

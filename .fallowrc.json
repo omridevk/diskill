@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  "ignoreExports": [
+    {
+      "file": "plugins/disk-clean/web/src/components/ui/**",
+      "exports": [
+        "*"
+      ]
+    }
+  ],
+  "ignoreDependencies": [
+    "@fontsource-variable/geist",
+    "@fontsource-variable/geist-mono"
+  ]
+}

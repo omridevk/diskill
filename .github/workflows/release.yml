@@ -2,7 +2,7 @@ name: release
 
 on:
   push:
-    tags: ["clean-disk--v*"]
+    tags: ["disk-clean--v*"]
 
 permissions: {}
 
@@ -23,8 +23,8 @@ jobs:
           persist-credentials: false
       - name: tag matches plugin.json version
         run: |
-          tag_version="${GITHUB_REF_NAME#clean-disk--v}"
-          plugin_version=$(jq -r .version plugins/clean-disk/.claude-plugin/plugin.json)
+          tag_version="${GITHUB_REF_NAME#disk-clean--v}"
+          plugin_version=$(jq -r .version plugins/disk-clean/.claude-plugin/plugin.json)
           if [ "$tag_version" != "$plugin_version" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match plugin.json version $plugin_version"
             exit 1
@@ -38,11 +38,11 @@ jobs:
           mode: firewall-free
           use-cache: "false"
       - name: fetch crates through Socket Firewall
-        working-directory: plugins/clean-disk/cli
+        working-directory: plugins/disk-clean/cli
         run: sfw cargo fetch --locked
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
-        working-directory: plugins/clean-disk/cli
+        working-directory: plugins/disk-clean/cli
         run: |
           crates=$(grep -c '^name = ' Cargo.lock)
           blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
@@ -54,29 +54,29 @@ jobs:
           jq . "$SFW_JSON_REPORT_PATH"
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - name: build both architectures
-        working-directory: plugins/clean-disk/cli
+        working-directory: plugins/disk-clean/cli
         run: |
           cargo build --release --frozen --target aarch64-apple-darwin
           cargo build --release --frozen --target x86_64-apple-darwin
       - name: package universal binary
         run: |
-          target=plugins/clean-disk/cli/target
+          target=plugins/disk-clean/cli/target
           mkdir -p dist
-          lipo -create -output dist/clean-disk \
-            "$target/aarch64-apple-darwin/release/clean-disk" \
-            "$target/x86_64-apple-darwin/release/clean-disk"
-          chmod 755 dist/clean-disk
-          lipo -info dist/clean-disk
-          tar -czf dist/clean-disk-macos-universal.tar.gz -C dist clean-disk
+          lipo -create -output dist/disk-clean \
+            "$target/aarch64-apple-darwin/release/disk-clean" \
+            "$target/x86_64-apple-darwin/release/disk-clean"
+          chmod 755 dist/disk-clean
+          lipo -info dist/disk-clean
+          tar -czf dist/disk-clean-macos-universal.tar.gz -C dist disk-clean
           cd dist
-          shasum -a 256 clean-disk-macos-universal.tar.gz > clean-disk-macos-universal.tar.gz.sha256
-          cat clean-disk-macos-universal.tar.gz.sha256
+          shasum -a 256 disk-clean-macos-universal.tar.gz > disk-clean-macos-universal.tar.gz.sha256
+          cat disk-clean-macos-universal.tar.gz.sha256
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: clean-disk-release
+          name: disk-clean-release
           path: |
-            dist/clean-disk-macos-universal.tar.gz
-            dist/clean-disk-macos-universal.tar.gz.sha256
+            dist/disk-clean-macos-universal.tar.gz
+            dist/disk-clean-macos-universal.tar.gz.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -92,21 +92,21 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: clean-disk-release
+          name: disk-clean-release
           path: dist
       - name: checksum matches the built archive
         working-directory: dist
-        run: shasum -a 256 -c clean-disk-macos-universal.tar.gz.sha256
+        run: shasum -a 256 -c disk-clean-macos-universal.tar.gz.sha256
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/clean-disk-macos-universal.tar.gz
+          subject-path: dist/disk-clean-macos-universal.tar.gz
       - name: create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/clean-disk-macos-universal.tar.gz \
-            dist/clean-disk-macos-universal.tar.gz.sha256 \
-            --title "clean-disk v${GITHUB_REF_NAME#clean-disk--v}" \
+            dist/disk-clean-macos-universal.tar.gz \
+            dist/disk-clean-macos-universal.tar.gz.sha256 \
+            --title "disk-clean v${GITHUB_REF_NAME#disk-clean--v}" \
             --generate-notes
