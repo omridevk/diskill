@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetTempPath2W, GetVolumeInformationW,
+    QueryDosDeviceW,
 };
 use windows::Win32::UI::Shell::FOLDERID_Windows;
 use windows::core::{HSTRING, PCWSTR};
@@ -45,11 +46,22 @@ pub(super) fn is_fixed_drive(root: &str) -> bool {
     unsafe { GetDriveTypeW(&name) == DRIVE_FIXED }
 }
 
+fn is_subst(letter: u8) -> bool {
+    let mut target = [0u16; 1024];
+    let device = HSTRING::from(format!("{}:", char::from(letter)));
+    // SAFETY: QueryDosDeviceW reads the NUL-terminated device name and writes at most target.len() units.
+    let len = unsafe { QueryDosDeviceW(&device, Some(&mut target)) } as usize;
+    len > 0
+        && super::path::from_wide(&target[..len])
+            .to_string_lossy()
+            .starts_with(r"\??\")
+}
+
 pub(super) fn drive_roots() -> impl Iterator<Item = String> {
     // SAFETY: GetLogicalDrives has no preconditions and only returns a bitmask.
     let drives = unsafe { GetLogicalDrives() };
     (0..26u8)
-        .filter(move |i| drives & (1 << i) != 0)
+        .filter(move |i| drives & (1 << i) != 0 && !is_subst(b'A' + i))
         .map(|i| format!("{}:/", char::from(b'A' + i)))
 }
 
@@ -69,7 +81,8 @@ pub(super) fn is_local_disk(root: &str) -> bool {
     }
     let root = format!("{}:\\", char::from(letter));
     let mut fs_name = [0u16; 261];
-    let local = is_fixed_drive(&root)
+    let local = !is_subst(letter)
+        && is_fixed_drive(&root)
         // SAFETY: GetVolumeInformationW reads the NUL-terminated root and writes into fs_name only.
         && unsafe {
             GetVolumeInformationW(&HSTRING::from(&root), None, None, None, None, Some(&mut fs_name))

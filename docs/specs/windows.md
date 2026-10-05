@@ -132,7 +132,8 @@ Developers on Windows keep code on `D:`, a Dev Drive (ReFS) or `C:\code`, outsid
 every fixed local drive, not only the profile.
 
 - **Which drives:** every drive `GetDriveTypeW` reports as fixed with an NTFS or ReFS file system (Dev Drives
-  included). Never removable, network, optical or RAM drives. The profile's drive is walked as today; the rest of
+  included). Never removable, network, optical or RAM drives, and never a `subst` letter (its `QueryDosDeviceW`
+  target starts with `\??\`), which reports as fixed but is a folder of another drive under a second name. The profile's drive is walked as today; the rest of
   every fixed drive (the rest of `C:` included) is walked from its root.
 - **Never walked:** the Windows folder, `Program Files`, `Program Files (x86)`, `ProgramData`, other users'
   profiles, `System Volume Information`, `$Recycle.Bin` (the user's own bin is read for the Trash row as today),
