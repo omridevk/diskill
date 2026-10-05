@@ -59,7 +59,11 @@ pub fn record_path(home: &str) -> PathBuf {
 
 pub fn is_real_dir(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
-        && fs::canonicalize(path).is_ok_and(|real| real == path)
+        && fs::canonicalize(path).is_ok_and(|real| resolves_to(&real, path))
+}
+
+fn resolves_to(real: &Path, path: &Path) -> bool {
+    real == path || platform::path_text(real).is_some_and(|text| Path::new(&text) == path)
 }
 
 fn make_dir(dir: &Path) -> io::Result<()> {
@@ -478,7 +482,7 @@ fn restore_problem(entry: &Entry, home: &str, tmp_base: Option<&str>) -> Option<
         return Some("not a canonical path");
     };
     match fs::canonicalize(parent) {
-        Ok(real) if real.join(name) == original => None,
+        Ok(real) if resolves_to(&real.join(name), original) => None,
         Ok(_) => Some("the original folder now resolves elsewhere, so it stays in the Trash"),
         Err(_) => Some("the original folder is gone, so it stays in the Trash"),
     }
