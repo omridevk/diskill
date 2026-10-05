@@ -61,7 +61,7 @@ export interface EventSourceLike extends EventTarget {
 
 export type OpenEvents = (url: string) => EventSourceLike
 
-export type Platform = 'macos' | 'linux'
+export type Platform = 'macos' | 'linux' | 'windows'
 
 export type TrashState = 'trashed' | 'restored' | 'put-back' | 'emptied' | 'failed'
 
@@ -97,7 +97,7 @@ export interface Loaded {
 
 export const NO_DATA: ScanData = {categories: [], reclaimable: 0, free: 0, total: 0, used: 0, home: 0, snapshots: 0, tree: null, insights: null}
 
-const platformOf = (name: string): Platform => (name === 'linux' ? 'linux' : 'macos')
+const platformOf = (name: string): Platform => (name === 'linux' || name === 'windows' ? name : 'macos')
 
 async function loadDev(): Promise<Loaded> {
   const params = new URLSearchParams(location.search)
@@ -132,12 +132,12 @@ export function untilde(path: string, home: string) {
   return home && (path === '~' || path.startsWith('~/')) ? `${home}${path.slice(1)}` : path
 }
 
-export function tildeWords(line: string, home: string) {
+export function tildeWords(line: string, home: string, path: (path: string) => string) {
   return line
     .split(' ')
     .map(word => {
       const quote = word.startsWith("'") ? "'" : ''
-      return quote + tilde(word.slice(quote.length), home)
+      return quote + path(tilde(word.slice(quote.length), home))
     })
     .join(' ')
 }

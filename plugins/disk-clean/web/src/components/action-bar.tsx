@@ -81,10 +81,10 @@ function hint(scan: ScanState) {
 export const DELETE: Hotkey = 'Mod+Backspace'
 
 function HelpLine({scan, about, onAbout}: {scan: ScanState; about: boolean; onAbout: (open: boolean) => void}) {
-  const {trash, restoreByHand, deleteNow, label} = usePlatform()
+  const {trash, restoreByHand, deleteNow, label, bin} = usePlatform()
   return (
     <div className="flex h-5 items-center gap-1 text-xs whitespace-nowrap text-muted-foreground">
-      Delete moves files to the Trash, so you can undo
+      {bin('Delete moves files to the Trash, so you can undo')}
       <Popover open={about} onOpenChange={onAbout}>
         <PopoverTrigger render={<Button variant="ghost" size="icon-xs" aria-label="About deleting" />}>
           <Info />
@@ -92,9 +92,9 @@ function HelpLine({scan, about, onAbout}: {scan: ScanState; about: boolean; onAb
         <PopoverContent side="top" align="start" className="w-80 text-xs">
           <PopoverTitle className="text-sm">How Delete works</PopoverTitle>
           <p className="text-muted-foreground">
-            Delete moves files to {trash}. Undo puts them back; {restoreByHand} works too. Space comes back when the Trash is emptied.
+            Delete moves files to {trash}. Undo puts them back; {restoreByHand} works too. {bin('Space comes back when the Trash is emptied.')}
           </p>
-          <p className="text-muted-foreground">Delete immediately skips the Trash and can't be undone. Worktrees and commands can't be undone either.</p>
+          <p className="text-muted-foreground">{bin("Delete immediately skips the Trash and can't be undone. Worktrees and commands can't be undone either.")}</p>
           <p className="flex flex-wrap items-center gap-1 text-muted-foreground">
             Delete <Kbd>{label(DELETE)}</Kbd> · Delete immediately <Kbd>{label(deleteNow[0])}</Kbd> or <Kbd>{label(deleteNow[1])}</Kbd>
           </p>
@@ -170,7 +170,7 @@ export function ActionBar({
 }) {
   const warnings = useSelectionWarnings(selection)
   const action = deleteState(selection, scan)
-  const {deleteNow, label} = usePlatform()
+  const {deleteNow, label, bin} = usePlatform()
   if (progress) return <ProgressFooter progress={progress} phase={phase} actions={actions} />
   const count = selection.selected.length
 
@@ -198,7 +198,7 @@ export function ActionBar({
           </Button>
         </TooltipTrigger>
         <TooltipContent>
-          Skips the Trash, can't be undone
+          {bin("Skips the Trash, can't be undone")}
           <Kbd>{label(deleteNow[0])}</Kbd>
         </TooltipContent>
       </Tooltip>

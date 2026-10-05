@@ -3,6 +3,7 @@ import type {RowSelectionState} from '@tanstack/react-table'
 import {useMemo} from 'react'
 import type {Risk} from './data'
 import type {Db} from './db'
+import {textIn} from './platform'
 import type {Entry} from './scan-feed'
 import type {CleanupSearch, Sort} from './search'
 
@@ -10,8 +11,8 @@ type Shape = Pick<CleanupSearch, 'q' | 'risk' | 'minSize' | 'minAge' | 'sort' | 
 
 export const isFiltering = (shape: Shape) => shape.q !== '' || shape.risk.length > 0 || shape.minSize > 0 || shape.minAge >= 0 || shape.only
 
-export function predicateOf(shape: Shape, on: RowSelectionState) {
-  const q = shape.q.toLowerCase()
+export function predicateOf(shape: Shape, on: RowSelectionState, typed: (text: string) => string) {
+  const q = typed(shape.q.toLowerCase())
   const risks = new Set(shape.risk)
   const anyRisk = risks.size === 0
   const {minSize, minAge, only} = shape
@@ -64,8 +65,8 @@ const UNFILTERED: Shape = {q: '', risk: [], minSize: 0, minAge: -1, sort: 'size-
 
 type Keep = ((row: Entry) => boolean) | null
 
-function useKept(shape: Shape, on: RowSelectionState): Keep {
-  return useMemo(() => (shape.q === '' && !shape.only ? null : predicateOf(shape, on)), [shape, on])
+function useKept(shape: Shape, on: RowSelectionState, typed: (text: string) => string): Keep {
+  return useMemo(() => (shape.q === '' && !shape.only ? null : predicateOf(shape, on, typed)), [shape, on, typed])
 }
 
 type On = RowSelectionState | null
@@ -144,7 +145,7 @@ function useNameOrderAhead(db: Db, settled: boolean) {
 export function useShaped(db: Db, section: {id: string; risk: Risk} | null, shape: Shape, on: RowSelectionState, settled: boolean) {
   useNameOrderAhead(db, settled)
   const filtering = isFiltering(shape)
-  const keep = useKept(shape, on)
+  const keep = useKept(shape, on, textIn(db.loaded.platform).typed)
   const {data, isReady} = useOpenRows(db, section, shape)
   const loaded = data ?? NO_ROWS
   const id = section?.id ?? ''

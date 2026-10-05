@@ -12,7 +12,7 @@ const TOKEN: &str = "tok-123";
 fn watch(run: &Path, port: u16, env: &[(&str, &str)]) -> Child {
     common::spawn(
         common::bin(run.parent().unwrap())
-            .args(["watch", &run.to_string_lossy()])
+            .args(["watch", &common::text(run)])
             .env("DISK_CLEAN_WATCH_TOKEN", TOKEN)
             .env("DISK_CLEAN_WATCH_PORT", port.to_string())
             .envs(env.iter().copied()),

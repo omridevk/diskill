@@ -1,6 +1,6 @@
 use crate::platform;
 use crate::scan::{
-    Cat, Config, Ctx, Row, age_of, children_of, existing, h, row, size_bytes, sized,
+    Cat, Config, Ctx, Row, SIMS_KEY, age_of, children_of, existing, h, row, size_bytes, sized,
 };
 use crate::util;
 use std::collections::HashSet;
@@ -282,8 +282,6 @@ fn scan_xcode(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
         cfg.min_bytes,
     );
 }
-
-pub const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
 
 pub(crate) fn sims_row(label: &str, bytes: u64) -> Row {
     let cat = Cat {

@@ -36,9 +36,15 @@ pub struct Entry {
     pub at: i64,
     pub dev: u64,
     pub ino: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ino_hi: u64,
     pub state: String,
     #[serde(default)]
     pub reason: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 pub type Emit<'a> = &'a (dyn Fn(&str, Value) + Sync);
@@ -53,7 +59,11 @@ pub fn record_path(home: &str) -> PathBuf {
 
 pub fn is_real_dir(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
-        && fs::canonicalize(path).is_ok_and(|real| real == path)
+        && fs::canonicalize(path).is_ok_and(|real| resolves_to(&real, path))
+}
+
+fn resolves_to(real: &Path, path: &Path) -> bool {
+    real == path || platform::path_text(real).is_some_and(|text| Path::new(&text) == path)
 }
 
 fn make_dir(dir: &Path) -> io::Result<()> {
@@ -221,7 +231,7 @@ fn still_in_trash(entry: &Entry, home: &str) -> Result<(), String> {
     if !trashed.parent().is_some_and(|dir| is_trash_dir(dir, home)) {
         return Err("the record names a path outside the Trash, not touched".to_string());
     }
-    match platform::same_item(&entry.trashed, entry.dev, entry.ino) {
+    match platform::same_item(&entry.trashed, entry.dev, entry.ino, entry.ino_hi) {
         Some(true) => Ok(()),
         Some(false) => Err("the item in the Trash was replaced, not touched".to_string()),
         None => Err("no longer in the Trash".to_string()),
@@ -232,8 +242,8 @@ fn classify(entry: &Entry, home: &str) -> Option<Entry> {
     if entry.state != TRASHED || still_in_trash(entry, home).is_ok() {
         return None;
     }
-    let in_trash = platform::same_item(&entry.trashed, entry.dev, entry.ino);
-    let at_original = platform::same_item(&entry.original, entry.dev, entry.ino);
+    let in_trash = platform::same_item(&entry.trashed, entry.dev, entry.ino, entry.ino_hi);
+    let at_original = platform::same_item(&entry.original, entry.dev, entry.ino, entry.ino_hi);
     let (state, reason) = match (in_trash, at_original) {
         (_, Some(true)) => (PUT_BACK, ""),
         (None, None) => (EMPTIED, ""),
@@ -288,7 +298,12 @@ fn move_batch(paths: &[platform::Checked]) -> Vec<Result<String, String>> {
         .enumerate()
         .filter(|(i, l)| {
             l.is_err()
-                && platform::same_item(&paths[*i].path, paths[*i].dev, paths[*i].ino) == Some(true)
+                && platform::same_item(
+                    &paths[*i].path,
+                    paths[*i].dev,
+                    paths[*i].ino,
+                    paths[*i].ino_hi,
+                ) == Some(true)
         })
         .map(|(i, _)| i)
         .collect();
@@ -315,8 +330,8 @@ pub enum Moved {
 pub type Check<'a> = &'a (dyn Fn(&str) -> Result<(), String> + Sync);
 
 fn pending(record_run: &str, wanted: &Wanted, n: usize) -> Result<Entry, String> {
-    let meta = fs::symlink_metadata(&wanted.original).map_err(|e| e.kind().to_string())?;
-    let (dev, ino) = platform::dev_and_ino(&meta);
+    let (dev, ino, ino_hi) =
+        platform::dev_and_ino(&wanted.original).map_err(|e| e.kind().to_string())?;
     Ok(Entry {
         id: new_id(&wanted.original, n),
         run: record_run.to_string(),
@@ -326,6 +341,7 @@ fn pending(record_run: &str, wanted: &Wanted, n: usize) -> Result<Entry, String>
         at: util::now(),
         dev,
         ino,
+        ino_hi,
         state: FAILED.to_string(),
         reason: format!(
             "the move to the Trash did not finish; if it landed there, {} can restore it",
@@ -385,6 +401,7 @@ impl Record {
                     at: util::now(),
                     dev: 0,
                     ino: 0,
+                    ino_hi: 0,
                     state: FAILED.to_string(),
                     reason,
                 })),
@@ -411,6 +428,8 @@ impl Record {
                 path: e.original.clone(),
                 dev: e.dev,
                 ino: e.ino,
+                ino_hi: e.ino_hi,
+                bytes: u64::try_from(e.bytes).unwrap_or(0),
             })
             .collect();
         let settled: Vec<Moved> = ready
@@ -464,7 +483,7 @@ fn restore_problem(entry: &Entry, home: &str, tmp_base: Option<&str>) -> Option<
         return Some("not a canonical path");
     };
     match fs::canonicalize(parent) {
-        Ok(real) if real.join(name) == original => None,
+        Ok(real) if resolves_to(&real.join(name), original) => None,
         Ok(_) => Some("the original folder now resolves elsewhere, so it stays in the Trash"),
         Err(_) => Some("the original folder is gone, so it stays in the Trash"),
     }
@@ -694,7 +713,7 @@ fn locate(dir: &Path, held: &Held) -> Option<PathBuf> {
         .find(|path| {
             path.parent() == Some(dir)
                 && !BOOKKEEPING.iter().any(|b| path.ends_with(b))
-                && platform::same_item(&path.to_string_lossy(), held.dev, held.ino) == Some(true)
+                && platform::same_item(&path.to_string_lossy(), held.dev, held.ino, 0) == Some(true)
         })
 }
 

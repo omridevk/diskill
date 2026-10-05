@@ -22,20 +22,20 @@ export function EmptyDialog({
   returnFocus?: RefObject<HTMLButtonElement | null>
 }) {
   const keep = useRef<HTMLButtonElement>(null)
-  const {restoreByHand} = usePlatform()
+  const {restoreByHand, bin} = usePlatform()
   return (
     <Dialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-md" initialFocus={keep} finalFocus={returnFocus}>
         <DialogHeader>
-          <DialogTitle>Empty these from the Trash?</DialogTitle>
+          <DialogTitle>{bin('Empty these from the Trash?')}</DialogTitle>
           <DialogDescription>
-            This deletes the {plural(count, 'item', 'items')} ({formatBytes(bytes)}) disk-clean put in the Trash, for good. It can't be undone:
-            Undo and {restoreByHand} stop working for them. Nothing else in your Trash is touched.
+            This deletes the {plural(count, 'item', 'items')} ({formatBytes(bytes)}) disk-clean put in {bin('the Trash')}, for good. It can't be undone:
+            Undo and {restoreByHand} stop working for them. {bin('Nothing else in your Trash is touched.')}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button ref={keep} variant="outline" onClick={() => onOpenChange(false)}>
-            Keep them in the Trash
+            {bin('Keep them in the Trash')}
           </Button>
           <Button variant="destructive" disabled={count === 0} onClick={onEmpty}>
             Empty {plural(count, 'item', 'items')} · {formatBytes(bytes)} for good
