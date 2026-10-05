@@ -6,8 +6,8 @@
     "name": "Omri Katz",
     "url": "https://github.com/omridevk"
   },
-  "homepage": "https://github.com/omridevk/diskill",
-  "repository": "https://github.com/omridevk/diskill",
+  "homepage": "https://github.com/omridevk/mopper",
+  "repository": "https://github.com/omridevk/mopper",
   "license": "MIT",
   "keywords": ["disk", "cleanup", "macos", "node_modules", "git-worktree", "cache"]
 }

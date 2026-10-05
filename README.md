@@ -1,4 +1,4 @@
-# diskill
+# mopper
 
 A [Claude Code](https://code.claude.com) plugin marketplace for keeping a Mac disk in check.
 
@@ -35,7 +35,7 @@ Requirements: macOS and `git`. Rust only if building from source.
 
 The skill runs a single `disk-clean` binary through `scripts/run.sh`. On first use it downloads
 the release built for the installed plugin version from
-[GitHub releases](https://github.com/omridevk/diskill/releases), checks its sha256, and caches it
+[GitHub releases](https://github.com/omridevk/mopper/releases), checks its sha256, and caches it
 in the plugin data folder. If no release exists for that version, it builds the bundled source
 with `cargo build --release --locked` instead (needs [Rust](https://rustup.rs)).
 
@@ -44,20 +44,20 @@ with `cargo build --release --locked` instead (needs [Rust](https://rustup.rs)).
 In Claude Code:
 
 ```
-/plugin marketplace add omridevk/diskill
-/plugin install disk-clean@diskill
+/plugin marketplace add omridevk/mopper
+/plugin install disk-clean@mopper
 ```
 
 Or from a shell:
 
 ```bash
-claude plugin marketplace add omridevk/diskill
-claude plugin install disk-clean@diskill
+claude plugin marketplace add omridevk/mopper
+claude plugin install disk-clean@mopper
 ```
 
 Then ask Claude to "clean up my disk", or run `/disk-clean`.
 
-Update with `claude plugin update disk-clean@diskill`.
+Update with `claude plugin update disk-clean@mopper`.
 
 ## Development
 
@@ -105,7 +105,7 @@ Set `DISK_CLEAN_REVIEW_URL` to a running `disk-clean review` server to proxy `/p
 To verify a downloaded release came from this repo's workflow:
 
 ```bash
-gh attestation verify disk-clean-macos-universal.tar.gz --repo omridevk/diskill
+gh attestation verify disk-clean-macos-universal.tar.gz --repo omridevk/mopper
 ```
 
 ## License
