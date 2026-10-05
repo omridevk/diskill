@@ -87,3 +87,15 @@ pnpm 10.33.4 (or written by `corepack use pnpm@10.33.4`). CI's `corepack enable`
 - macOS, Linux (Docker) and, on `windows`, the Windows type-check green as before; the changed tests pass.
 - The new install step's checksum check is shown to fail: run the step's shell with one digest altered (locally,
   against the real download) and paste the refusal.
+
+## 5. Windows: revocation check off for the firewalled fetch only (added 2026-10-05 after the first Windows CI run)
+
+Finding (PR #10, first run): on both Windows jobs `sfw cargo fetch --locked` failed with
+`[60] SSL peer certificate or SSH remote key was not OK (schannel: CertGetCertificateChain trust error
+CERT_TRUST_REVOCATION_STATUS_UNKNOWN)`. sfw is a local proxy that presents its own certificate; Windows' schannel,
+which cargo uses there, asks for revocation information that certificate cannot have. macOS and Linux do not check
+revocation, so the same step passed there.
+Rule: the "fetch crates through Socket Firewall" step of every Windows job (CI and release) sets
+`CARGO_HTTP_CHECK_REVOKE: "false"` in its own `env:` (cargo's `http.check-revoke`, which only exists on Windows). The
+certificate chain is still validated, every crate is still checked against its `Cargo.lock` checksum, and no other
+step changes; later steps build offline (`--frozen`).
