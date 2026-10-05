@@ -132,7 +132,7 @@ fn approved_paths_go_to_the_trash_and_undo_restores_them_exactly() {
     assert_eq!(entries.len(), 2, "{entries:?}");
     assert_eq!(entries[0].original, text(&a));
     assert!(
-        Path::new(&entries[0].trashed).parent() == Some(common::trash_dir().as_path()),
+        Path::new(&entries[0].trashed).parent() == Some(common::trash_dir(&s.home).as_path()),
         "{entries:?}"
     );
     assert_eq!((entries[0].bytes, entries[0].ino), (4096, a_ino));
@@ -182,8 +182,8 @@ fn a_name_clash_in_the_trash_gets_its_own_name() {
     let name = format!("clash-{}", std::process::id());
     let a = s.home.join("Library/Caches").join(&name);
     make(&a, 100);
-    fs::create_dir_all(common::trash_dir()).unwrap();
-    let clash = common::trash_dir().join(&name);
+    fs::create_dir_all(common::trash_dir(&s.home)).unwrap();
+    let clash = common::trash_dir(&s.home).join(&name);
     fs::write(&clash, b"someone else's").unwrap();
     approve(&s, &[("rm", &a, 4096)]);
     clean(&s);
@@ -285,8 +285,8 @@ fn empty_removes_only_recorded_items_still_in_the_trash() {
     make(&b, 100);
     approve(&s, &[("rm", &a, 4096)]);
     clean(&s);
-    fs::create_dir_all(common::trash_dir()).unwrap();
-    let theirs = common::trash_dir().join(format!("not-ours-{}", std::process::id()));
+    fs::create_dir_all(common::trash_dir(&s.home)).unwrap();
+    let theirs = common::trash_dir(&s.home).join(format!("not-ours-{}", std::process::id()));
     fs::write(&theirs, b"the user's").unwrap();
     let trashed = PathBuf::from(&record(&s)[0].trashed);
 
@@ -328,6 +328,7 @@ fn delete_immediately_removes_and_is_never_recorded() {
     assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(3));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn items_already_in_the_trash_are_removed_for_good_not_trashed_again() {
     let s = sandbox("trash-old");
@@ -726,6 +727,7 @@ fn a_page_load_syncs_the_record_and_tells_the_page() {
     assert_eq!(record(&s)[0].state, "put-back");
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn the_confirm_plan_lists_trash_moves_apart_from_steps_that_cannot_be_undone() {
     let s = sandbox("trash-preview");
@@ -818,4 +820,302 @@ fn the_review_page_can_undo_and_empty_earlier_runs_too() {
             .collect::<Vec<_>>(),
         ["restored", "emptied"]
     );
+}
+
+#[cfg(target_os = "linux")]
+fn info_of(trashed: &Path) -> PathBuf {
+    let name = trashed.file_name().unwrap().to_string_lossy();
+    trashed
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join("info")
+        .join(format!("{name}.trashinfo"))
+}
+
+#[cfg(target_os = "linux")]
+fn percent_decoded(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .filter(|_| bytes[i] == b'%')
+            .and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok());
+        match hex {
+            Some(byte) => {
+                out.push(byte);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn trashinfo(trashed: &Path) -> (String, String, String) {
+    let info = fs::read_to_string(info_of(trashed)).unwrap();
+    assert!(info.starts_with("[Trash Info]\n"), "{info}");
+    let field = |key: &str| {
+        info.lines()
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("no {key} in {info}"))
+            .to_string()
+    };
+    let raw = field("Path=");
+    (percent_decoded(&raw), raw, field("DeletionDate="))
+}
+
+#[cfg(target_os = "linux")]
+fn is_local_time(date: &str) -> bool {
+    date.len() == 19
+        && date.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            10 => b == b'T',
+            13 | 16 => b == b':',
+            _ => b.is_ascii_digit(),
+        })
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn items_already_in_the_trash_are_removed_for_good_not_trashed_again_on_linux() {
+    let s = sandbox("trash-old-linux");
+    let old = common::trash_dir(&s.home).join("old");
+    make(&old, 10);
+    let info = info_of(&old);
+    fs::create_dir_all(info.parent().unwrap()).unwrap();
+    fs::write(
+        &info,
+        "[Trash Info]\nPath=/somewhere/old\nDeletionDate=2020-01-01T00:00:00\n",
+    )
+    .unwrap();
+    approve(&s, &[("rm", &old, 4096)]);
+    let dry = stdout(&cli(&s, &["clean", "--dry-run", &text(&s.run)]));
+    assert!(
+        dry.contains(&format!("rm -rf -- {}\n", text(&old))),
+        "{dry}"
+    );
+    clean(&s);
+    assert!(!old.exists() && record(&s).is_empty());
+    assert!(!info.exists(), "its .trashinfo goes with it");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_confirm_plan_lists_trash_moves_apart_from_steps_that_cannot_be_undone_on_linux() {
+    let s = sandbox("trash-preview-linux");
+    let a = s.home.join(".cache/a");
+    let old = common::trash_dir(&s.home).join("old");
+    make(&a, 100);
+    make(&old, 100);
+    let scan = scan_row("caches", "rm", &text(&a), 4096)
+        + &scan_row("trash", "rm", &text(&old), 10)
+        + "docker\tDocker\tD\treview\t0\tcmd\tdocker-prune\tdocker system prune -f\tcmd:docker-prune\t7\tn\t-\tvm\n";
+    fs::write(s.run.join("scan.tsv"), scan).unwrap();
+    let cats = disk_clean::review::load_scan(&s.run);
+    let index =
+        disk_clean::clean::index_scan(&disk_clean::util::read_lines(&s.run.join("scan.tsv")));
+    let items = [
+        serde_json::json!({"path": text(&a)}),
+        serde_json::json!({"path": text(&old)}),
+        serde_json::json!({"path": "cmd:docker-prune"}),
+        serde_json::json!({"path": "/etc/hosts"}),
+    ];
+    let plan = disk_clean::review::preview(&cats, &index, &items, &text(&s.home));
+    let paths = plan["paths"].as_array().unwrap();
+    let of = |p: &Path| paths.iter().find(|r| r["path"] == text(p)).unwrap();
+    assert_eq!(of(&a)["bytes"], 4096);
+    assert_eq!(of(&a)["trashed"], false);
+    assert_eq!(of(&old)["trashed"], true, "already in a Trash");
+    assert_eq!(plan["paths_bytes"], 4106);
+    assert_eq!(plan["final"], serde_json::json!(["docker system prune -f"]));
+    assert_eq!((&plan["count"], &plan["bytes"]), (&3.into(), &4113.into()));
+    assert!(a.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_home_trash_gets_a_trashinfo_and_undo_removes_it() {
+    let s = sandbox("trash-linux-home");
+    let a = s.home.join(".cache/odd name 100%");
+    make(&a.join("nested"), 300);
+    let a_ino = ino(&a);
+    approve(&s, &[("rm", &a, 4096)]);
+    clean(&s);
+
+    assert!(!a.exists());
+    let entry = record(&s).remove(0);
+    let trashed = PathBuf::from(&entry.trashed);
+    assert_eq!(
+        trashed.parent(),
+        Some(common::trash_dir(&s.home).as_path()),
+        "{entry:?}"
+    );
+    assert_eq!((entry.ino, entry.state.as_str()), (a_ino, "trashed"));
+    assert!(trashed.join("nested/data").exists());
+    let (path, raw, date) = trashinfo(&trashed);
+    assert_eq!(path, text(&a));
+    assert!(!raw.contains(' ') && raw.contains("%25"), "{raw}");
+    assert!(is_local_time(&date), "{date}");
+
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("restored: 1 items, 4096 bytes"));
+    assert_eq!(ino(&a), a_ino, "the same item came back");
+    assert!(!trashed.exists());
+    assert!(!info_of(&trashed).exists(), "the .trashinfo goes with it");
+    assert_eq!(record(&s)[0].state, "restored");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_item_on_another_volume_goes_to_that_volumes_trash() {
+    let s = sandbox("trash-linux-other");
+    let other = common::other_volume(&s.home.join("other"));
+    let (a, b) = (other.0.join("a"), other.0.join("b"));
+    make(&a, 100);
+    make(&b, 200);
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let topdir_trash = other.0.join(format!(".Trash-{uid}"));
+
+    approve(&s, &[("rm", &a, 4096)]);
+    clean(&s);
+    let entry = record(&s).remove(0);
+    let trashed = PathBuf::from(&entry.trashed);
+    assert_eq!(
+        trashed.parent(),
+        Some(topdir_trash.join("files").as_path()),
+        "{entry:?}"
+    );
+    assert_eq!(
+        fs::metadata(&topdir_trash).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(!common::trash_dir(&s.home).join("a").exists());
+    let (path, _, date) = trashinfo(&trashed);
+    assert!(
+        path == text(&a) || other.0.join(&path) == a,
+        "Path={path} names {}",
+        a.display()
+    );
+    assert!(is_local_time(&date), "{date}");
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(a.join("data").exists() && !trashed.exists());
+    assert!(!info_of(&trashed).exists());
+
+    approve(&s, &[("rm", &b, 4096)]);
+    clean(&s);
+    let entry = record(&s).pop().unwrap();
+    let trashed = PathBuf::from(&entry.trashed);
+    assert_eq!(trashed.parent(), Some(topdir_trash.join("files").as_path()));
+    assert!(info_of(&trashed).exists());
+    let out = cli(&s, &["empty", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("emptied: 1 items, 4096 bytes"));
+    assert!(!trashed.exists() && !info_of(&trashed).exists() && !b.exists());
+    assert_eq!(record(&s).pop().unwrap().state, "emptied");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn undo_onto_a_path_that_came_back_keeps_the_item_and_its_trashinfo() {
+    let s = sandbox("trash-linux-conflict");
+    let a = s.home.join(".cache/a");
+    make(&a, 100);
+    approve(&s, &[("rm", &a, 4096)]);
+    clean(&s);
+    let trashed = PathBuf::from(&record(&s)[0].trashed);
+    make(&a, 9);
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        stdout(&out).contains("still in the Trash: 1"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        fs::read(a.join("data")).unwrap().len(),
+        9,
+        "never overwritten"
+    );
+    assert_eq!(fs::read(trashed.join("data")).unwrap().len(), 100);
+    assert_eq!(trashinfo(&trashed).0, text(&a), "the .trashinfo stays");
+    let entry = &record(&s)[0];
+    assert_eq!(
+        (entry.state.as_str(), entry.reason.as_str()),
+        ("trashed", trash::STILL_THERE)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_manager_restore_or_empty_is_picked_up_by_sync() {
+    let s = sandbox("trash-linux-sync");
+    let (put, gone, kept) = (
+        s.home.join(".cache/put"),
+        s.home.join(".cache/gone"),
+        s.home.join(".cache/kept"),
+    );
+    for p in [&put, &gone, &kept] {
+        make(p, 10);
+    }
+    approve(&s, &[("rm", &put, 1), ("rm", &gone, 2), ("rm", &kept, 3)]);
+    clean(&s);
+    let at = |name: &str| {
+        record(&s)
+            .into_iter()
+            .find(|e| e.original.ends_with(name))
+            .unwrap()
+    };
+    let put_trashed = PathBuf::from(at("/put").trashed);
+    fs::rename(&put_trashed, &put).unwrap();
+    fs::remove_file(info_of(&put_trashed)).unwrap();
+    let gone_trashed = PathBuf::from(at("/gone").trashed);
+    fs::remove_dir_all(&gone_trashed).unwrap();
+    fs::remove_file(info_of(&gone_trashed)).unwrap();
+
+    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    assert!(out.status.code().is_some());
+    assert_eq!(at("/put").state, "put-back");
+    assert_eq!(at("/gone").state, "emptied");
+    assert_eq!(at("/kept").state, "trashed");
+    let out = cli(&s, &["empty", &text(&s.run)]);
+    assert!(
+        stdout(&out).contains("emptied: 1 items"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(put.join("data").exists(), "never acted on twice");
+    assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(3));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_trashinfo_without_its_item_still_reserves_the_name() {
+    let s = sandbox("trash-linux-reserved");
+    let name = format!("reserved-{}", std::process::id());
+    let a = s.home.join(".cache").join(&name);
+    make(&a, 100);
+    let reserved = info_of(&common::trash_dir(&s.home).join(&name));
+    let theirs = "[Trash Info]\nPath=/elsewhere\nDeletionDate=2020-01-01T00:00:00\n";
+    fs::create_dir_all(reserved.parent().unwrap()).unwrap();
+    fs::write(&reserved, theirs).unwrap();
+    approve(&s, &[("rm", &a, 4096)]);
+    clean(&s);
+    let trashed = PathBuf::from(&record(&s)[0].trashed);
+    assert_ne!(trashed.file_name().unwrap().to_string_lossy(), name);
+    assert_eq!(trashed.parent(), Some(common::trash_dir(&s.home).as_path()));
+    assert_eq!(trashinfo(&trashed).0, text(&a));
+    assert_eq!(fs::read_to_string(&reserved).unwrap(), theirs);
+    assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(0));
+    assert!(a.join("data").exists());
+    assert_eq!(fs::read_to_string(&reserved).unwrap(), theirs);
 }
