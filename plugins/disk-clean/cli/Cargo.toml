@@ -32,3 +32,6 @@ windows = { version = "0.62.2", features = [
 
 [profile.release]
 strip = true
+
+[target.'cfg(windows)'.dependencies.windows-core]
+version = "0.62.2"
