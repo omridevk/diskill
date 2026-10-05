@@ -380,6 +380,12 @@ fn is_allowed_table_on_windows() {
         "C:/Program Files (x86)/App",
         "C:/ProgramData/x",
         "C:/System Volume Information/x",
+        "C:/$WinREAgent/x",
+        "C:/Recovery/x",
+        "C:/PerfLogs/x",
+        "C:/pagefile.sys",
+        "C:/hiberfil.sys",
+        "C:/swapfile.sys",
         "C:/$Recycle.Bin/S-1-5-21-1-2-3-1001/$RABC123.txt",
         "C:/Users/other/thing",
         "D:/x",
@@ -434,6 +440,22 @@ fn is_allowed_table_on_windows() {
         home,
         None
     ));
+}
+
+#[cfg(windows)]
+#[test]
+fn the_system_folders_of_this_pc_are_never_walked() {
+    let home = "C:/Users/someone";
+    let (drives, never) = disk_clean::platform::drives_to_walk(home);
+    assert!(drives.iter().any(|d| d == Path::new("C:/")), "{drives:?}");
+    let windows = text(Path::new(&std::env::var("SystemRoot").unwrap()));
+    for folder in [windows.as_str(), "C:/Program Files", "C:/ProgramData"] {
+        assert!(never.contains(Path::new(folder)), "{folder} {never:?}");
+    }
+    assert!(
+        !never.iter().any(|n| Path::new(home).starts_with(n)),
+        "{never:?}"
+    );
 }
 
 #[cfg(windows)]

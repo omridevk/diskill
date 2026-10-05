@@ -518,7 +518,7 @@ pub fn user_sid() -> String {
 }
 
 #[cfg(windows)]
-fn recycle_bin(root: &Path) -> PathBuf {
+pub fn recycle_bin(root: &Path) -> PathBuf {
     let bin = std::fs::read_dir(root)
         .unwrap()
         .flatten()
@@ -561,6 +561,25 @@ pub fn recycle_by_hand(path: &Path) {
         "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::{method}('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
         path.display().to_string().replace('\'', "''")
     ));
+}
+
+#[cfg(windows)]
+pub fn set_owner(path: &Path, sid: &str) {
+    assert_inside_ram_disk(path);
+    let native = text(path).replace('/', "\\");
+    let set = output(Command::new("icacls").args([
+        native.as_str(),
+        "/setowner",
+        &format!("*{sid}"),
+        "/T",
+        "/C",
+        "/Q",
+    ]));
+    assert!(
+        set.status.success(),
+        "icacls /setowner {sid} on {native} failed: {}",
+        String::from_utf8_lossy(&set.stdout)
+    );
 }
 
 #[cfg(windows)]

@@ -1351,13 +1351,149 @@ fn a_tampered_record_or_swapped_junction_is_never_followed() {
 }
 
 #[cfg(windows)]
+const ADMINISTRATORS: &str = "S-1-5-32-544";
+
+#[cfg(windows)]
+fn scan_with_drive(s: &Sandbox, drive: &Path) -> String {
+    let out = common::cli(
+        &["scan", &text(&s.run)],
+        &s.home,
+        &[
+            ("DISK_CLEAN_SKIP_MAP", "1"),
+            ("DISK_CLEAN_MIN_BYTES", "1"),
+            ("DISK_CLEAN_NM_MIN_BYTES", "1"),
+            ("DISK_CLEAN_DRIVES", &text(drive)),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::read_to_string(s.run.join("scan.tsv")).unwrap()
+}
+
+#[cfg(windows)]
+fn categories_of(rows: &str, path: &Path) -> Vec<String> {
+    let path = text(path);
+    rows.lines()
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .filter(|cols| cols.get(8) == Some(&path.as_str()))
+        .map(|cols| cols[0].to_string())
+        .collect()
+}
+
+#[cfg(windows)]
+fn select(s: &Sandbox, paths: &[&Path]) {
+    let items: Vec<String> = paths.iter().map(|p| item("rm", &text(p), 4096)).collect();
+    fs::write(
+        s.run.join("selection.json"),
+        format!(r#"{{"items": [{}], "mode": "trash"}}"#, items.join(",")),
+    )
+    .unwrap();
+}
+
+#[cfg(windows)]
 #[test]
-fn an_item_on_another_drive_is_outside_the_profile_and_is_kept() {
-    let s = sandbox("trash-windows-other");
+fn a_project_folder_on_another_drive_goes_to_that_drives_recycle_bin_and_comes_back() {
+    let s = sandbox("trash-windows-other-drive");
     let other = common::other_drive();
-    let a = other.0.join("a");
-    make(&a, 100);
-    approve(&s, &[("rm", &a, 4096)]);
+    let sid = common::user_sid();
+    let code = other.0.join("code");
+    let node_modules = code.join("app/node_modules");
+    make(&node_modules.join("pkg"), 8192);
+    let notes = code.join("notes");
+    make(&notes, 8192);
+    common::set_owner(&code, &sid);
+    let shared = other.0.join("shared");
+    let theirs = shared.join("app/node_modules");
+    make(&theirs.join("pkg"), 8192);
+    common::set_owner(&shared, ADMINISTRATORS);
+
+    let rows = scan_with_drive(&s, &other.0);
+    assert_eq!(
+        categories_of(&rows, &node_modules),
+        ["node-modules"],
+        "{rows}"
+    );
+    assert!(categories_of(&rows, &notes).is_empty(), "{rows}");
+    assert!(categories_of(&rows, &theirs).is_empty(), "{rows}");
+
+    select(&s, &[&node_modules, &notes, &theirs]);
+    let log = clean_and_wait(&s);
+    let rejected = fs::read_to_string(s.run.join("rejected")).unwrap();
+    for p in [&notes, &theirs] {
+        assert!(
+            rejected.contains(&format!("not in scan\t{}\n", text(p))),
+            "{rejected}"
+        );
+        assert!(p.join("data").exists() || p.join("pkg/data").exists());
+    }
+    let entries = record(&s);
+    assert_eq!(entries.len(), 1, "{entries:?}\n{log}");
+    assert_eq!(entries[0].original, text(&node_modules));
+    assert_eq!(
+        Path::new(&entries[0].trashed).parent(),
+        Some(common::recycle_bin(&other.0).as_path()),
+        "{entries:?}"
+    );
+    assert!(!node_modules.exists());
+    assert!(Path::new(&entries[0].trashed).join("pkg/data").exists());
+
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(node_modules.join("pkg/data").exists(), "{}", stdout(&out));
+    assert!(!Path::new(&entries[0].trashed).exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn a_drive_root_and_never_walked_folders_on_another_drive_are_never_offered_or_allowed() {
+    let s = sandbox("trash-windows-never-walked");
+    let other = common::other_drive();
+    let sid = common::user_sid();
+    let tops = [
+        "Windows",
+        "Program Files",
+        "Program Files (x86)",
+        "ProgramData",
+        "$WinREAgent",
+        "Recovery",
+        "PerfLogs",
+        "code",
+    ];
+    let node_modules = |top: &str| other.0.join(top).join("app/node_modules");
+    for top in tops {
+        make(&node_modules(top).join("pkg"), 8192);
+        common::set_owner(&other.0.join(top), &sid);
+    }
+
+    let rows = scan_with_drive(&s, &other.0);
+    assert_eq!(
+        categories_of(&rows, &node_modules("code")),
+        ["node-modules"],
+        "{rows}"
+    );
+    let never: Vec<PathBuf> = tops[..tops.len() - 1]
+        .iter()
+        .map(|top| node_modules(top))
+        .collect();
+    for p in &never {
+        assert!(
+            categories_of(&rows, p).is_empty(),
+            "{}\n{rows}",
+            p.display()
+        );
+    }
+
+    let mut asked: Vec<&Path> = never.iter().map(PathBuf::as_path).collect();
+    asked.push(&other.0);
+    let listed: String = asked
+        .iter()
+        .map(|p| scan_row("node-modules", "rm", &text(p), 4096))
+        .collect();
+    fs::write(s.run.join("scan.tsv"), listed).unwrap();
+    select(&s, &asked);
     let out = cli(&s, &["clean", &text(&s.run)]);
     assert_eq!(
         out.status.code(),
@@ -1365,11 +1501,18 @@ fn an_item_on_another_drive_is_outside_the_profile_and_is_kept() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(
-        fs::read_to_string(s.run.join("rejected")).unwrap(),
-        format!("protected path\t{}\n", text(&a))
+    let rejected = fs::read_to_string(s.run.join("rejected")).unwrap();
+    for p in &never {
+        assert!(
+            rejected.contains(&format!("protected path\t{}\n", text(p))),
+            "{rejected}"
+        );
+        assert!(p.join("pkg/data").exists());
+    }
+    assert!(
+        rejected.contains(&format!("not a canonical path\t{}\n", text(&other.0))),
+        "{rejected}"
     );
-    assert!(a.join("data").exists());
     assert!(record(&s).is_empty());
 }
 
