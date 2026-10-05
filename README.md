@@ -87,7 +87,9 @@ Requirements: macOS, Linux or Windows, and `git`. Rust only if building from sou
 
 **1. Scan.** Run `/disk-clean`. A single `disk-clean` binary walks the disk in the background and a
 local page opens in your browser right away, filling in as items are found: the cleanup list, the
-storage map and insights, then the git worktree checks and the Docker probe.
+storage map and insights, then the git worktree checks and the Docker probe. On Windows it covers
+every fixed drive: `/disk-clean C D` scans your profile plus only drives C and D, and
+`/disk-clean all` is the same as no argument.
 
 **2. Review.** Tick or untick anything. Sections are grouped by risk, and the recommended items are
 already ticked. The Storage and Insights tabs show where the rest of the disk went.
