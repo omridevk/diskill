@@ -149,13 +149,12 @@ disk (with how to compact), P6 per-drive pnpm stores.
 - CI: a Windows job matrix over `windows-latest` and `windows-11-arm` running fmt, clippy and the full
   suite. `PSScriptAnalyzer` on `run.ps1` is a local check before any change to it (not in CI: installing it
   there is an unpinned download).
-- Socket Firewall on Windows arm64 (added 2026-10-05): the pinned `SocketDev/action` v1.3.2 has no
-  `win32-arm64` build (`src/tools/firewall.js` at ba6de6cc throws "Unsupported architecture"). The
-  `windows-11-arm` jobs (release and CI) `need` the matching `windows-latest` job, whose
-  `sfw cargo fetch --locked` checked the same crate set, and fetch with plain `cargo fetch --locked`:
-  `Cargo.lock` pins every crate's checksum, so they download the bytes the x64 job's firewall
-  passed. The pin is not moved to an unreleased SHA. When SocketDev releases arm64 Windows support,
-  the arm64 jobs go back to `sfw`.
+- Socket Firewall on Windows (changed 2026-10-05, `docs/specs/ci-hardening.md` section 1): every Windows
+  job, x86_64 and arm64, release and CI, installs sfw-free v1.15.4 itself by digest
+  (`sfw-free-windows-x86_64.exe`, `sfw-free-windows-arm64.exe`, saved as `sfw.exe`) and fetches through
+  `sfw cargo fetch --locked`. The `windows-11-arm` jobs use the pinned sfw-free Windows arm64 build, so
+  they no longer wait on the x86_64 job or fetch without the firewall (the earlier exception existed
+  only because `SocketDev/action` v1.3.2 has no `win32-arm64` build).
 
 ## Page
 
