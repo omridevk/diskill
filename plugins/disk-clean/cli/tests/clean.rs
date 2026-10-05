@@ -960,11 +960,12 @@ fn an_unusable_home_is_refused() {
         &[selection_item("rm", &text(&doomed))],
         None,
     );
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     for home in ["", "relative/home", "/nonexistent/disk-clean-home"] {
         let out = common::output(
             Command::new(env!("CARGO_BIN_EXE_disk-clean"))
                 .args(["clean", "--dry-run", &text(&run)])
-                .env("HOME", home),
+                .env(home_var, home),
         );
         assert_eq!(out.status.code(), Some(1), "HOME={home:?}");
         let err = String::from_utf8_lossy(&out.stderr);
