@@ -66,6 +66,7 @@ stay green unedited except where a test is split per platform.
 | `user_tmp_base` | `GetTempPath2W` result when it is inside the profile, or on a fixed local drive and not the Windows folder or a drive root (W2 rule, owner answer 6); else `None` |
 | Walk | `FindFirstFileExW` (`FindExInfoBasic`, large fetch) per folder; attributes from enumeration only; never opens a file carrying `RECALL_ON_OPEN` or `RECALL_ON_DATA_ACCESS`; allocated size from `GetCompressedFileSizeW` rounded up to the cluster, 0 for online-only placeholders; every reparse point whose tag is a name surrogate (junction, symlink, mount point) is a link, listed as itself and never entered; cloud-tagged entries are never offered |
 | Hard links | counted once per (volume serial, file id); `nlink` from `FILE_STANDARD_INFO` |
+| File identity everywhere | one function reads `FILE_ID_INFO` (volume serial, 128-bit id) for the walk, the Trash record and the log-rotation check in `watch.rs`; no identity from creation times |
 | Mount points | a folder is a mount point when it is a mount-point reparse point or its volume serial differs from its parent's |
 | Paths | `\\?\` for every file call; comparison case-insensitive with `CompareStringOrdinal(..., TRUE)`; a component with `~` whose long form differs is rejected (8.3 names) |
 | Scan priority | `THREAD_MODE_BACKGROUND_BEGIN` on scan threads, no admin |
@@ -80,7 +81,7 @@ stay green unedited except where a test is split per platform.
 | Restore (Undo) | `MoveFileExW` of the recorded `$R…` back to the original, no overwrite, then delete the matching `$I…` |
 | Empty | delete only recorded `$R…` items whose identity still matches, with their `$I…`; read-only attributes cleared first; never `SHEmptyRecycleBin` |
 | Sync | same rules as macOS: at the `$R…` path with the same identity is "in the Recycle Bin"; at the original with the same identity is "put back"; neither is "emptied"; anything else is failed |
-| Protected | section 7 Never list of the research, case-insensitive: profile root and ancestors; Known Folders Documents, Desktop, Pictures, Music, Videos at their resolved target and their default path; OneDrive and every registered cloud sync root; `.ssh .gnupg .aws .kube .azure .claude .docker`; `%APPDATA%\gnupg`; DPAPI, Credentials, Vault, Crypto, SystemCertificates; browser profiles minus their named caches; Outlook and `*.pst`; Thunderbird; password managers and `*.kdbx`; packaged-app state (W11); WSL and Docker disks; toolchain roots X1 to X8; `~/.cache/disk-clean`'s Windows twin (the plugin data folder) |
+| Protected | section 7 Never list of the research, case-insensitive: profile root and ancestors; Known Folders Documents, Desktop, Pictures, Music, Videos at their resolved target and their default path; OneDrive and every registered cloud sync root; `.ssh .gnupg .aws .kube .azure .claude .docker`; `%APPDATA%\gnupg`; DPAPI, Credentials, Vault, Crypto, SystemCertificates; browser profiles minus their named caches; Outlook and `*.pst`; Thunderbird; password managers and `*.kdbx`; packaged-app state (W11); WSL and Docker disks; toolchain roots X1 to X8; `~/.cache/disk-clean`'s Windows twin (the plugin data folder); `%LOCALAPPDATA%\Programs` (per-user installed apps; added at integration) |
 | Allowed roots | inside the profile; the per-user temp base from above; the user's own `$Recycle.Bin\<SID>` folders on fixed drives (for Empty) |
 | `SYSTEM` backstop | `FOLDERID_Windows`, `ProgramFiles`, `ProgramFilesX86`, `ProgramData`, other users' profiles, `System Volume Information`, other SIDs' Recycle Bin folders |
 | `uid` | unused for ownership on Windows; owner checks compare the entry's owner SID with the token user's SID |
@@ -102,7 +103,7 @@ P16 puppeteer; P17 deno; P18 Composer; P19 NuGet `v3-cache`, `plugins-cache`; P2
 Studio `ComponentModelCache`; D6 JetBrains `log`; `node_modules` and stale build output as on macOS,
 plus `bin` and `obj` only beside a `.csproj`/`.fsproj`/`.vbproj` and untouched 90+ days.
 
-Every path is resolved the way the tool resolves it (its variable or `config get`), not assumed.
+Every path honours the tool's own relocation variable (`npm_config_cache`, `PNPM_HOME`, `GOCACHE`, `UV_CACHE_DIR`, ...) when it points inside the profile, else the tool's documented default; the scan does not run the tools (`npm config get` and friends), as on macOS and Linux. (Amended 2026-10-05 at integration.)
 
 Owner answers (2026-10-05):
 1. Unknown folders under `%LOCALAPPDATA%` and `%APPDATA%` are shown with their size, deletable, not
