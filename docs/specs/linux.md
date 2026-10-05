@@ -93,6 +93,27 @@ leftovers, Steam, core files, new commands) is not in this step.
   emulation, x86_64 when practical). CI: a `ubuntu-latest` job running fmt, clippy and the full suite,
   beside the macOS job.
 
+## Settled during integration (2026-10-05)
+
+- **Items already in a Trash** that a cleanup removes for good take their `.trashinfo` with them, and a
+  read-only tree is made writable first, the same steps Empty takes.
+- **The home Trash is resolved once.** The scan's Trash row and the Trash itself use the same
+  `$XDG_DATA_HOME/Trash` resolution; no second spelling of the path.
+- **Downloads** for the old-downloads report is the XDG DOWNLOAD dir from `user-dirs.dirs`, else
+  `~/Downloads`; on macOS it stays `~/Downloads`. The `user-dirs.dirs` reader is shared with the
+  protected list, not written twice.
+- **Home under a system folder** (Fedora Silverblue and Kinoite put it at `/var/home/<user>`): a
+  `SYSTEM` entry that is an ancestor of `$HOME` does not block paths inside `$HOME`. Paths outside
+  `$HOME` stay blocked as before.
+- **User-facing texts in neutral code that name macOS** become per-platform constants; the macOS
+  strings stay byte-identical. Linux wording: "Finder's Put Back" becomes "your file manager's
+  Restore"; "on this Mac" becomes "on this computer"; the Docker note says that with Docker Desktop
+  the space stays inside its VM disk until that disk is reset, and that named volumes are never
+  touched.
+- **Opening the page on Linux** does not wait for `xdg-open` to exit.
+- **Test fixtures that depend on a platform limit** (path length for "nested too deep") take the
+  limit from a per-platform helper in `tests/common`, not a second copy of the test.
+
 ## Not in this step
 
 Launcher and release assets for Linux (next task after this lands), Windows, the page, SKILL.md text
