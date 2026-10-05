@@ -47,6 +47,7 @@ pub struct Checked {
     pub dev: u64,
     pub ino: u64,
     pub ino_hi: u64,
+    pub bytes: u64,
 }
 
 fn shell_form(path: &str) -> String {
@@ -177,25 +178,13 @@ fn bin_limit(root: &HSTRING) -> Result<u64, &'static str> {
     }
 }
 
-fn item_bytes(path: &Path) -> u64 {
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return 0;
-    };
-    if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-        return meta.len();
-    }
-    fs::read_dir(path).map_or(0, |list| {
-        list.flatten().map(|entry| item_bytes(&entry.path())).sum()
-    })
-}
-
-fn bin_problem(path: &Path) -> Option<&'static str> {
+fn bin_problem(path: &Path, bytes: u64) -> Option<&'static str> {
     let Some(root) = recycle_bin(path) else {
         return Some(NO_BIN);
     };
     match bin_limit(&root) {
         Err(why) => Some(why),
-        Ok(limit) => (item_bytes(path) > limit).then_some(TOO_LARGE),
+        Ok(limit) => (bytes > limit).then_some(TOO_LARGE),
     }
 }
 
@@ -427,7 +416,7 @@ fn trash_one(item: &Checked) -> Result<String, String> {
     if same_item(&item.path, item.dev, item.ino, item.ino_hi) != Some(true) {
         return Err("it changed after the check".to_string());
     }
-    if let Some(problem) = bin_problem(Path::new(&item.path)) {
+    if let Some(problem) = bin_problem(Path::new(&item.path), item.bytes) {
         return Err(problem.to_string());
     }
     recycle(&shell_form(&item.path))

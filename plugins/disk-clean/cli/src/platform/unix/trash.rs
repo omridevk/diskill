@@ -37,4 +37,6 @@ pub struct Checked {
     pub ino: u64,
     #[serde(skip)]
     pub ino_hi: u64,
+    #[serde(skip)]
+    pub bytes: u64,
 }

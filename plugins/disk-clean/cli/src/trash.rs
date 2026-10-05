@@ -429,6 +429,7 @@ impl Record {
                 dev: e.dev,
                 ino: e.ino,
                 ino_hi: e.ino_hi,
+                bytes: u64::try_from(e.bytes).unwrap_or(0),
             })
             .collect();
         let settled: Vec<Moved> = ready
