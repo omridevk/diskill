@@ -21,45 +21,8 @@ const RECORD_TRIES: usize = 1500;
 const ALREADY_RUNNING: i32 = 4;
 pub const PATH_CHANGED: &str = "path changed since the scan";
 
-const PERSONAL: &[&str] = &[
-    "documents",
-    "desktop",
-    "pictures",
-    "movies",
-    "music",
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".kube",
-    ".claude",
-    "library/mail",
-    "library/messages",
-];
-const SYSTEM: &[&str] = &[
-    "/System",
-    "/Library",
-    "/Applications",
-    "/usr",
-    "/bin",
-    "/sbin",
-    "/etc",
-    "/var",
-    "/private",
-    "/opt",
-];
-
-const COMMANDS: &[(&str, &str, &[&str])] = &[
-    (
-        "xcode-unavailable-sims",
-        "xcrun",
-        &["simctl", "delete", "unavailable"],
-    ),
-    ("docker-prune", "docker", &["system", "prune", "-f"]),
-    ("brew-cleanup", "brew", &["cleanup", "--prune=all", "-s"]),
-];
-
 fn command(id: &str) -> Option<(&'static str, &'static [&'static str])> {
-    COMMANDS
+    platform::COMMANDS
         .iter()
         .find(|(known, _, _)| *known == id)
         .map(|(_, program, args)| (*program, *args))
@@ -261,46 +224,16 @@ pub fn is_canonical(p: &str) -> bool {
     })
 }
 
-fn inside(p: &str, root: &str) -> bool {
+pub(crate) fn inside(p: &str, root: &str) -> bool {
     p.strip_prefix(root)
         .is_some_and(|rest| rest.starts_with('/'))
-}
-
-fn is_protected(p: &str, home: &str) -> bool {
-    let (p, home) = (p.to_ascii_lowercase(), home.to_ascii_lowercase());
-    if p == home || inside(&home, &p) {
-        return true;
-    }
-    let Some(rest) = p.strip_prefix(&format!("{home}/")) else {
-        return false;
-    };
-    let personal = PERSONAL
-        .iter()
-        .any(|name| rest == *name || inside(rest, name));
-    let keychains = rest == "library"
-        || rest
-            .strip_prefix("library/")
-            .is_some_and(|r| r.contains("keychains"));
-    personal || keychains
-}
-
-fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
-    let in_user_temp = tmp_base.filter(|b| !b.is_empty()).is_some_and(|base| {
-        ["T", "C", "X"]
-            .iter()
-            .any(|sub| inside(p, &format!("{base}/{sub}")))
-    });
-    if inside(p, "/private/tmp") || in_user_temp {
-        return true;
-    }
-    inside(p, home) && !SYSTEM.iter().any(|s| p == *s || inside(p, s))
 }
 
 pub fn is_allowed(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
     is_canonical(p)
         && is_canonical(home)
-        && !is_protected(p, home)
-        && in_allowed_root(p, home, tmp_base)
+        && !platform::is_protected(p, home)
+        && platform::in_allowed_root(p, home, tmp_base)
 }
 
 pub fn safe_to_remove(
