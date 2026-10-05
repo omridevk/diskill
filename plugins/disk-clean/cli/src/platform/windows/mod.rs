@@ -6,6 +6,7 @@ mod path;
 mod process;
 mod protected;
 mod time;
+mod trash;
 mod walk;
 
 pub use commands::*;
@@ -16,6 +17,7 @@ pub use path::*;
 pub use process::*;
 pub use protected::*;
 pub use time::*;
+pub use trash::*;
 pub use walk::*;
 
 pub const PAGE_PLATFORM: &str = "windows";

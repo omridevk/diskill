@@ -22,14 +22,12 @@ pub fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
-pub fn dev_and_ino(meta: &fs::Metadata) -> (u64, u64) {
-    (meta.dev(), meta.ino())
+pub fn dev_and_ino(path: &str) -> io::Result<(u64, u64, u64)> {
+    fs::symlink_metadata(path).map(|m| (m.dev(), m.ino(), 0))
 }
 
-pub fn same_item(path: &str, dev: u64, ino: u64) -> Option<bool> {
-    fs::symlink_metadata(path)
-        .ok()
-        .map(|m| dev_and_ino(&m) == (dev, ino))
+pub fn same_item(path: &str, dev: u64, ino: u64, ino_hi: u64) -> Option<bool> {
+    dev_and_ino(path).ok().map(|id| id == (dev, ino, ino_hi))
 }
 
 #[derive(Serialize, Clone)]
@@ -37,4 +35,6 @@ pub struct Checked {
     pub path: String,
     pub dev: u64,
     pub ino: u64,
+    #[serde(skip)]
+    pub ino_hi: u64,
 }
