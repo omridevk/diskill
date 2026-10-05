@@ -202,6 +202,7 @@ fn meta_from(name: &[u16], e: &Entry, volume: &Volume) -> Meta {
     let mut meta = Meta {
         dev: volume.serial,
         ino: 0,
+        ino_hi: 0,
         nlink: 1,
         blocks: 0,
         size: e.size,
@@ -215,9 +216,10 @@ fn meta_from(name: &[u16], e: &Entry, volume: &Volume) -> Meta {
         let id = identity(handle);
         let standard: Option<FILE_STANDARD_INFO> = info(handle, FileStandardInfo);
         close(handle);
-        if let Some((dev, ino, _)) = id {
+        if let Some((dev, ino, ino_hi)) = id {
             meta.dev = dev;
             meta.ino = ino;
+            meta.ino_hi = ino_hi;
         }
         if let Some(standard) = standard {
             meta.nlink = u64::from(standard.NumberOfLinks);
@@ -340,6 +342,7 @@ pub fn meta_of(m: &fs::Metadata) -> Meta {
     Meta {
         dev: 0,
         ino: 0,
+        ino_hi: 0,
         nlink: 1,
         blocks: m.file_size().div_ceil(512),
         size: m.file_size(),

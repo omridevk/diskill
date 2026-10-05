@@ -40,6 +40,7 @@ pub fn meta_of(m: &fs::Metadata) -> Meta {
     Meta {
         dev: m.dev(),
         ino: m.ino(),
+        ino_hi: 0,
         nlink: m.nlink(),
         blocks: m.blocks(),
         size: m.size(),

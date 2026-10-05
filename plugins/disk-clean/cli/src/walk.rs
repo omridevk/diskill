@@ -21,6 +21,7 @@ pub enum Kind {
 pub struct Meta {
     pub dev: u64,
     pub ino: u64,
+    pub ino_hi: u64,
     pub nlink: u64,
     pub blocks: u64,
     pub size: u64,
@@ -519,7 +520,7 @@ pub fn walk(
     logical: &Path,
     plan: &Plan,
     parallel: bool,
-    seen: &mut HashSet<(u64, u64)>,
+    seen: &mut HashSet<(u64, u64, u64)>,
     out: &mut Walk,
     progress: &dyn Fn(&Walk, &Path),
 ) -> Option<u64> {
@@ -575,7 +576,7 @@ fn consume(
     logical: &Path,
     plan: &Plan,
     reader: &Reader,
-    seen: &mut HashSet<(u64, u64)>,
+    seen: &mut HashSet<(u64, u64, u64)>,
     out: &mut Walk,
     progress: &dyn Fn(&Walk, &Path),
 ) -> Option<u64> {
@@ -614,8 +615,9 @@ fn consume(
         if depth > 0 && stack.is_empty() {
             continue;
         }
-        let counted =
-            meta.kind == Kind::Dir || meta.nlink <= 1 || seen.insert((meta.dev, meta.ino));
+        let counted = meta.kind == Kind::Dir
+            || meta.nlink <= 1
+            || seen.insert((meta.dev, meta.ino, meta.ino_hi));
         let own = if counted { meta.blocks } else { 0 };
         out.files += u64::from(meta.kind == Kind::File);
         out.bytes += own * 512;
