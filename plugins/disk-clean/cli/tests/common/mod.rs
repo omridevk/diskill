@@ -193,9 +193,10 @@ fn create_vhdx(name: &str, assign: &str) -> PathBuf {
     ));
     assert!(
         made.status.success(),
-        "diskpart could not create {} (needs an administrator): {}",
+        "diskpart could not create {} (needs an administrator):\n{}\n{}",
         file.display(),
-        String::from_utf8_lossy(&made.stdout)
+        String::from_utf8_lossy(&made.stdout),
+        String::from_utf8_lossy(&made.stderr)
     );
     file
 }
@@ -218,9 +219,16 @@ pub fn free_letter() -> char {
 }
 
 #[cfg(windows)]
+static ASSIGNING_LETTERS: Mutex<()> = Mutex::new(());
+
+#[cfg(windows)]
 fn attach_drive(name: &str) -> (PathBuf, PathBuf) {
+    let assigning = ASSIGNING_LETTERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let letter = free_letter();
     let file = create_vhdx(name, &format!("assign letter={letter}"));
+    drop(assigning);
     let short_names =
         output(Command::new("fsutil").args(["8dot3name", "set", &format!("{letter}:"), "0"]));
     assert!(
