@@ -155,6 +155,7 @@ fn never_roots(home: &str) -> Vec<String> {
         .flatten()
         .collect();
     roots.extend(known_folder(&FOLDERID_SkyDrive));
+    roots.push(format!("{home}/OneDrive"));
     roots.extend(ROOT_ENV.iter().filter_map(|name| env_root(name)));
     roots.extend(IN_HOME.iter().map(|rel| format!("{home}/{rel}")));
     let scoop = env_root("SCOOP").unwrap_or_else(|| format!("{home}/scoop"));
