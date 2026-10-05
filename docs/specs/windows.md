@@ -1,6 +1,6 @@
 # disk-clean on native Windows (step 3 of cross-platform.md)
 
-Status: draft 2026-10-05. Builds on step 2 (`linux.md`, PRs #5, #6, #8) and the Linux release assets
+Status: approved 2026-10-05, building. Builds on step 2 (`linux.md`, PRs #5, #6, #8) and the Linux release assets
 (branch `linux-release`). Parent spec: `cross-platform.md`; research with sources:
 `research/windows-locations.md` (cited by row id, e.g. "W2", "P10"). The "ticked by default" list and
 the six owner questions were answered in conversation on 2026-10-05 ("what you think is right, but best
@@ -13,7 +13,7 @@ scan the user's profile, review in the page, Delete moves approved items to the 
 Empty work, nothing needs administrator rights. macOS and Linux behaviour does not change; their suites
 stay green unedited except where a test is split per platform.
 
-## Decisions for the user (open)
+## Decisions (settled 2026-10-05: the proposals below were accepted, "stop waiting for me, start building")
 
 1. **Path form inside disk-clean.** Neutral code (`review.rs`, `clean.rs`, `util.rs`, `worktrees.rs`) and
    the page build trees and check canonical form by splitting on `/`. Proposed: on Windows the scan
