@@ -48,7 +48,7 @@ impl Config {
 }
 
 pub(crate) struct Ctx {
-    home: String,
+    pub(crate) home: String,
     now: i64,
     walk: Walk,
     parallel: bool,
@@ -707,7 +707,10 @@ fn scan_dev_artifacts(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
 }
 
 fn scan_node_modules(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let desc = "Every node_modules folder on this Mac, whatever its age. Each one is fully rebuildable from its lockfile.";
+    let desc = format!(
+        "Every node_modules folder on {}, whatever its age. Each one is fully rebuildable from its lockfile.",
+        platform::THIS_COMPUTER
+    );
     for p in &ctx.walk.node_modules {
         let Some(bytes) = size_bytes(ctx, p) else {
             continue;
@@ -741,7 +744,7 @@ fn scan_node_modules(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
         let cat = Cat {
             id: "node-modules",
             title: "node_modules",
-            desc,
+            desc: &desc,
             risk: "safe",
             pre: if pre { "1" } else { "0" },
         };
@@ -780,7 +783,7 @@ fn docker_row(bytes: u64) -> Row {
         "docker system prune -f",
         DOCKER_KEY,
         bytes,
-        "Frees space INSIDE Docker's sparse VM disk image, which does not shrink — macOS gets little or none of it back. Reclaim it on the host by resetting the Docker VM disk in Docker Desktop. Named volumes are never touched.",
+        platform::DOCKER_NOTE,
         "-",
         "vm",
     )
@@ -829,7 +832,7 @@ fn scan_big_files(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
 }
 
 fn scan_old_downloads(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let list: Vec<PathBuf> = children_of(ctx, &h(ctx, "Downloads"))
+    let list: Vec<PathBuf> = children_of(ctx, &platform::downloads_dir(&ctx.home))
         .into_iter()
         .filter(|p| {
             fs::symlink_metadata(p).is_ok_and(|m| {

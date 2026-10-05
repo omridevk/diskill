@@ -1,6 +1,6 @@
 use crate::util::{self, spawn};
 use std::io;
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
 pub fn utility_qos() {
     // SAFETY: pthread_set_qos_class_self_np only changes the calling thread's scheduling class.
@@ -26,8 +26,10 @@ pub fn efficiency_cores() -> usize {
     }
 }
 
-pub fn open_in_browser(url: &str) -> io::Result<ExitStatus> {
-    spawn(Command::new("open").arg(url)).and_then(|mut c| c.wait())
+pub fn open_in_browser(url: &str) -> io::Result<()> {
+    spawn(Command::new("open").arg(url))
+        .and_then(|mut c| c.wait())
+        .map(drop)
 }
 
 pub fn fill_random(buf: &mut [u8]) {

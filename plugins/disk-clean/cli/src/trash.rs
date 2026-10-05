@@ -19,8 +19,6 @@ const LOCK_TRIES: usize = 50;
 pub const BATCH: usize = 64;
 const FREE_EVERY: Duration = Duration::from_millis(500);
 pub const STILL_THERE: &str = "the original path exists again, so it stays in the Trash";
-pub const INTERRUPTED: &str =
-    "the move to the Trash did not finish; if it landed there, Finder's Put Back can restore it";
 
 pub const TRASHED: &str = "trashed";
 pub const RESTORED: &str = "restored";
@@ -329,7 +327,10 @@ fn pending(record_run: &str, wanted: &Wanted, n: usize) -> Result<Entry, String>
         dev,
         ino,
         state: FAILED.to_string(),
-        reason: INTERRUPTED.to_string(),
+        reason: format!(
+            "the move to the Trash did not finish; if it landed there, {} can restore it",
+            platform::RESTORE_BY_HAND
+        ),
     })
 }
 
@@ -573,15 +574,20 @@ pub fn with_free_samples<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
     })
 }
 
+pub fn remove_for_good(path: &Path, home: &str) -> io::Result<()> {
+    platform::make_removable(path);
+    let result = clean::remove_path(path);
+    if fs::symlink_metadata(path).is_err() && path.parent().is_some_and(|d| is_trash_dir(d, home)) {
+        platform::drop_trash_info(path);
+    }
+    result
+}
+
 fn empty_one(entry: &Entry, home: &str) -> Result<(), String> {
     still_in_trash(entry, home)?;
-    platform::make_removable(Path::new(&entry.trashed));
-    let result = clean::remove_path(Path::new(&entry.trashed));
+    let result = remove_for_good(Path::new(&entry.trashed), home);
     match (fs::symlink_metadata(&entry.trashed).is_ok(), result) {
-        (false, _) => {
-            platform::drop_trash_info(Path::new(&entry.trashed));
-            Ok(())
-        }
+        (false, _) => Ok(()),
         (true, Err(e)) => Err(format!("could not delete: {}", e.kind())),
         (true, Ok(())) => Err("still present after removal".to_string()),
     }

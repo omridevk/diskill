@@ -1,3 +1,4 @@
+use super::trash::home_trash;
 use crate::platform;
 use crate::scan::{Cat, Config, Ctx, Row, children_of, existing, h, row, sized};
 use std::collections::HashSet;
@@ -39,7 +40,6 @@ const PKG_STORE: &[&str] = &[
     ".gem",
 ];
 const PNPM_STORE: &str = ".local/share/pnpm/store";
-const TRASH_FILES: &str = ".local/share/Trash/files";
 const CACHE: &str = ".cache";
 const APP_CACHES: &[&str] = &[
     "google-chrome",
@@ -66,6 +66,19 @@ pub const SYSTEM_TMP: &str = "/tmp";
 pub const PNPM_STORE_NOTE: &str = " Size is apparent: pnpm hard-links package files from ~/.local/share/pnpm/store, so deleting frees only files no other project or the store still links.";
 pub const SIMS_COMMAND: &str = "";
 pub const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
+pub const THIS_COMPUTER: &str = "this computer";
+pub const DOCKER_NOTE: &str = "With Docker Desktop the space stays inside its VM disk until that disk is reset in Docker Desktop. Named volumes are never touched.";
+
+pub fn downloads_dir(home: &str) -> PathBuf {
+    super::protected::user_dirs(home)
+        .into_iter()
+        .rev()
+        .find(|(name, path)| name == "DOWNLOAD" && path != home)
+        .map_or_else(
+            || PathBuf::from(format!("{home}/Downloads")),
+            |(_, path)| PathBuf::from(path),
+        )
+}
 
 pub fn has_sims(_home: &str) -> bool {
     false
@@ -113,10 +126,9 @@ pub fn plan_locations(home: &str, _tmp_base: Option<&str>) -> (HashSet<PathBuf>,
         .iter()
         .map(|r| hp(r))
         .collect();
-    let mut parents: HashSet<PathBuf> = [TRASH_FILES, CACHE, CCACHE, "Downloads"]
-        .iter()
-        .map(|r| hp(r))
-        .collect();
+    let mut parents: HashSet<PathBuf> = [CACHE, CCACHE].iter().map(|r| hp(r)).collect();
+    parents.insert(home_trash(home).join("files"));
+    parents.insert(downloads_dir(home));
     parents.extend(sandbox_caches(&hp(FLATPAK_APPS), &hp(SNAPS)));
     parents.insert(PathBuf::from(SYSTEM_TMP));
     parents.insert(PathBuf::from(VAR_TMP));
@@ -185,7 +197,7 @@ fn scan_trash(ctx: &Ctx, rows: &mut Vec<Row>) {
         risk: "safe",
         pre: "1",
     };
-    let list = children_of(ctx, &h(ctx, TRASH_FILES));
+    let list = children_of(ctx, &home_trash(&ctx.home).join("files"));
     sized(ctx, rows, &cat, &list, "Permanently removed.", 1);
 }
 

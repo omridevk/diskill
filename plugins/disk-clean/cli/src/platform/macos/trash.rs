@@ -10,6 +10,8 @@ use std::process::{Command, Stdio};
 
 const RENAME_NOFOLLOW_ANY: libc::c_uint = 0x10;
 
+pub const RESTORE_BY_HAND: &str = "Finder's Put Back";
+
 const OSASCRIPT_SCRIPT_LIMIT: usize = 800;
 const MOVE_TO_TRASH: &str = r#"ObjC.import('Foundation')
 function run() {

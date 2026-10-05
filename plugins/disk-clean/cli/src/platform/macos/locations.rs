@@ -57,6 +57,12 @@ pub const HOME_SYSTEM_DIRS: &[&str] = &["Library", ".Trash"];
 pub const SYSTEM_TMP: &str = "/private/tmp";
 pub const PNPM_STORE_NOTE: &str = " Size is apparent: pnpm clones package files from ~/Library/pnpm/store, so deleting frees only blocks no other project or the store still holds.";
 pub const SIMS_COMMAND: &str = "xcrun simctl delete unavailable";
+pub const THIS_COMPUTER: &str = "this Mac";
+pub const DOCKER_NOTE: &str = "Frees space INSIDE Docker's sparse VM disk image, which does not shrink — macOS gets little or none of it back. Reclaim it on the host by resetting the Docker VM disk in Docker Desktop. Named volumes are never touched.";
+
+pub fn downloads_dir(home: &str) -> PathBuf {
+    PathBuf::from(format!("{home}/Downloads"))
+}
 
 pub fn has_sims(home: &str) -> bool {
     platform::which("xcrun") && Path::new(&format!("{home}/{SIM_DEVICES}")).is_dir()
@@ -103,16 +109,11 @@ pub fn plan_locations(home: &str, tmp_base: Option<&str>) -> (HashSet<PathBuf>, 
         .iter()
         .map(|r| hp(r)),
     );
-    let mut parents: HashSet<PathBuf> = [
-        ".Trash",
-        "Library/Caches",
-        "Library/Logs",
-        IOS_BACKUP,
-        "Downloads",
-    ]
-    .iter()
-    .map(|r| hp(r))
-    .collect();
+    let mut parents: HashSet<PathBuf> = [".Trash", "Library/Caches", "Library/Logs", IOS_BACKUP]
+        .iter()
+        .map(|r| hp(r))
+        .collect();
+    parents.insert(downloads_dir(home));
     parents.insert(PathBuf::from(SYSTEM_TMP));
     if let Some(base) = tmp_base {
         for sub in ["T", "C", "X"] {

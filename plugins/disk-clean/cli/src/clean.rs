@@ -290,7 +290,8 @@ fn print_dry_run(plan: &Plan, mode: Mode) {
     );
     if !to_trash.is_empty() {
         println!(
-            "# moved to the Trash (undo in the page, with disk-clean undo RUN_DIR, or Finder's Put Back):"
+            "# moved to the Trash (undo in the page, with disk-clean undo RUN_DIR, or {}):",
+            platform::RESTORE_BY_HAND
         );
         for path in &to_trash {
             println!("trash -- {}", shell_quote(path));
@@ -553,7 +554,13 @@ pub fn remove_path(path: &Path) -> io::Result<()> {
 
 type Check<'a> = &'a (dyn Fn(&str) -> Result<(), &'static str> + Sync);
 
-fn remove_one(target: &str, bytes: i64, events: &Events, check: Check) -> (String, bool) {
+fn remove_one(
+    target: &str,
+    bytes: i64,
+    events: &Events,
+    check: Check,
+    home: &str,
+) -> (String, bool) {
     if let Err(reason) = check(target) {
         events.emit(
             "kept",
@@ -562,7 +569,11 @@ fn remove_one(target: &str, bytes: i64, events: &Events, check: Check) -> (Strin
         return (format!("KEPT    {target} ({reason})"), false);
     }
     let start = Instant::now();
-    let result = remove_path(Path::new(target));
+    let result = if already_trashed(target, home) {
+        trash::remove_for_good(Path::new(target), home)
+    } else {
+        remove_path(Path::new(target))
+    };
     if fs::symlink_metadata(target).is_ok() {
         let reason = match &result {
             Err(e) => format!("still present after removal: {}", e.kind()),
@@ -763,7 +774,7 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
             let lines = Mutex::new(Vec::new());
             util::in_parallel(&now_list, parallel, |target| {
                 let bytes = bytes_of(target);
-                let (line, ok) = remove_one(target, bytes, &events, &rm_check);
+                let (line, ok) = remove_one(target, bytes, &events, &rm_check, &home);
                 if ok {
                     tally(1, bytes);
                 }

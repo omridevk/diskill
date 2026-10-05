@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 const INFO: &str = ".trashinfo";
 const NAME_TRIES: usize = 1000;
 
+pub const RESTORE_BY_HAND: &str = "your file manager's Restore";
+
 fn data_home(home: &str) -> PathBuf {
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -19,7 +21,7 @@ fn data_home(home: &str) -> PathBuf {
     fs::canonicalize(&data).unwrap_or(data)
 }
 
-fn home_trash(home: &str) -> PathBuf {
+pub(super) fn home_trash(home: &str) -> PathBuf {
     data_home(home).join("Trash")
 }
 

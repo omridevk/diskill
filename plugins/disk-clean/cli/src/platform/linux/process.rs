@@ -2,7 +2,7 @@ use crate::util::spawn;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
 pub fn utility_qos() {
     // SAFETY: setpriority on PRIO_PROCESS with this thread's id only changes the calling thread's nice value.
@@ -13,8 +13,10 @@ pub fn efficiency_cores() -> usize {
     std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2))
 }
 
-pub fn open_in_browser(url: &str) -> io::Result<ExitStatus> {
-    spawn(Command::new("xdg-open").arg(url)).and_then(|mut c| c.wait())
+pub fn open_in_browser(url: &str) -> io::Result<()> {
+    let mut child = spawn(Command::new("xdg-open").arg(url))?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 pub fn fill_random(buf: &mut [u8]) {
