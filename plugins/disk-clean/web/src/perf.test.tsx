@@ -23,10 +23,11 @@ const BROWSER = navigator.userAgent.includes('Firefox') ? 'firefox' : 'chromium'
 type Work = Record<string, number>
 
 const commits: number[] = []
+const commitsBy: Record<string, number[]> = {app: commits}
 
-function Measured({loaded}: {loaded: Loaded}) {
+function Measured({loaded, id = 'app'}: {loaded: Loaded; id?: string}) {
   return (
-    <Profiler id="app" onRender={(_id, _phase, actual) => commits.push(actual)}>
+    <Profiler id={id} onRender={(profiler, _phase, actual) => commitsBy[profiler]?.push(actual)}>
       <App loaded={loaded} history={at()} />
     </Profiler>
   )
@@ -209,45 +210,81 @@ function spreadOf(costs: readonly number[]): Spread {
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-async function sampled(action: (round: number) => void, settle: () => Promise<unknown> = nextPaint) {
-  const costs: number[] = []
-  for (let round = 0; round < SAMPLES; round++) {
-    await nextPaint()
-    commits.length = 0
-    action(round)
-    await settle()
-    await nextPaint()
-    costs.push(sum(commits))
-  }
-  return spreadOf(costs)
-}
-
 function streamItems(source: EventTarget, items: readonly {path: string}[], head: object) {
   for (const item of items) send(source, 'item', {category: head, item, elapsed_ms: 10})
 }
 
-async function perChange(rows: number): Promise<Record<string, Spread>> {
+interface Side {
+  id: string
+  rows: number
+  source: EventTarget
+  items: readonly {path: string}[]
+  head: object
+  container: HTMLElement
+}
+
+function inside(side: Side, selector: string) {
+  const found = side.container.querySelector<HTMLElement>(selector)
+  if (!found) throw new Error(`no ${selector} in the ${side.rows}-row page`)
+  return found
+}
+
+async function opened(rows: number): Promise<Side & {unmount: () => Promise<void>}> {
+  const id = `rows-${rows}`
+  commitsBy[id] = []
   const source = cleanupSource()
-  const temp = bigSection(rows + SAMPLES * PER_TICK)
+  const temp = bigSection(rows + (SAMPLES + 1) * PER_TICK)
   const head = {id: temp.id, title: temp.title, desc: temp.desc, risk: temp.risk}
   const base = withSection(temp)
   const loaded: Loaded = {...base, data: {...base.data, categories: []}, live: true, openEvents: () => source}
-  const screen = await render(<Measured loaded={loaded} />)
-  await expect.element(screen.getByText('Walking disk')).toBeVisible()
+  const screen = await render(<Measured id={id} loaded={loaded} />)
+  const view = screen.locator
+  await expect.element(view.getByText('Walking disk')).toBeVisible()
   streamItems(source, temp.items.slice(0, rows), head)
   send(source, 'walked', {home: 0, tree: base.data.tree, insights: null, worktrees: 0, elapsed_ms: 20})
   send(source, 'done', {reclaimable: 0, elapsed_ms: 30})
-  await expect.element(screen.getByRole('link', {name: /^Your macOS temp/})).toBeVisible()
-  link(/^Your macOS temp/).click()
-  await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
-  await expect.element(screen.getByRole('table', {name: 'Your macOS temp'}).getByRole('checkbox').first()).toBeVisible()
-  const batch = await sampled(round => streamItems(source, temp.items.slice(rows + round * PER_TICK, rows + (round + 1) * PER_TICK), head))
-  const tick = await sampled(() => element('[role="table"] [role="checkbox"]').click())
-  const input = element('input[aria-label="Filter paths"]')
+  await view.getByRole('link', {name: /^Your macOS temp/}).click()
+  await expect.element(view.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
+  await expect.element(view.getByRole('table', {name: 'Your macOS temp'}).getByRole('checkbox').first()).toBeVisible()
+  return {id, rows, source, items: temp.items, head, container: screen.container, unmount: screen.unmount}
+}
+
+async function paired(sides: readonly [Side, Side], action: (side: Side, round: number) => void, settle: () => Promise<unknown> = nextPaint): Promise<[Spread, Spread]> {
+  const costs: [number[], number[]] = [[], []]
+  for (let round = -1; round < SAMPLES; round++) {
+    for (const [index, side] of sides.entries()) {
+      const own = commitsBy[side.id] ?? []
+      await nextPaint()
+      own.length = 0
+      action(side, round)
+      await settle()
+      await nextPaint()
+      if (round >= 0) costs[index]?.push(sum(own))
+    }
+  }
+  return [spreadOf(costs[0]), spreadOf(costs[1])]
+}
+
+const nextBatch = (side: Side, round: number) => streamItems(side.source, side.items.slice(side.rows + (round + 1) * PER_TICK, side.rows + (round + 2) * PER_TICK), side.head)
+
+const tickFirst = (side: Side) => inside(side, '[role="table"] [role="checkbox"]').click()
+
+function typeRound(side: Side, round: number) {
+  const input = inside(side, 'input[aria-label="Filter paths"]')
   if (!(input instanceof HTMLInputElement)) throw new Error('no filter input')
-  const keystroke = await sampled(round => typeInto(input, round % 2 === 0 ? 'item-0' : 'item-00'), () => pause(DEBOUNCED))
-  await screen.unmount()
-  return {batch, tick, keystroke}
+  typeInto(input, round % 2 === 0 ? 'item-0' : 'item-00')
+}
+
+async function perChange(): Promise<{small: Record<string, Spread>; big: Record<string, Spread>}> {
+  const small = await opened(SMALL)
+  const big = await opened(ROWS)
+  const sides: [Side, Side] = [small, big]
+  const [smallBatch, bigBatch] = await paired(sides, nextBatch)
+  const [smallTick, bigTick] = await paired(sides, tickFirst)
+  const [smallKey, bigKey] = await paired(sides, typeRound, () => pause(DEBOUNCED))
+  await big.unmount()
+  await small.unmount()
+  return {small: {batch: smallBatch, tick: smallTick, keystroke: smallKey}, big: {batch: bigBatch, tick: bigTick, keystroke: bigKey}}
 }
 
 function report(name: string, size: number, small: Work, big: Work) {
@@ -291,8 +328,7 @@ describe('a 9,000-item streaming scan', () => {
 
 describe('one change at 10,000 rows', () => {
   test('a streamed batch, a tick and a filter keystroke cost about what they cost at 30 rows', async () => {
-    const small = await perChange(SMALL)
-    const big = await perChange(ROWS)
+    const {small, big} = await perChange()
     for (const key of Object.keys(big)) {
       for (const stat of ['median', 'p95'] as const) {
         const at30 = small[key]?.[stat] ?? 0
