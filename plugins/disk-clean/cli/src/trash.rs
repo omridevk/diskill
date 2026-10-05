@@ -360,19 +360,40 @@ fn settle(entry: Entry, landed: Result<String, String>, home: &str) -> Moved {
         }
         Ok(trashed) => trashed,
     };
-    let placed = Entry {
-        trashed: trashed.clone(),
+    let placed = |trashed: String| Entry {
+        trashed,
         state: TRASHED.to_string(),
         reason: String::new(),
         ..entry.clone()
     };
-    match still_in_trash(&placed, home) {
-        Ok(()) => Moved::Trashed(placed),
-        Err(why) => Moved::Failed(Entry {
-            trashed,
-            reason: format!("moved, but {why}"),
-            ..entry
-        }),
+    let reported = placed(trashed.clone());
+    let Err(why) = still_in_trash(&reported, home) else {
+        return Moved::Trashed(reported);
+    };
+    let seen = match platform::find_trashed(&checked(&entry), &trashed) {
+        Ok(found) => {
+            let found = placed(found);
+            match still_in_trash(&found, home) {
+                Ok(()) => return Moved::Trashed(found),
+                Err(again) => format!("; found {} by its identity, but {again}", found.trashed),
+            }
+        }
+        Err(seen) => seen,
+    };
+    Moved::Failed(Entry {
+        trashed,
+        reason: format!("moved, but {why}{seen}"),
+        ..entry
+    })
+}
+
+fn checked(entry: &Entry) -> platform::Checked {
+    platform::Checked {
+        path: entry.original.clone(),
+        dev: entry.dev,
+        ino: entry.ino,
+        ino_hi: entry.ino_hi,
+        bytes: u64::try_from(entry.bytes).unwrap_or(0),
     }
 }
 
@@ -422,16 +443,7 @@ impl Record {
             return out;
         }
         self.entries.extend(ready.iter().cloned());
-        let paths: Vec<platform::Checked> = ready
-            .iter()
-            .map(|e| platform::Checked {
-                path: e.original.clone(),
-                dev: e.dev,
-                ino: e.ino,
-                ino_hi: e.ino_hi,
-                bytes: u64::try_from(e.bytes).unwrap_or(0),
-            })
-            .collect();
+        let paths: Vec<platform::Checked> = ready.iter().map(checked).collect();
         let settled: Vec<Moved> = ready
             .into_iter()
             .zip(move_batch(&paths))

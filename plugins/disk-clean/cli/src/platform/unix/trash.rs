@@ -40,3 +40,7 @@ pub struct Checked {
     #[serde(skip)]
     pub bytes: u64,
 }
+
+pub fn find_trashed(_item: &Checked, _reported: &str) -> Result<String, String> {
+    Err(String::new())
+}
