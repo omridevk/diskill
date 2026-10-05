@@ -147,7 +147,8 @@ disk (with how to compact), P6 per-drive pnpm stores.
   `sha256sum` format, built and attested in the same jobs pattern as Linux; static CRT
   (`-C target-feature=+crt-static`) so no Visual C++ runtime install is needed.
 - CI: a Windows job matrix over `windows-latest` and `windows-11-arm` running fmt, clippy and the full
-  suite; `PSScriptAnalyzer` on `run.ps1`.
+  suite. `PSScriptAnalyzer` on `run.ps1` is a local check before any change to it (not in CI: installing it
+  there is an unpinned download).
 - Socket Firewall on Windows arm64 (added 2026-10-05): the pinned `SocketDev/action` v1.3.2 has no
   `win32-arm64` build (`src/tools/firewall.js` at ba6de6cc throws "Unsupported architecture"). The
   `windows-11-arm` jobs (release and CI) `need` the matching `windows-latest` job, whose

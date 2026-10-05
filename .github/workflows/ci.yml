@@ -149,14 +149,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
       - run: cargo test --frozen
-      - name: PSScriptAnalyzer run.ps1
-        shell: pwsh
-        working-directory: .
-        run: |
-          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-          $findings = Invoke-ScriptAnalyzer -Path plugins/disk-clean/skills/disk-clean/scripts/run.ps1
-          $findings | Format-Table -AutoSize
-          if ($findings) { exit 1 }
 
   disk-clean-windows-arm:
     name: disk-clean cli (Windows, arm64)
