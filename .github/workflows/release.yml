@@ -33,10 +33,19 @@ jobs:
         with:
           toolchain: "1.93"
           targets: aarch64-apple-darwin, x86_64-apple-darwin
-      - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
-        with:
-          mode: firewall-free
-          use-cache: "false"
+      - name: install Socket Firewall
+        env:
+          SFW_ASSET: sfw-free-macos-arm64
+          SFW_SHA256: 1b705ea7c399727ee41aa93f63e0469d2c3787c50e1dd8842cb8ff5ceec9eb99
+        run: |
+          dir="$RUNNER_TEMP/sfw"
+          mkdir -p "$dir"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$dir/sfw" \
+            "https://github.com/SocketDev/sfw-free/releases/download/v1.15.4/$SFW_ASSET"
+          echo "$SFW_SHA256  $dir/sfw" | shasum -a 256 -c
+          chmod 755 "$dir/sfw"
+          echo "$dir" >> "$GITHUB_PATH"
+          echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
         working-directory: plugins/disk-clean/cli
         run: sfw cargo fetch --locked
@@ -92,9 +101,13 @@ jobs:
           - asset: linux-x86_64
             target: x86_64-unknown-linux-musl
             runner: ubuntu-24.04
+            sfw: sfw-free-linux-x86_64
+            sfw-sha256: cf9f55b8343e1ef6e6dcccdb09b99c70c0430a22ed7d0079286eccddeaf72670
           - asset: linux-arm64
             target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
+            sfw: sfw-free-linux-arm64
+            sfw-sha256: c8c80aa582829f24f5d633f2c3f2ccd0b070bbee80bf3b956e5e2a9880184e20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,10 +116,19 @@ jobs:
         with:
           toolchain: "1.93"
           targets: ${{ matrix.target }}
-      - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
-        with:
-          mode: firewall-free
-          use-cache: "false"
+      - name: install Socket Firewall
+        env:
+          SFW_ASSET: ${{ matrix.sfw }}
+          SFW_SHA256: ${{ matrix.sfw-sha256 }}
+        run: |
+          dir="$RUNNER_TEMP/sfw"
+          mkdir -p "$dir"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$dir/sfw" \
+            "https://github.com/SocketDev/sfw-free/releases/download/v1.15.4/$SFW_ASSET"
+          echo "$SFW_SHA256  $dir/sfw" | sha256sum -c
+          chmod 755 "$dir/sfw"
+          echo "$dir" >> "$GITHUB_PATH"
+          echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
         working-directory: plugins/disk-clean/cli
         run: sfw cargo fetch --locked
