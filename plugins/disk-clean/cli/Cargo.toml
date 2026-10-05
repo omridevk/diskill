@@ -32,9 +32,7 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
+windows-core = "0.62.2"
 
 [profile.release]
 strip = true
-
-[target.'cfg(windows)'.dependencies.windows-core]
-version = "0.62.2"
