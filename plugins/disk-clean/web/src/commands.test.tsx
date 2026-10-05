@@ -4,9 +4,9 @@ import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest'
 import {userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
-import {formatBytes, type Platform, type ScanData, type TrashEntry} from './lib/data'
-import {at, entry, fixture, trashedEvents} from './test/fixture'
-import {fakeEventSource, mockServer, query, sendAll} from './test/page'
+import {formatBytes, type Loaded, type Platform, type ScanData, type TrashEntry} from './lib/data'
+import {at, entry, fixture, onDrive, trashedEvents, windowsFixture} from './test/fixture'
+import {fakeEventSource, mockServer, PLAN, query, sendAll} from './test/page'
 import './index.css'
 
 const GB = 1024 ** 3
@@ -21,17 +21,19 @@ const option = (screen: Screen, name: RegExp) => palette(screen).getByRole('opti
 const MOD_K = {macos: '{Meta>}k{/Meta}', linux: '{Control>}k{/Control}'}
 
 interface Open {
+  loaded?: Loaded
+  plan?: object
   url?: string
   platform?: Platform
   trash?: TrashEntry[]
   data?: ScanData
 }
 
-async function openApp({url = '/cleanup', platform = 'macos', trash = [], data = fixture.data}: Open = {}) {
-  mockServer()
+async function openApp({loaded = fixture, plan = PLAN, url = '/cleanup', platform = loaded.platform ?? 'macos', trash = [], data = loaded.data}: Open = {}) {
+  mockServer(plan)
   const {source} = fakeEventSource()
   const history: RouterHistory = at(url)
-  const screen = await render(<App loaded={{...fixture, data, trash, platform, openEvents: () => source}} history={history} />)
+  const screen = await render(<App loaded={{...loaded, data, trash, platform, openEvents: () => source}} history={history} />)
   await expect.element(screen.getByText('4 items selected · 3.8 GB')).toBeVisible()
   return {screen, source, history}
 }
@@ -93,6 +95,99 @@ describe('the page speaks its platform', () => {
 
     await userEvent.keyboard('{Control>}{Backspace}{/Control}')
     await expect.element(screen.getByRole('dialog', {name: 'Move to the Trash'})).toBeVisible()
+  })
+})
+
+describe('the page on Windows', () => {
+  const WINDOWS = {loaded: windowsFixture, plan: onDrive(PLAN)}
+  const CTRL_K = '{Control>}k{/Control}'
+
+  afterEach(() => vi.restoreAllMocks())
+
+  test('names the Recycle Bin and its own keys', async () => {
+    const {screen} = await openApp(WINDOWS)
+    const about = await aboutDeleting(screen)
+    await expect.element(about.getByText('Delete moves files to the Recycle Bin. Undo puts them back; Restore in the Recycle Bin works too. Space comes back when the Trash is emptied.')).toBeVisible()
+    await expect.element(about.getByText(/^Delete Ctrl\+⌫ · Delete immediately Shift\+⌦ or Shift\+⌫$/)).toBeVisible()
+  })
+
+  test('Trash tab and Empty dialog name the Recycle Bin and show Windows paths', async () => {
+    const {screen} = await openApp({...WINDOWS, url: '/trash', trash: onDrive([entry(0, 'trashed'), entry(1, 'put-back')])})
+    const list = screen.getByRole('list', {name: 'Items disk-clean moved to the Trash'})
+    await expect.element(list.getByText('Restored from the Recycle Bin', {exact: true})).toBeVisible()
+    await expect.element(list.getByRole('checkbox', {name: '~\\Library\\Caches\\app-a'})).toBeVisible()
+    await list.getByRole('button', {name: 'Empty…'}).click()
+    const confirm = screen.getByRole('dialog', {name: 'Empty these from the Trash?'})
+    await expect.element(confirm.getByText(/Undo and Restore in the Recycle Bin stop working for them\./)).toBeVisible()
+  })
+
+  test('Storage rows, the overcount note and the chart name', async () => {
+    const {screen} = await openApp({...WINDOWS, url: '/storage', data: {...windowsFixture.data, home: 450 * GB, snapshots: 0}})
+    await expect.element(screen.getByText('Program Files, Windows, other users, system-wide caches')).toBeVisible()
+    await expect.element(screen.getByText(/^Windows and reserved space/)).toBeVisible()
+    await expect.element(screen.getByText('system files, page file, hibernation file and restore points; need administrator')).toBeVisible()
+    await expect.element(screen.getByText(`du counts ${formatBytes(50 * GB)} more than the disk holds: hard links share blocks.`)).toBeVisible()
+    await expect.element(screen.getByLabelText('Storage sunburst of C:\\Users\\you')).toBeVisible()
+  })
+
+  test('keys: Ctrl+Backspace deletes, Shift+Delete and Shift+Backspace delete immediately', async () => {
+    const {screen, history} = await openApp(WINDOWS)
+    await userEvent.click(screen.getByRole('heading', {name: 'Application caches'}))
+    await userEvent.keyboard('{Control>}{Alt>}{Backspace}{/Alt}{/Control}')
+    await userEvent.keyboard('{Meta>}{Backspace}{/Meta}')
+    expect(history.location.pathname).toBe('/cleanup/caches')
+
+    for (const keys of ['{Shift>}{Delete}{/Shift}', '{Shift>}{Backspace}{/Shift}']) {
+      await userEvent.keyboard(keys)
+      await expect.element(screen.getByRole('dialog', {name: NOW_TITLE})).toBeVisible()
+      await userEvent.keyboard('{Escape}')
+      await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+    }
+
+    await userEvent.keyboard('{Control>}{Backspace}{/Control}')
+    await expect.element(screen.getByRole('dialog', {name: 'Move to the Trash'})).toBeVisible()
+  })
+
+  test('the palette and the cheatsheet label keys Ctrl+⌫ and Ctrl+K', async () => {
+    const {screen} = await openApp(WINDOWS)
+    await userEvent.click(screen.getByRole('heading', {name: 'Application caches'}))
+    await userEvent.keyboard(CTRL_K)
+    await expect.element(option(screen, /^Delete 4 items… Ctrl\+⌫$/)).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(palette(screen)).not.toBeInTheDocument()
+    await userEvent.keyboard('?')
+    const sheet = screen.getByRole('dialog', {name: 'Keyboard shortcuts'})
+    const row = (name: RegExp) => sheet.getByRole('listitem').filter({hasText: name})
+    await expect.element(row(/^Delete…[^ ]/)).toHaveTextContent('Delete…Ctrl+⌫')
+    await expect.element(row(/^Delete immediately…/)).toHaveTextContent('Delete immediately…Shift+⌦Shift+⌫')
+    await expect.element(row(/^Command palette/)).toHaveTextContent('Command paletteCtrl+K')
+  })
+
+  test('paths read and copy in Windows form; the confirm lists them the same way', async () => {
+    const {screen} = await openApp(WINDOWS)
+    await userEvent.click(screen.getByRole('heading', {name: 'Application caches'}))
+    await userEvent.keyboard('d')
+    await expect.element(screen.getByText('0 items selected', {exact: false})).toBeVisible()
+    await screen.getByRole('checkbox', {name: '~\\Library\\Caches\\app-a'}).click()
+    await screen.getByRole('checkbox', {name: '~\\Library\\Caches\\app-b'}).click()
+    await expect.element(screen.getByText('2 items selected', {exact: false})).toBeVisible()
+
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+    await userEvent.keyboard(CTRL_K)
+    await option(screen, /^Copy 2 paths/).click()
+    await expect.element(palette(screen)).not.toBeInTheDocument()
+    expect(write).toHaveBeenCalledWith('C:\\Users\\you\\Library\\Caches\\app-a\nC:\\Users\\you\\Library\\Caches\\app-b')
+
+    await userEvent.keyboard('{Control>}{Backspace}{/Control}')
+    const confirm = screen.getByRole('dialog', {name: 'Move to the Trash'})
+    await expect.element(confirm.getByRole('list', {name: 'Moved to the Trash'}).getByRole('listitem').first()).toHaveTextContent('~\\Library\\Caches\\app-a2.0 GB')
+    await expect.element(confirm.getByRole('list', {name: "Can't be undone"})).toHaveTextContent('git -C ~\\code worktree remove ~\\code\\wtgit -C ~\\code worktree prunedocker system prune -f')
+    await expect.element(confirm.getByRole('list', {name: 'Rejected by the safety checks'})).toHaveTextContent('~\\old: already gone')
+  })
+
+  test('Insights lists the largest files in Windows form', async () => {
+    const {screen} = await openApp({...WINDOWS, url: '/insights'})
+    await expect.element(screen.getByText('~\\big.iso', {exact: true})).toBeVisible()
   })
 })
 

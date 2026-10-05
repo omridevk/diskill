@@ -10,6 +10,7 @@ import {formatBytes, sumBytes, type Category, type Insights as InsightsData, unt
 import {useDb} from '@/lib/db'
 import {zoomLink, type Folder} from '@/lib/folders'
 import {useHome} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import {useCategories, useFolders, useScanState} from '@/lib/views'
 
 const HEAT = ['#18181b', '#60a5fa']
@@ -104,6 +105,7 @@ function Calendar({days}: {days: InsightsData['modified_by_day']}) {
 
 function FolderAge({data, folders}: {data: InsightsData['age_by_folder']; folders: ReadonlyMap<string, Folder>}) {
   const home = useHome()
+  const {path} = usePlatform()
   const definition = useMemo(() => {
     const cells = data.folders.flatMap(f => data.buckets.map((bucket, i) => ({folder: f.path, bucket, bytes: f.bytes[i] ?? 0, total: f.bytes.reduce((s, b) => s + b, 0)})))
     const max = Math.max(...cells.map(c => c.bytes))
@@ -111,12 +113,12 @@ function FolderAge({data, folders}: {data: InsightsData['age_by_folder']; folder
       marks: [cell(cells, {x: 'bucket', y: 'folder', color: 'bytes', key: row => `${row.folder}|${row.bucket}`, inset: 1.5})],
       scales: {
         x: {scale: () => scaleBand<string>().domain(data.buckets), axis: {label: 'Last modified'}},
-        y: {scale: () => scaleBand<string>().domain(data.folders.map(f => f.path)), axis: {label: ''}},
+        y: {scale: () => scaleBand<string>().domain(data.folders.map(f => f.path)), axis: {label: '', ticks: {format: path}}},
       },
       color: {scale: heat(max)},
       ...INTERACTION,
     })
-  }, [data])
+  }, [data, path])
   return (
     <Chart
       definition={definition}
@@ -128,7 +130,7 @@ function FolderAge({data, folders}: {data: InsightsData['age_by_folder']; folder
           d && (
             <ChartCard
               title={d.folder.split('/').at(-1) || d.folder}
-              subtitle={d.folder}
+              subtitle={path(d.folder)}
               pinned={pinned}
               actions={
                 <>
@@ -245,6 +247,7 @@ export function Insights() {
   const {insights} = useScanState(db)
   const folders = useFolders(db)
   const categories = useCategories(db)
+  const {path} = usePlatform()
   return (
     <div className="grid grid-cols-2 gap-4 overflow-auto px-7 py-5">
       {insights ? (
@@ -270,7 +273,7 @@ export function Insights() {
           <div className="flex max-h-80 flex-col overflow-auto">
             {insights.largest_files.map(f => (
               <div key={f.path} className="flex items-center gap-3 py-1 text-xs">
-                <span className="grow truncate font-mono">{f.path}</span>
+                <span className="grow truncate font-mono">{path(f.path)}</span>
                 <span className="text-muted-foreground tabular-nums">{new Date(f.mtime * 1000).toLocaleDateString()}</span>
                 <span className="w-16 text-right tabular-nums">{formatBytes(f.bytes)}</span>
               </div>

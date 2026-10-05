@@ -62,6 +62,7 @@ export interface Setters {
   shred: (outcome: Outcome | null) => void
   particles: (phase: ParticlePhase) => void
   running: (on: boolean) => void
+  path: (path: string) => string
 }
 
 interface Point {
@@ -156,9 +157,9 @@ function nextCard(film: Film) {
   return cards[film.pool]
 }
 
-function fill(card: HTMLElement, outcome: Outcome) {
+function fill(card: HTMLElement, outcome: Outcome, path: (path: string) => string) {
   card.dataset.kind = outcome.kind
-  const text = {label: outcome.label, size: formatBytes(outcome.bytes), reason: outcome.reason}
+  const text = {label: path(outcome.label), size: formatBytes(outcome.bytes), reason: outcome.reason}
   for (const [name, value] of Object.entries(text)) {
     const slot = card.querySelector(`[data-part="${name}"]`)
     if (slot) slot.textContent = value
@@ -277,7 +278,7 @@ function gauges(film: Film, touched: Outcome[], at: number) {
 }
 
 function cardIn(film: Film, card: HTMLElement, outcome: Outcome, at: number, y = 0) {
-  film.tl.call(fill, [card, outcome], at)
+  film.tl.call(fill, [card, outcome, film.set.path], at)
   film.tl.fromTo(card, {opacity: 0, scale: 0.96, x: 0, y}, {opacity: 1, scale: 1, duration: film.tokens.fast, ease: 'smooth-out'}, at)
 }
 

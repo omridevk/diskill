@@ -128,11 +128,12 @@ function StateBadge({entry}: {entry: TrashEntry}) {
 
 function ItemLine({entry, picked, busy, home, actions}: {entry: TrashEntry; picked: boolean; busy: boolean; home: string; actions: TrashActions}) {
   const live = isTrashed(entry)
+  const shown = usePlatform().path(tilde(entry.original, home))
   return (
     <div className="grid h-full grid-cols-[1.5rem_minmax(0,1fr)_6rem_8rem_minmax(0,14rem)_3.5rem] items-center gap-3 border-b border-border/50 px-7 text-sm">
-      <Checkbox aria-label={tilde(entry.original, home)} checked={live && picked} disabled={!live} onCheckedChange={on => actions.onPick([entry.id], on)} />
-      <span className="truncate font-mono text-xs" title={tilde(entry.original, home)}>
-        {tilde(entry.original, home)}
+      <Checkbox aria-label={shown} checked={live && picked} disabled={!live} onCheckedChange={on => actions.onPick([entry.id], on)} />
+      <span className="truncate font-mono text-xs" title={shown}>
+        {shown}
       </span>
       <span className="text-right text-xs text-muted-foreground tabular-nums">{formatBytes(entry.bytes)}</span>
       <span className="text-xs text-muted-foreground tabular-nums">{whenOf(entry.at)}</span>

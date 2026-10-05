@@ -7,6 +7,7 @@ import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {counted, formatBytes, plural, tilde} from '@/lib/data'
 import {useHome} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import type {Db} from '@/lib/db'
 import {formatDuration, heroBytes, isPutBack, jobRunning, useMovie, type CleanupProgress, type Outcome, type Phase} from '@/lib/progress'
 import {useBack} from '@/lib/navigation'
@@ -119,10 +120,11 @@ const WORKING = {trashing: 'Moving to the Trash', deleting: 'Deleting'}
 
 function WorkingText({progress, verb}: {progress: CleanupProgress; verb: string}) {
   const last = progress.outcomes.at(-1)
+  const {path} = usePlatform()
   return (
     <>
       {verb} · {formatBytes(progress.handled)} of {formatBytes(progress.plan.approved)} · {counted(progress.count)} of {counted(progress.total)}
-      {last && <span className="text-muted-foreground"> · {last.label}</span>}
+      {last && <span className="text-muted-foreground"> · {path(last.label)}</span>}
     </>
   )
 }
@@ -190,7 +192,8 @@ export function CleanupStatus({progress, phase}: {progress: CleanupProgress; pha
 export function CleanupCounter({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
   const job = progress.cleanup.job
   const working = phase === 'trashing' || phase === 'deleting'
-  const last = working ? progress.outcomes.at(-1)?.label : ''
+  const {path} = usePlatform()
+  const last = working ? path(progress.outcomes.at(-1)?.label ?? '') : ''
   const figures =
     job && (phase === 'undoing' || phase === 'emptying')
       ? `${plural(job.count, 'item', 'items')} · ${formatBytes(progress.handled)} of ${formatBytes(job.bytes)}`
@@ -306,6 +309,7 @@ interface RowProps {
 }
 
 const Row = memo(function Row({outcome, index, count, start, ref}: RowProps) {
+  const {path} = usePlatform()
   return (
     <li
       ref={ref}
@@ -318,7 +322,7 @@ const Row = memo(function Row({outcome, index, count, start, ref}: RowProps) {
       <span className="text-muted-foreground tabular-nums">{(outcome.at / 1000).toFixed(1)}s</span>
       <span className="flex min-w-0 flex-col gap-0.5">
         <span className={`font-medium ${KIND_TONE[outcome.kind]}`}>
-          {KIND_TEXT[outcome.kind]} <span className="font-mono font-normal">{outcome.label}</span>
+          {KIND_TEXT[outcome.kind]} <span className="font-mono font-normal">{path(outcome.label)}</span>
         </span>
         <span className={QUIET.has(outcome.kind) ? 'text-muted-foreground' : KIND_TONE[outcome.kind]}>{detailOf(outcome)}</span>
       </span>
@@ -446,6 +450,7 @@ const NOT_DONE_SHOWN = 3
 
 function NotDone({progress}: {progress: CleanupProgress}) {
   const home = useHome()
+  const {path} = usePlatform()
   const problems = [...progress.byKey.values()].filter(o => o.kind === 'failed' || o.kind === 'kept')
   if (problems.length === 0) return null
   const shown = problems.slice(0, NOT_DONE_SHOWN)
@@ -453,7 +458,7 @@ function NotDone({progress}: {progress: CleanupProgress}) {
     <ul aria-label="Not done" className="flex flex-col gap-0.5 text-xs">
       {shown.map(o => (
         <li key={o.key} className={`truncate ${o.kind === 'failed' ? 'text-red-300' : 'text-amber-300'}`}>
-          {o.kind === 'failed' ? 'Not removed' : 'Kept'} <span className="font-mono">{tilde(o.label, home)}</span>
+          {o.kind === 'failed' ? 'Not removed' : 'Kept'} <span className="font-mono">{path(tilde(o.label, home))}</span>
           {o.reason && `: ${o.reason}`}
         </li>
       ))}

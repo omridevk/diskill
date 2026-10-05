@@ -11,7 +11,14 @@ interface PlatformText {
   reserved: string
   reservedHint: string
   sharedBlocks: string
+  path: (path: string) => string
 }
+
+const WINDOWS_PATH = /^(?:~|[A-Z]:)(?:\/|$)/
+
+const asIs = (path: string) => path
+
+const windowsPath = (path: string) => (WINDOWS_PATH.test(path) ? path.replaceAll('/', '\\') : path)
 
 const TEXT: Record<Platform, PlatformText> = {
   macos: {
@@ -23,6 +30,7 @@ const TEXT: Record<Platform, PlatformText> = {
     reserved: 'macOS system volume and APFS reserve',
     reservedHint: 'sealed system, Preboot, Recovery, swap and snapshots; not user-deletable',
     sharedBlocks: 'APFS clones and snapshots share blocks.',
+    path: asIs,
   },
   linux: {
     trash: 'the Trash',
@@ -33,15 +41,30 @@ const TEXT: Record<Platform, PlatformText> = {
     reserved: 'System and reserved space',
     reservedHint: 'blocks the filesystem keeps for itself and for root; not user-deletable',
     sharedBlocks: 'hard links and reflinked copies share blocks.',
+    path: asIs,
+  },
+  windows: {
+    trash: 'the Recycle Bin',
+    restoreByHand: 'Restore in the Recycle Bin',
+    putBack: 'Restored from the Recycle Bin',
+    deleteNow: ['Shift+Delete', 'Shift+Backspace'],
+    otherHint: 'Program Files, Windows, other users, system-wide caches',
+    reserved: 'Windows and reserved space',
+    reservedHint: 'system files, page file, hibernation file and restore points; need administrator',
+    sharedBlocks: 'hard links share blocks.',
+    path: windowsPath,
   },
 }
 
 const KEYS = {
   macos: {platform: 'mac', separatorToken: ''},
   linux: {platform: 'linux'},
+  windows: {platform: 'windows'},
 } as const satisfies Record<Platform, FormatDisplayOptions>
 
 const platformIn = (loaded: Loaded) => loaded.platform ?? 'macos'
+
+export const pathIn = (platform: Platform | undefined) => TEXT[platform ?? 'macos'].path
 
 export const hotkeyPlatform = (loaded: Loaded) => KEYS[platformIn(loaded)].platform
 

@@ -221,7 +221,7 @@ export function Shell() {
   const trashBusy = usePending(db, BUSY)
   const trashActions = useTrashActions()
   const reduced = useReducedMotion()
-  const {deleteNow} = usePlatform()
+  const {deleteNow, path} = usePlatform()
   const deleteReady = deleteState(selection, scan.scan).ready && !progress
   const commands = commandsFor({
     tabs: TABS,
@@ -231,6 +231,7 @@ export function Shell() {
     scanning: !scan.scan.done && scan.scan.error === '',
     deleteReady,
     deleteNow,
+    path,
     reduced,
     cleanupTrash: cleanupTrash.ready,
     cleanup: list ? {listing, section, onList} : null,

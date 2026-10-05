@@ -69,5 +69,5 @@ function Confirm() {
     approve(preview, mode)
     leave(() => navigate({to: '/cleanup/$section', params: true, search: prev => ({...prev, now: false}), replace: true}))
   }
-  return <ConfirmDialog plan={data[0] ?? null} mode={mode} home={home} selected={preview.items.length} scanning={scanning} warnings={warnings} {...dialog} onConfirm={confirm} />
+  return <ConfirmDialog plan={data[0] ?? null} mode={mode} home={home} platform={db.loaded.platform} selected={preview.items.length} scanning={scanning} warnings={warnings} {...dialog} onConfirm={confirm} />
 }

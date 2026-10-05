@@ -88,6 +88,10 @@ export const RUN = 'run-20261004-161542-a2ad54a5'
 
 export const fixture: Loaded = {data, token: 'test-token', home: '/Users/you', run: RUN, trash: []}
 
+export const onDrive = <T>(value: T): T => JSON.parse(JSON.stringify(value).replaceAll('/Users/you', 'C:/Users/you'))
+
+export const windowsFixture: Loaded = {...onDrive(fixture), platform: 'windows'}
+
 export const cleanupEvents = [
   {type: 'waiting', data: {}},
   {type: 'started', data: {run: 'run-1', free: 50 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 3.75 * GB, elapsed_ms: 0}},

@@ -4,7 +4,8 @@ import {Fragment, useRef, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
 import type {Mode, Plan} from '@/lib/api'
-import {counted, formatBytes, plural, tilde, tildeWords} from '@/lib/data'
+import {counted, formatBytes, plural, tilde, tildeWords, type Platform} from '@/lib/data'
+import {pathIn} from '@/lib/platform'
 import {WarningLines, type SelectionWarnings} from './selection-warnings'
 
 const ROW = 28
@@ -28,7 +29,7 @@ function TailPath({path}: {path: string}) {
   )
 }
 
-function PathRows({rows, home, label}: {rows: Plan['paths']; home: string; label: string}) {
+function PathRows({rows, home, path, label}: {rows: Plan['paths']; home: string; path: (path: string) => string; label: string}) {
   const scroller = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({count: rows.length, getScrollElement: () => scroller.current, estimateSize: () => ROW, overscan: 12})
   return (
@@ -45,7 +46,7 @@ function PathRows({rows, home, label}: {rows: Plan['paths']; home: string; label
                 className="absolute top-0 left-0 flex w-full items-center gap-3 px-3 font-mono text-xs"
                 style={{height: ROW, transform: `translateY(${virtual.start}px)`}}
               >
-                <TailPath path={tilde(row.path, home)} />
+                <TailPath path={path(tilde(row.path, home))} />
                 <span className="shrink-0 text-muted-foreground tabular-nums">{formatBytes(row.bytes)}</span>
               </li>
             )
@@ -57,11 +58,10 @@ function PathRows({rows, home, label}: {rows: Plan['paths']; home: string; label
 }
 
 function Word({word}: {word: string}) {
-  const parts = word.split('/')
-  return parts.map((part, i) => (
+  return word.split(/(?<=[/\\])/).map((part, i) => (
     <Fragment key={i}>
       {i > 0 && <wbr />}
-      <span className="whitespace-nowrap">{i < parts.length - 1 ? `${part}/` : part}</span>
+      <span className="whitespace-nowrap">{part}</span>
     </Fragment>
   ))
 }
@@ -140,32 +140,33 @@ function Difference({plan, selected}: {plan: Plan; selected: number}) {
   )
 }
 
-function Body({plan, mode, home, selected}: {plan: Plan; mode: Mode; home: string; selected: number}) {
+function Body({plan, mode, home, platform, selected}: {plan: Plan; mode: Mode; home: string; platform: Platform | undefined; selected: number}) {
+  const path = pathIn(platform)
   const split = splitOf(plan, mode)
-  const gone = split.gone.map(row => `rm -rf -- ${tilde(row.path, home)}`)
-  const final = [...gone, ...plan.final.map(line => tildeWords(line, home))]
+  const gone = split.gone.map(row => `rm -rf -- ${path(tilde(row.path, home))}`)
+  const final = [...gone, ...plan.final.map(line => tildeWords(line, home, path))]
   return (
     <>
       <Totals plan={plan} mode={mode} split={split} />
       <Difference plan={plan} selected={selected} />
       {split.trash.length > 0 && (
         <Group title="Moved to the Trash (undo available)" note="space comes back when the Trash is emptied" tone="text-foreground">
-          <PathRows rows={split.trash} home={home} label="Moved to the Trash" />
+          <PathRows rows={split.trash} home={home} path={path} label="Moved to the Trash" />
         </Group>
       )}
       {mode === 'now' && split.gone.length > 0 && (
         <Group title="Deleted immediately" note="skips the Trash, can't be undone" tone="text-destructive">
-          <PathRows rows={split.gone} home={home} label="Deleted immediately" />
+          <PathRows rows={split.gone} home={home} path={path} label="Deleted immediately" />
         </Group>
       )}
       {(mode === 'trash' ? final : plan.final).length > 0 && (
         <Group title="Can't be undone" note={mode === 'trash' ? 'items already in a Trash, worktree removals and fixed commands run exactly as below' : 'worktree removals and fixed commands run exactly as below'} tone="text-amber-300">
-          <Lines label="Can't be undone" lines={mode === 'trash' ? final : plan.final.map(line => tildeWords(line, home))} />
+          <Lines label="Can't be undone" lines={mode === 'trash' ? final : plan.final.map(line => tildeWords(line, home, path))} />
         </Group>
       )}
       {plan.rejected.length > 0 && (
         <Group title="Rejected by the safety checks" note="these stay where they are" tone="text-destructive">
-          <Lines label="Rejected by the safety checks" lines={plan.rejected.map(r => `${tilde(r.path, home)}: ${r.reason}`)} />
+          <Lines label="Rejected by the safety checks" lines={plan.rejected.map(r => `${path(tilde(r.path, home))}: ${r.reason}`)} />
         </Group>
       )}
     </>
@@ -184,6 +185,7 @@ function Decision({
   plan,
   mode,
   home,
+  platform,
   selected,
   cancelRef,
   onCancel,
@@ -192,6 +194,7 @@ function Decision({
   plan: Plan | null
   mode: Mode
   home: string
+  platform: Platform | undefined
   selected: number
   cancelRef: RefObject<HTMLButtonElement | null>
   onCancel: () => void
@@ -199,7 +202,7 @@ function Decision({
 }) {
   return (
     <>
-      {plan ? <Body plan={plan} mode={mode} home={home} selected={selected} /> : <Checking />}
+      {plan ? <Body plan={plan} mode={mode} home={home} platform={platform} selected={selected} /> : <Checking />}
       <DialogFooter className="items-center">
         <span className="grow text-xs text-muted-foreground">
           Same list in the terminal: <code className="font-mono text-zinc-300">disk-clean clean --dry-run</code>
@@ -231,6 +234,7 @@ export function ConfirmDialog({
   plan,
   mode = 'trash',
   home,
+  platform,
   selected = 0,
   scanning = false,
   warnings = NO_WARNINGS,
@@ -238,7 +242,7 @@ export function ConfirmDialog({
   onClose,
   onClosed,
   onConfirm,
-}: Exit & {plan: Plan | null; mode?: Mode; home: string; selected?: number; scanning?: boolean; warnings?: SelectionWarnings; onConfirm: () => void}) {
+}: Exit & {plan: Plan | null; mode?: Mode; home: string; platform?: Platform; selected?: number; scanning?: boolean; warnings?: SelectionWarnings; onConfirm: () => void}) {
   const warned = warnings.hidden.length > 0 || warnings.risky > 0
   const cancel = useRef<HTMLButtonElement>(null)
   return (
@@ -254,7 +258,7 @@ export function ConfirmDialog({
         </DialogHeader>
         {scanning && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{SCAN_RUNNING}</p>}
         {warned && <WarningLines warnings={warnings} className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm" />}
-        <Decision plan={plan} mode={mode} home={home} selected={selected} cancelRef={cancel} onCancel={onClose} onConfirm={onConfirm} />
+        <Decision plan={plan} mode={mode} home={home} platform={platform} selected={selected} cancelRef={cancel} onCancel={onClose} onConfirm={onConfirm} />
       </DialogContent>
     </Dialog>
   )
