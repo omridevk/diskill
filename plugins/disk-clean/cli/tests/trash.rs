@@ -1132,17 +1132,29 @@ fn info_of_recycled(trashed: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
-fn recycled_by_hand(bin: &Path, before: &[PathBuf]) -> PathBuf {
-    let mut added: Vec<PathBuf> = fs::read_dir(bin)
-        .unwrap()
-        .flatten()
-        .map(|e| PathBuf::from(text(&e.path())))
+fn recycled_from(info: &Path) -> Option<String> {
+    let bytes = fs::read(info).ok()?;
+    let chars = u32::from_le_bytes(bytes.get(24..28)?.try_into().ok()?) as usize;
+    let units: Vec<u16> = bytes
+        .get(28..28 + 2 * chars)?
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|c| *c != 0)
+        .collect();
+    Some(text(Path::new(&String::from_utf16(&units).ok()?)))
+}
+
+#[cfg(windows)]
+fn recycled_by_hand(bin: &Path, original: &Path) -> PathBuf {
+    let mut ours: Vec<PathBuf> = bin_entries(bin)
+        .into_iter()
         .filter(|p| {
-            p.file_name().unwrap().to_string_lossy().starts_with("$R") && !before.contains(p)
+            p.file_name().unwrap().to_string_lossy().starts_with("$R")
+                && recycled_from(&info_of_recycled(p)) == Some(text(original))
         })
         .collect();
-    assert_eq!(added.len(), 1, "{added:?}");
-    added.remove(0)
+    assert_eq!(ours.len(), 1, "{ours:?} recycled from {}", text(original));
+    ours.remove(0)
 }
 
 #[cfg(windows)]
@@ -1210,9 +1222,8 @@ fn items_already_in_the_recycle_bin_are_removed_for_good_not_trashed_again() {
     let s = sandbox("trash-old-windows");
     let doomed = s.home.join("old.txt");
     fs::write(&doomed, b"old").unwrap();
-    let before = bin_entries(&common::trash_dir(&s.home));
     common::recycle_by_hand(&doomed);
-    let old = recycled_by_hand(&common::trash_dir(&s.home), &before);
+    let old = recycled_by_hand(&common::trash_dir(&s.home), &doomed);
     let info = info_of_recycled(&old);
     assert!(info.is_file());
     approve(&s, &[("rm", &old, 4096)]);
@@ -1234,9 +1245,8 @@ fn the_confirm_plan_lists_trash_moves_apart_from_steps_that_cannot_be_undone_on_
     make(&a, 100);
     let doomed = s.home.join("old");
     make(&doomed, 100);
-    let before = bin_entries(&common::trash_dir(&s.home));
     common::recycle_by_hand(&doomed);
-    let old = recycled_by_hand(&common::trash_dir(&s.home), &before);
+    let old = recycled_by_hand(&common::trash_dir(&s.home), &doomed);
     let scan = scan_row("caches", "rm", &text(&a), 4096)
         + &scan_row("trash", "rm", &text(&old), 10)
         + "docker\tDocker\tD\treview\t0\tcmd\tdocker-prune\tdocker system prune -f\tcmd:docker-prune\t7\tn\t-\tvm\n";
@@ -1277,9 +1287,8 @@ fn empty_removes_only_recorded_items_still_in_the_recycle_bin() {
     let bin = common::trash_dir(&s.home);
     let theirs_original = s.home.join("theirs.txt");
     fs::write(&theirs_original, b"the user's").unwrap();
-    let before = bin_entries(&bin);
     common::recycle_by_hand(&theirs_original);
-    let theirs = recycled_by_hand(&bin, &before);
+    let theirs = recycled_by_hand(&bin, &theirs_original);
     let trashed = PathBuf::from(&record(&s)[0].trashed);
 
     let out = cli(&s, &["empty", &text(&s.run)]);
