@@ -205,10 +205,15 @@ describe('the page on Windows', () => {
     await userEvent.keyboard('{Escape}')
     await screen.getByRole('button', {name: DELETE}).click()
     await screen.getByRole('dialog').getByRole('button', {name: /^Move 4 items to the Recycle Bin/}).click()
+    await expect.element(screen.getByRole('button', {name: DELETE})).not.toBeInTheDocument()
     await sendAll(source, trashedEvents)
     await expect.element(screen.getByRole('contentinfo').getByText(/^Moved to the Recycle Bin 3\.8 GB · undo available/)).toBeVisible()
     await expect.element(screen.getByRole('contentinfo').getByText(/in your Recycle Bin until you empty it/)).toBeVisible()
     await expect.element(screen.getByRole('contentinfo').getByRole('button', {name: 'Empty these from the Recycle Bin'})).toBeVisible()
+    await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
+    await userEvent.keyboard(CTRL_K)
+    await option(screen, /^Cleanup…/).click()
+    await expect.element(option(screen, /^Empty these from the Recycle Bin…/)).toBeVisible()
   })
 
   test('Storage crumbs use a backslash and a drive root is the whole disk', async () => {
