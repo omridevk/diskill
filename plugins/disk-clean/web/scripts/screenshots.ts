@@ -52,7 +52,7 @@ const categories = [
     item(`${HOME}/code/dashboard/node_modules`, 1.2 * GB, {label: '~/code/dashboard', age: 4, preselect: false, accuracy: 'estimate', note: 'pnpm project, last installed 4 days ago. Restore with: pnpm install'}),
   ]),
   category('worktrees', 'Git worktrees with no leftover work', 'Clean worktrees: no uncommitted, untracked or local-only ignored files, no process inside, nothing that exists only in the worktree. Only the folder goes; the branch and every commit stay. Every check is repeated right before removal.', 'safe', [
-    item(`${HOME}/code/dashboard-wt/fix-login`, 2.3 * GB, {age: 38, note: 'Branch fix-login is kept, branch is pushed. Re-create with: git worktree add ~/code/dashboard-wt/fix-login fix-login'}),
+    item(`${HOME}/code/dashboard-wt/fix-login`, 2.3 * GB, {age: 38, preselect: false, note: 'Branch fix-login is kept, branch is pushed. Re-create with: git worktree add ~/code/dashboard-wt/fix-login fix-login'}),
     item(`${HOME}/code/dashboard-wt/charts-v2`, 1.8 * GB, {age: 3, preselect: false, note: 'Active 3.0 days ago. Branch charts-v2 is kept, 2 unpushed commits stay on the local branch. Re-create with: git worktree add ~/code/dashboard-wt/charts-v2 charts-v2'}),
   ]),
   category('docker', 'Docker', 'Dangling images, stopped containers and build cache.', 'review', [
@@ -146,45 +146,31 @@ const RUN = 'run-20261004-161542-a2ad54a5'
 
 const fixture = {
   data: {categories, reclaimable, free: 61 * GB, total: 994 * GB, used: 933 * GB, home: tree.bytes, snapshots: 0, tree, insights},
-  token: 'synthetic',
-  home: HOME,
-  run: RUN,
-  trash: [],
 }
 
-const chosen = categories.flatMap(c => c.items).filter(i => i.preselect && !i.report)
-const chosenBytes = chosen.reduce((sum, i) => sum + i.bytes, 0)
+type Row = ReturnType<typeof item>
 
-const worktree = chosen.filter(i => i.path.includes('-wt/'))
-const trashable = chosen.filter(i => !worktree.includes(i))
-const trashableBytes = trashable.reduce((sum, i) => sum + i.bytes, 0)
-const worktreeBytes = worktree.reduce((sum, i) => sum + i.bytes, 0)
+const sum = (rows: Row[]) => rows.reduce((total, row) => total + row.bytes, 0)
+const recommended = categories.flatMap(c => c.items).filter(i => i.preselect && !i.report)
+const nodeModules = categories.find(c => c.id === 'node-modules')?.items ?? []
+const demoChosen = [...recommended, ...nodeModules.filter(i => !i.preselect)]
 
-const plan = {
-  paths: trashable.map(i => ({path: i.path, bytes: i.bytes, trashed: false})),
-  paths_bytes: trashableBytes,
-  final: [`git -C ${HOME}/code/dashboard worktree remove ${HOME}/code/dashboard-wt/fix-login`, `git -C ${HOME}/code/dashboard worktree prune`],
-  final_bytes: worktreeBytes,
-  final_count: worktree.length,
-  rejected: [],
-  count: chosen.length,
-  bytes: chosenBytes,
+function planFor(chosen: Row[]) {
+  return {paths: chosen.map(i => ({path: i.path, bytes: i.bytes, trashed: false})), paths_bytes: sum(chosen), final: [], final_bytes: 0, final_count: 0, rejected: [], count: chosen.length, bytes: sum(chosen)}
 }
 
-function cleanupEvents() {
+function cleanupEvents(chosen: Row[]) {
   const free = fixture.data.free
-  const entries = trashable.map((file, i) => {
+  const entries = chosen.map((file, i) => {
     const id = String(i + 1).padStart(16, '0')
     return {id, run: RUN, original: file.path, trashed: `${HOME}/.Trash/${file.path.split('/').at(-1)}`, bytes: file.bytes, at: NOW + i, dev: 1, ino: 100 + i, state: 'trashed', reason: ''}
   })
   const end = entries.length * 150
   return [
-    {type: 'started', data: {run: RUN, free, paths: entries.length, trash: entries.length, worktrees: 1, commands: 0, bytes: chosenBytes, elapsed_ms: 0}},
+    {type: 'started', data: {run: RUN, free, paths: entries.length, trash: entries.length, worktrees: 0, commands: 0, bytes: sum(chosen), elapsed_ms: 0}},
     ...entries.map((e, i) => ({type: 'trashed', data: {path: e.original, bytes: e.bytes, id: e.id, trashed_path: e.trashed, elapsed_ms: (i + 1) * 150}})),
     {type: 'trash', data: {entries, elapsed_ms: end + 1}},
-    {type: 'worktree', data: {path: `${HOME}/code/dashboard-wt/fix-login`, bytes: worktreeBytes, outcome: 'removed', reason: '', elapsed_ms: end + 300}},
-    {type: 'free', data: {free: free + worktreeBytes, elapsed_ms: end + 301}},
-    {type: 'done', data: {removed: 1, removed_bytes: worktreeBytes, trashed: entries.length, trashed_bytes: trashableBytes, free_before: free, free_after: free + worktreeBytes, elapsed_ms: end + 400}},
+    {type: 'done', data: {removed: 0, removed_bytes: 0, trashed: entries.length, trashed_bytes: sum(chosen), free_before: free, free_after: free, elapsed_ms: end + 400}},
   ]
 }
 
@@ -215,10 +201,21 @@ function openForever(streams: Stream[]) {
   } as unknown as typeof EventSource
 }
 
-async function mockServer(page: Page, streams: Stream[]) {
+async function mockServer(page: Page, chosen: Row[], streams: Stream[], embedded: object) {
   await page.addInitScript(openForever, streams)
-  await page.route('**/dev/fixture.json', route => route.fulfill({json: fixture}))
-  await page.route('**/preview', route => route.fulfill({json: plan}))
+  await page.route(
+    url => url.pathname === '/' || url.pathname.startsWith('/cleanup') || url.pathname.startsWith('/storage') || url.pathname.startsWith('/insights'),
+    async route => {
+      const response = await route.fetch()
+      const html = (await response.text())
+        .replace('__TOKEN__', 'synthetic')
+        .replace('__PLATFORM__', 'macos')
+        .replace('__HOME__', HOME)
+        .replace('__DATA__', JSON.stringify({...embedded, run: RUN, trash: []}))
+      await route.fulfill({response, body: html})
+    },
+  )
+  await page.route('**/preview', route => route.fulfill({json: planFor(chosen)}))
   await page.route('**/decide', route => route.fulfill({json: {}}))
 }
 
@@ -235,15 +232,17 @@ const VIEWPORT = {viewport: {width: 1440, height: 900}, deviceScaleFactor: 2, co
 
 async function screenshots(browser: Browser) {
   const page = await browser.newPage(VIEWPORT)
-  await mockServer(page, [cleanupEvents()])
+  await mockServer(page, recommended, [cleanupEvents(recommended)], fixture.data)
 
+  await page.setViewportSize({width: 1440, height: 960})
   await page.goto(`${BASE}/cleanup`)
   await page.getByRole('table').first().waitFor()
   await shot(page, 'cleanup')
+  await page.setViewportSize({width: 1440, height: 900})
 
   await page.keyboard.press('ControlOrMeta+k')
   await page.getByRole('dialog').waitFor()
-  await shot(page, 'palette', page.getByRole('dialog'))
+  await shot(page, 'palette')
   await page.keyboard.press('Escape')
 
   await page.setViewportSize({width: 1440, height: 1040})
@@ -254,6 +253,7 @@ async function screenshots(browser: Browser) {
   await page.goto(`${BASE}/insights`)
   await shot(page, 'insights')
 
+  await page.setViewportSize({width: 1680, height: 940})
   await page.goto(`${BASE}/cleanup`)
   await page.getByRole('table').first().waitFor()
   await page.getByRole('button', {name: /^Delete \d+ items/}).click()
@@ -261,6 +261,7 @@ async function screenshots(browser: Browser) {
   await shot(page, 'confirm', page.getByRole('dialog'))
 
   await page.getByRole('dialog').getByRole('button', {name: /Move .* to the Trash/}).click()
+  await page.setViewportSize({width: 1440, height: 960})
   await page.waitForTimeout(6000)
   await shot(page, 'finale')
   await page.close()
@@ -268,7 +269,7 @@ async function screenshots(browser: Browser) {
 
 async function demo(browser: Browser) {
   const page = await browser.newPage(VIEWPORT)
-  await mockServer(page, [scanEvents(), cleanupEvents()])
+  await mockServer(page, demoChosen, [scanEvents(), cleanupEvents(demoChosen)], {live: true})
   const frames = mkdtempSync(join(tmpdir(), 'disk-clean-demo-'))
   const stamps: {file: string; at: number}[] = []
   const cdp = await page.context().newCDPSession(page)
@@ -278,7 +279,7 @@ async function demo(browser: Browser) {
     stamps.push({file, at: metadata.timestamp ?? 0})
     void cdp.send('Page.screencastFrameAck', {sessionId})
   })
-  await page.goto(`${BASE}/?live&token=synthetic`)
+  await page.goto(`${BASE}/cleanup`)
   await page.getByText('Disk Clean').first().waitFor()
   await cdp.send('Page.startScreencast', {format: 'png', maxWidth: 1920, maxHeight: 1200})
   await page.waitForTimeout(3800)

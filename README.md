@@ -71,7 +71,7 @@ Requirements: macOS, Linux or Windows, and `git`. Rust only if building from sou
 
 ## Features
 
-- 🔴 &nbsp;**Live scan**: the review page opens as soon as the scan starts and fills in while it runs. Items already listed can be deleted before it finishes.
+- ⚡ &nbsp;**Live scan**: the review page opens as soon as the scan starts and fills in while it runs. Items already listed can be deleted before it finishes.
 - ✅ &nbsp;**Nothing without your OK**: nothing is deleted until you confirm, and the confirm dialog lists every path, its size, and the exact commands that will run.
 - ♻️ &nbsp;**Undo**: items go to the macOS Trash, the freedesktop.org Trash on Linux, or the Recycle Bin on Windows. Undo puts a whole cleanup back; Empty removes only disk-clean's items for good.
 - 🗂️ &nbsp;**Sections by risk**: Safe, Review first and Report only, with search, risk, size and idle filters, sorting, a list or card view, and quick picks for "idle 90+ days" and "idle 1+ year".
@@ -97,7 +97,7 @@ already ticked. The Storage and Insights tabs show where the rest of the disk we
   <br><br>
   <img src="./.github/assets/insights.png" alt="Insights tab: a year heatmap of when files last changed, the age of the largest folders, and bytes by file kind" width="860">
   <br><br>
-  <img src="./.github/assets/palette.png" alt="Command palette opened with Cmd+K, offering Delete, Delete immediately, Show only selected, Clear selection and Copy paths" width="464">
+  <img src="./.github/assets/palette.png" alt="Command palette opened with Cmd+K, offering Delete, Delete immediately, Show only selected, Clear selection and Copy paths" width="860">
 </div>
 
 **3. Delete to the Trash.** Click **Delete**. The confirm dialog is built by the same validation
@@ -106,7 +106,7 @@ commands) and anything the safety checks rejected. **Delete immediately…** ski
 so first.
 
 <div align="center">
-  <img src="./.github/assets/confirm.png" alt="Move to the Trash dialog listing every path and size, the git worktree commands that can't be undone, and the Move button" width="760">
+  <img src="./.github/assets/confirm.png" alt="Move to the Trash dialog with the totals, every path and its size, and the Move button" width="760">
 </div>
 
 **4. Undo.** The cleanup runs in the background and the page follows it live. When it is done,
