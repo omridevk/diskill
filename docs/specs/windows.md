@@ -154,6 +154,14 @@ every fixed local drive, not only the profile.
 - **Totals and Storage:** the "free space" header and the Storage map stay on the profile's drive in this step;
   rows from other drives show their full path (`D:\...`) and count toward "Selected to free". A per-drive Storage
   map is a later step.
+- **Choosing drives** (added 2026-10-05; the user: "/disk-clean regex | 'all' maybe?"): `/disk-clean` scans
+  every fixed drive. `/disk-clean C D` (drive letters, any case, separated by spaces or commas) scans the profile
+  plus only those drives; `/disk-clean all` is the same as no argument. SKILL.md passes the argument to the binary as
+  `--drives <letters|all>` on `scan` and `review`; an unknown or non-fixed letter is an error naming it, never
+  silently skipped. The profile is always scanned. The `DISK_CLEAN_DRIVES` environment variable added during the
+  build is replaced by this flag (tests pass `--drives` instead). A regex was considered and not used: drive letters
+  are a closed set of 26, and a letter list is easier to type and to read back. macOS and Linux reject `--drives`
+  other than `all` with a message saying it is Windows-only.
 - **macOS and Linux** are unchanged in this step.
 
 ## Launcher
