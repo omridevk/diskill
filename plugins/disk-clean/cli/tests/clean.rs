@@ -239,6 +239,38 @@ fn is_allowed_table_on_linux() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn is_allowed_table_for_a_home_under_var_on_linux() {
+    let home = "/var/home/someone";
+    let allowed = [
+        "/var/home/someone/.cache/thing",
+        "/var/home/someone/code/app/node_modules",
+        "/var/home/someone/.local/share/Trash/files/old",
+        "/var/tmp/x",
+        "/tmp/x",
+    ];
+    let blocked = [
+        "/var/home/someone",
+        "/var/home",
+        "/var",
+        "/var/home/other/thing",
+        "/var/log",
+        "/var/lib/flatpak/x",
+        "/var/home/someone/Documents/a",
+        "/var/home/someone/.ssh/id_rsa",
+        "/home/someone/.cache/thing",
+        "/etc/hosts",
+        "/usr/lib/x",
+    ];
+    for p in allowed {
+        assert!(is_allowed(p, home, None), "should allow {p}");
+    }
+    for p in blocked {
+        assert!(!is_allowed(p, home, None), "should block {p}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn a_home_inside_the_temp_folder_keeps_its_protection_on_linux() {
     let home = "/tmp/sandbox/home".to_string();
     for p in [

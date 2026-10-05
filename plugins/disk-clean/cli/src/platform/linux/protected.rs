@@ -47,7 +47,7 @@ const SYSTEM: &[&str] = &[
     "/snap", "/proc", "/sys", "/dev", "/run", "/nix",
 ];
 
-fn user_dirs(home: &str) -> Vec<String> {
+pub(super) fn user_dirs(home: &str) -> Vec<(String, String)> {
     let config = std::env::var("XDG_CONFIG_HOME")
         .ok()
         .filter(|d| d.starts_with('/'))
@@ -66,7 +66,8 @@ fn user_dirs(home: &str) -> Vec<String> {
                 None => value.to_string(),
             };
             let path = path.trim_end_matches('/');
-            (USER_DIRS.contains(&name) && path.starts_with('/')).then(|| path.to_ascii_lowercase())
+            path.starts_with('/')
+                .then(|| (name.to_string(), path.to_string()))
         })
         .collect()
 }
@@ -87,13 +88,18 @@ pub fn is_protected(p: &str, raw_home: &str) -> bool {
     });
     personal
         || user_dirs(raw_home)
-            .iter()
-            .any(|dir| p == *dir || inside(&p, dir))
+            .into_iter()
+            .filter(|(name, _)| USER_DIRS.contains(&name.as_str()))
+            .map(|(_, dir)| dir.to_ascii_lowercase())
+            .any(|dir| p == dir || inside(&p, &dir))
 }
 
 pub fn in_allowed_root(p: &str, home: &str, _tmp_base: Option<&str>) -> bool {
     if inside(p, "/tmp") || inside(p, "/var/tmp") || already_trashed(p, home) {
         return true;
     }
-    inside(p, home) && !SYSTEM.iter().any(|s| p == *s || inside(p, s))
+    inside(p, home)
+        && !SYSTEM
+            .iter()
+            .any(|s| (p == *s || inside(p, s)) && !inside(home, s))
 }
