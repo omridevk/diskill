@@ -1,8 +1,56 @@
 #![allow(dead_code)]
 
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::OnceLock;
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
+
+static OPENING_INHERITABLE_FDS: Mutex<()> = Mutex::new(());
+
+pub fn with_fd_lock<T>(open: impl FnOnce() -> T) -> T {
+    let _alone = OPENING_INHERITABLE_FDS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    open()
+}
+
+pub fn spawn(cmd: &mut Command) -> Child {
+    with_fd_lock(|| cmd.spawn()).unwrap()
+}
+
+pub fn output(cmd: &mut Command) -> Output {
+    spawn(
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .unwrap()
+}
+
+pub fn status(cmd: &mut Command) -> std::process::ExitStatus {
+    spawn(cmd).wait().unwrap()
+}
+
+pub fn free_port() -> u16 {
+    with_fd_lock(|| TcpListener::bind("127.0.0.1:0"))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+pub fn connect(port: u16) -> TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match with_fd_lock(|| TcpStream::connect(("127.0.0.1", port))) {
+            Ok(stream) => return stream,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => panic!("nothing listened on {port}: {e}"),
+        }
+    }
+}
 
 struct RamDisk {
     device: String,
@@ -20,10 +68,7 @@ extern "C" fn detach_ram_disk() {
 }
 
 fn attach_ram_disk() -> RamDisk {
-    let attach = Command::new("hdiutil")
-        .args(["attach", "-nomount", "ram://2097152"])
-        .output()
-        .unwrap();
+    let attach = output(Command::new("hdiutil").args(["attach", "-nomount", "ram://2097152"]));
     assert!(attach.status.success(), "hdiutil attach failed");
     let device = String::from_utf8_lossy(&attach.stdout).trim().to_string();
     assert!(
@@ -31,14 +76,9 @@ fn attach_ram_disk() -> RamDisk {
         "unexpected device {device:?}"
     );
     let name = format!("dc-test-{}", std::process::id());
-    let erased = Command::new("diskutil")
-        .args(["erasevolume", "APFS", &name, &device])
-        .output()
-        .unwrap();
+    let erased = output(Command::new("diskutil").args(["erasevolume", "APFS", &name, &device]));
     if !erased.status.success() {
-        let _ = Command::new("hdiutil")
-            .args(["detach", "-force", &device])
-            .output();
+        output(Command::new("hdiutil").args(["detach", "-force", &device]));
         panic!(
             "diskutil erasevolume failed: {}",
             String::from_utf8_lossy(&erased.stderr)
@@ -124,7 +164,7 @@ impl std::ops::DerefMut for Reaped {
 }
 
 pub fn reaped(cmd: &mut Command) -> Reaped {
-    Reaped(cmd.spawn().unwrap())
+    Reaped(spawn(cmd))
 }
 
 pub fn temp_dir(tag: &str) -> TempDir {
@@ -138,27 +178,23 @@ pub fn temp_dir(tag: &str) -> TempDir {
 }
 
 pub fn sh(cwd: &Path, script: &str) {
-    let status = Command::new("bash")
-        .arg("-ec")
-        .arg(script)
-        .current_dir(cwd)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@t")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@t")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .status()
-        .unwrap();
+    let status = status(
+        Command::new("bash")
+            .arg("-ec")
+            .arg(script)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1"),
+    );
     assert!(status.success(), "script failed: {script}");
 }
 
 pub fn cli(args: &[&str], home: &Path, env: &[(&str, &str)]) -> std::process::Output {
-    bin(home)
-        .args(args)
-        .envs(env.iter().copied())
-        .output()
-        .unwrap()
+    output(bin(home).args(args).envs(env.iter().copied()))
 }
 
 pub fn wait_for(what: &str, limit: std::time::Duration, mut ready: impl FnMut() -> bool) {

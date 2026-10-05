@@ -31,11 +31,11 @@ git worktree add -q --detach ../detached-orphan main && (cd ../detached-orphan &
 add changed-after-scan
 "#,
     );
-    let mut sleeper = Command::new("sleep")
-        .arg("300")
-        .current_dir(root.join("in-use"))
-        .spawn()
-        .unwrap();
+    let mut sleeper = common::spawn(
+        Command::new("sleep")
+            .arg("300")
+            .current_dir(root.join("in-use")),
+    );
     std::thread::sleep(std::time::Duration::from_secs(1));
     std::fs::write(root.join("changed-after-scan/late.txt"), "late\n").unwrap();
 
@@ -74,29 +74,23 @@ add changed-after-scan
         );
     }
     let repo = root.join("repo");
-    let verify = Command::new("git")
-        .args([
-            "-C",
-            &repo.to_string_lossy(),
-            "rev-parse",
-            "-q",
-            "--verify",
-            "unpushed-commit",
-        ])
-        .output()
-        .unwrap();
+    let verify = common::output(Command::new("git").args([
+        "-C",
+        &repo.to_string_lossy(),
+        "rev-parse",
+        "-q",
+        "--verify",
+        "unpushed-commit",
+    ]));
     assert!(verify.status.success(), "branch unpushed-commit lost");
-    let subject = Command::new("git")
-        .args([
-            "-C",
-            &repo.to_string_lossy(),
-            "log",
-            "-1",
-            "--format=%s",
-            "unpushed-commit",
-        ])
-        .output()
-        .unwrap();
+    let subject = common::output(Command::new("git").args([
+        "-C",
+        &repo.to_string_lossy(),
+        "log",
+        "-1",
+        "--format=%s",
+        "unpushed-commit",
+    ]));
     assert_eq!(
         String::from_utf8_lossy(&subject.stdout).trim(),
         "b",

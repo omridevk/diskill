@@ -575,11 +575,11 @@ fn an_unusable_home_is_refused() {
         None,
     );
     for home in ["", "relative/home", "/nonexistent/disk-clean-home"] {
-        let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-            .args(["clean", "--dry-run", &text(&run)])
-            .env("HOME", home)
-            .output()
-            .unwrap();
+        let out = common::output(
+            Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+                .args(["clean", "--dry-run", &text(&run)])
+                .env("HOME", home),
+        );
         assert_eq!(out.status.code(), Some(1), "HOME={home:?}");
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(err.contains("HOME"), "HOME={home:?}: {err}");
@@ -866,11 +866,7 @@ fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
         ),
     )
     .unwrap();
-    Command::new("chmod")
-        .arg("+x")
-        .arg(bin.join("docker"))
-        .status()
-        .unwrap();
+    common::status(Command::new("chmod").arg("+x").arg(bin.join("docker")));
     write_run(
         &run,
         "",
@@ -898,24 +894,14 @@ fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
     );
 
     let pid = fs::read_to_string(run.join("worker.pid")).unwrap();
-    assert!(
-        Command::new("kill")
-            .args(["-9", pid.trim()])
-            .status()
-            .unwrap()
-            .success()
+    assert!(common::status(Command::new("kill").args(["-9", pid.trim()])).success());
+    let port = common::free_port();
+    let mut watcher = common::spawn(
+        common::bin(root)
+            .args(["watch", &text(&run)])
+            .env("DISK_CLEAN_WATCH_TOKEN", "tok")
+            .env("DISK_CLEAN_WATCH_PORT", port.to_string()),
     );
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let mut watcher = common::bin(root)
-        .args(["watch", &text(&run)])
-        .env("DISK_CLEAN_WATCH_TOKEN", "tok")
-        .env("DISK_CLEAN_WATCH_PORT", port.to_string())
-        .spawn()
-        .unwrap();
     common::wait_for("the watcher to exit", Duration::from_secs(10), || {
         watcher.try_wait().unwrap().is_some()
     });

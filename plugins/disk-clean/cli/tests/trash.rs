@@ -4,11 +4,10 @@ use disk_clean::trash;
 use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const TOKEN: &str = "tok-trash";
 
@@ -526,7 +525,7 @@ fn undo_and_empty_wait_while_the_record_is_busy() {
     let held = trash::Record::open(&text(&s.home), 1).unwrap().unwrap();
     assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(4));
     assert_eq!(cli(&s, &["empty", &text(&s.run)]).status.code(), Some(4));
-    let port = free_port();
+    let port = common::free_port();
     let _child = watcher(&s, port);
     let own = own_headers(port);
     let id = record(&s)[0].id.clone();
@@ -570,14 +569,6 @@ fn the_worker_holds_the_record_so_an_undo_cannot_race_it() {
     assert!(paths.iter().all(|p| p.join("data").exists()));
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 fn watcher(s: &Sandbox, port: u16) -> common::Reaped {
     common::reaped(
         common::bin(&s.home)
@@ -595,19 +586,8 @@ fn own_headers(port: u16) -> String {
     )
 }
 
-fn connect(port: u16) -> TcpStream {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(stream) => break stream,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Err(e) => panic!("watcher never listened: {e}"),
-        }
-    }
-}
-
 fn post(port: u16, route: &str, headers: &str, body: &str) -> u16 {
-    let mut stream = connect(port);
+    let mut stream = common::connect(port);
     write!(
         stream,
         "POST {route} HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n{body}",
@@ -620,7 +600,7 @@ fn post(port: u16, route: &str, headers: &str, body: &str) -> u16 {
 }
 
 fn get(port: u16, route: &str) -> String {
-    let mut stream = connect(port);
+    let mut stream = common::connect(port);
     write!(
         stream,
         "GET {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
@@ -645,7 +625,7 @@ fn undo_and_empty_routes_need_token_origin_and_host_and_stay_in_the_record() {
     approve(&s, &[("rm", &a, 4096), ("rm", &b, 4096)]);
     clean(&s);
     let ids: Vec<String> = record(&s).into_iter().map(|e| e.id).collect();
-    let port = free_port();
+    let port = common::free_port();
     let _child = watcher(&s, port);
     let own = own_headers(port);
     let body = |id: &str| {
@@ -732,7 +712,7 @@ fn a_page_load_syncs_the_record_and_tells_the_page() {
     let entry = record(&s).remove(0);
     assert_eq!(entry.state, "trashed", "{entry:?}");
     fs::rename(&entry.trashed, &a).unwrap();
-    let port = free_port();
+    let port = common::free_port();
     let _child = watcher(&s, port);
     let page = get(port, "/trash");
     assert!(page.contains(" 200 OK"), "{page}");

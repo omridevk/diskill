@@ -50,11 +50,11 @@ fn scan_writes_insights() {
     file(&home, "Library/Caches/app/blob.png", 256 * KIB, 30);
     file(&home, "notes.txt", 4 * KIB, 10);
 
-    let out = common::bin(&home)
-        .args(["scan", &run.to_string_lossy()])
-        .env("DISK_CLEAN_SKIP_MAP", "1")
-        .output()
-        .unwrap();
+    let out = common::output(
+        common::bin(&home)
+            .args(["scan", &run.to_string_lossy()])
+            .env("DISK_CLEAN_SKIP_MAP", "1"),
+    );
     assert!(
         out.status.success(),
         "{}",
@@ -89,10 +89,7 @@ fn scan_writes_insights() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let date = Command::new("date")
-        .args(["-r", &secs.to_string(), "+%Y-%m-%d"])
-        .output()
-        .unwrap();
+    let date = common::output(Command::new("date").args(["-r", &secs.to_string(), "+%Y-%m-%d"]));
     let day = String::from_utf8(date.stdout).unwrap().trim().to_string();
     let entry = data["modified_by_day"]
         .as_array()

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn request(port: u16, raw: String) -> (u16, String) {
-    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut s = common::connect(port);
     s.set_read_timeout(Some(std::time::Duration::from_secs(60)))
         .unwrap();
     s.write_all(raw.as_bytes()).unwrap();
@@ -244,11 +244,11 @@ fn review_exits_3_when_nothing_found() {
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
     fs::write(run.join("scan.tsv"), "").unwrap();
-    let out = common::bin(&t.0)
-        .args(["review", &run.to_string_lossy()])
-        .env("DISK_CLEAN_NO_BROWSER", "1")
-        .output()
-        .unwrap();
+    let out = common::output(
+        common::bin(&t.0)
+            .args(["review", &run.to_string_lossy()])
+            .env("DISK_CLEAN_NO_BROWSER", "1"),
+    );
     assert_eq!(out.status.code(), Some(3));
 }
 
@@ -276,16 +276,7 @@ fn events(port: u16, token: &str, until: &str) -> Vec<(String, Value)> {
 }
 
 fn open_events(port: u16, token: &str) -> BufReader<TcpStream> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut s = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(e) => {
-                assert!(std::time::Instant::now() < deadline, "{e}");
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-        }
-    };
+    let mut s = common::connect(port);
     s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .unwrap();
     write!(
@@ -814,7 +805,7 @@ fn oversized_slow_and_excess_requests_are_turned_away() {
         "POST /preview HTTP/1.1\r\n{local}Content-Type: application/json\r\nContent-Length: 2000000\r\n\r\n"
     );
     assert_eq!(request(port, huge).0, 413);
-    let mut sender = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut sender = common::connect(port);
     let mut reader = sender.try_clone().unwrap();
     let body = vec![b'x'; 2_000_000];
     let head = format!(
@@ -833,7 +824,7 @@ fn oversized_slow_and_excess_requests_are_turned_away() {
     assert!(String::from_utf8_lossy(&answer).starts_with("HTTP/1.0 413"));
 
     let started = std::time::Instant::now();
-    let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut slow = common::connect(port);
     write!(slow, "GET / HTTP/1.1\r\n{local}").unwrap();
     let mut answer = String::new();
     slow.read_to_string(&mut answer).unwrap();
@@ -881,11 +872,7 @@ fn blocking_docker(bin: &Path, gate: &Path) {
         ),
     )
     .unwrap();
-    Command::new("chmod")
-        .arg("+x")
-        .arg(&docker)
-        .status()
-        .unwrap();
+    common::status(Command::new("chmod").arg("+x").arg(&docker));
 }
 
 fn listed_paths(reader: &mut BufReader<TcpStream>, wanted: &[&Path]) {
