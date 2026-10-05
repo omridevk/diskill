@@ -1352,35 +1352,25 @@ fn a_tampered_record_or_swapped_junction_is_never_followed() {
 
 #[cfg(windows)]
 #[test]
-fn an_item_on_another_drive_goes_to_that_drives_recycle_bin() {
+fn an_item_on_another_drive_is_outside_the_profile_and_is_kept() {
     let s = sandbox("trash-windows-other");
     let other = common::other_drive();
-    let (a, b) = (other.0.join("a"), other.0.join("b"));
+    let a = other.0.join("a");
     make(&a, 100);
-    make(&b, 200);
-
     approve(&s, &[("rm", &a, 4096)]);
-    clean(&s);
-    let other_bin = common::recycle_bin(&other.0);
-    let entry = record(&s).remove(0);
-    let trashed = PathBuf::from(&entry.trashed);
-    assert_eq!(trashed.parent(), Some(other_bin.as_path()), "{entry:?}");
-    assert!(info_of_recycled(&trashed).is_file());
-    let out = cli(&s, &["undo", &text(&s.run)]);
-    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(a.join("data").exists() && !trashed.exists());
-    assert!(!info_of_recycled(&trashed).exists());
-
-    approve(&s, &[("rm", &b, 4096)]);
-    clean(&s);
-    let entry = record(&s).pop().unwrap();
-    let trashed = PathBuf::from(&entry.trashed);
-    assert_eq!(trashed.parent(), Some(other_bin.as_path()));
-    let out = cli(&s, &["empty", &text(&s.run)]);
-    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(stdout(&out).contains("emptied: 1 items, 4096 bytes"));
-    assert!(!trashed.exists() && !info_of_recycled(&trashed).exists() && !b.exists());
-    assert_eq!(record(&s).pop().unwrap().state, "emptied");
+    let out = cli(&s, &["clean", &text(&s.run)]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(s.run.join("rejected")).unwrap(),
+        format!("protected path\t{}\n", text(&a))
+    );
+    assert!(a.join("data").exists());
+    assert!(record(&s).is_empty());
 }
 
 #[cfg(windows)]

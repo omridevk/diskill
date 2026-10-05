@@ -517,7 +517,7 @@ pub fn user_sid() -> String {
 }
 
 #[cfg(windows)]
-pub fn recycle_bin(root: &Path) -> PathBuf {
+fn recycle_bin(root: &Path) -> PathBuf {
     let bin = std::fs::read_dir(root)
         .unwrap()
         .flatten()
