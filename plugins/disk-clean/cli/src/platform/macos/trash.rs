@@ -40,7 +40,7 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
         .create(dir)
 }
 
-fn uid() -> u32 {
+pub fn uid() -> u32 {
     // SAFETY: getuid has no preconditions and cannot fail.
     unsafe { libc::getuid() }
 }
