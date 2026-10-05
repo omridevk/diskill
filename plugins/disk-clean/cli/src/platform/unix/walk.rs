@@ -17,6 +17,7 @@ pub const DEV_NAMES: &[&str] = &[
     ".mypy_cache",
     ".ruff_cache",
 ];
+pub const ANY_AGE_NAMES: &[&str] = &[];
 
 pub fn is_build_output(d: &Path) -> bool {
     d.file_name().is_none_or(|n| n != "target") || d.with_file_name("Cargo.toml").is_file()

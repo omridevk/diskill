@@ -99,6 +99,10 @@ pub(crate) fn age_of(ctx: &Ctx, path: &Path) -> String {
     }
 }
 
+pub(crate) fn artifacts(ctx: &Ctx) -> &[PathBuf] {
+    &ctx.walk.artifacts
+}
+
 pub(crate) fn children_of(ctx: &Ctx, dir: &Path) -> Vec<PathBuf> {
     if let Some(list) = ctx.walk.children.get(dir) {
         return list.clone();
@@ -684,9 +688,7 @@ const DOCKER_KEY: &str = "cmd:docker-prune";
 pub(crate) const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
 
 fn scan_dev_artifacts(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
-    let list: Vec<PathBuf> = ctx
-        .walk
-        .artifacts
+    let list: Vec<PathBuf> = artifacts(ctx)
         .iter()
         .filter(|d| platform::is_build_output(d))
         .cloned()

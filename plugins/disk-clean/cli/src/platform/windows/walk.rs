@@ -50,26 +50,69 @@ pub const DEV_NAMES: &[&str] = &[
     ".ruff_cache",
     "bin",
     "obj",
+    "packages",
+    ".vs",
+    "TestResults",
+    "Library",
+    "DerivedDataCache",
+    "Intermediate",
+    "Saved",
 ];
+pub const ANY_AGE_NAMES: &[&str] = &[
+    ".vs",
+    "TestResults",
+    "Library",
+    "DerivedDataCache",
+    "Intermediate",
+    "Saved",
+];
+pub(super) const UNREAL_OUTPUT: &[&str] = &["DerivedDataCache", "Intermediate", "Saved"];
 const DOTNET_PROJECTS: &[&str] = &["csproj", "fsproj", "vbproj"];
+const SOLUTIONS: &[&str] = &["sln", "slnx"];
+const UNREAL_PROJECTS: &[&str] = &["uproject"];
 
 pub fn is_build_output(d: &Path) -> bool {
     match d.file_name().and_then(|n| n.to_str()) {
         Some("target") => d.with_file_name("Cargo.toml").is_file(),
-        Some("bin" | "obj") => d.parent().is_some_and(has_dotnet_project),
-        _ => true,
+        Some("bin" | "obj") => has_sibling(d, |f| has_extension(f, DOTNET_PROJECTS)),
+        Some(name) => name != "packages" && !ANY_AGE_NAMES.contains(&name),
+        None => true,
     }
 }
 
-fn has_dotnet_project(dir: &Path) -> bool {
-    fs::read_dir(dir).is_ok_and(|list| {
-        list.flatten().any(|e| {
-            Path::new(&e.file_name())
-                .extension()
-                .and_then(|x| x.to_str())
-                .is_some_and(|x| DOTNET_PROJECTS.iter().any(|p| x.eq_ignore_ascii_case(p)))
-        })
-    })
+pub(super) fn is_project_output(d: &Path) -> bool {
+    match d.file_name().and_then(|n| n.to_str()) {
+        Some(".vs") => has_sibling(d, |f| has_extension(f, SOLUTIONS)),
+        Some("Library") => {
+            d.with_file_name("Assets").is_dir() && d.with_file_name("ProjectSettings").is_dir()
+        }
+        Some("packages") => d.with_file_name("packages.config").is_file(),
+        Some("TestResults") => has_sibling(d, is_test_project),
+        Some(name) if UNREAL_OUTPUT.contains(&name) => {
+            has_sibling(d, |f| has_extension(f, UNREAL_PROJECTS))
+        }
+        _ => false,
+    }
+}
+
+fn has_extension(file: &Path, wanted: &[&str]) -> bool {
+    file.extension()
+        .and_then(|x| x.to_str())
+        .is_some_and(|x| wanted.iter().any(|w| x.eq_ignore_ascii_case(w)))
+}
+
+fn is_test_project(file: &Path) -> bool {
+    has_extension(file, DOTNET_PROJECTS)
+        && file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.ends_with("Test") || s.ends_with("Tests"))
+}
+
+fn has_sibling(d: &Path, wanted: impl Fn(&Path) -> bool) -> bool {
+    d.parent()
+        .and_then(|dir| fs::read_dir(dir).ok())
+        .is_some_and(|mut list| list.any(|e| e.is_ok_and(|e| wanted(Path::new(&e.file_name())))))
 }
 
 struct Entry {

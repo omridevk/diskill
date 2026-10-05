@@ -234,8 +234,8 @@ fn classify(plan: &Plan, parent: Option<&Frame>, name: Option<&str>, meta: &Meta
         || (d == 2 && ph.is_go && is("pkg"))
         || is(".git");
     let dev_match = any(platform::DEV_NAMES);
-    found.artifact =
-        ph.dev && !dev_pruned && dev_match && (plan.now - meta.mtime) / 86400 > plan.stale_days;
+    let stale = (plan.now - meta.mtime) / 86400 > plan.stale_days;
+    found.artifact = ph.dev && !dev_pruned && dev_match && (stale || any(platform::ANY_AGE_NAMES));
     let big_pruned =
         (d == 1 && any(platform::HOME_SYSTEM_DIRS)) || is(".git") || is("node_modules");
     found.home = Some(Home {

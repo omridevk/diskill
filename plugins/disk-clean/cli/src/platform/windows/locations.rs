@@ -1,10 +1,11 @@
 use super::disk::is_fixed_drive;
 use super::path::{known_folder, user_folder, within};
 use super::protected::{RECYCLE_BIN, owned_by_user, user_sid};
-use super::walk::find_one;
+use super::walk::{UNREAL_OUTPUT, find_one, is_project_output};
 use crate::platform::{self, path_text};
 use crate::scan::{
-    Cat, Config, Ctx, Row, SIMS_KEY, age_of, children_of, existing, h, row, size_bytes, sized,
+    Cat, Config, Ctx, Row, SIMS_KEY, age_of, artifacts, children_of, existing, h, row, size_bytes,
+    sized,
 };
 use crate::util::tilde;
 use std::collections::HashSet;
@@ -363,6 +364,7 @@ pub(crate) fn scan_app_data(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
     scan_caches(ctx, rows, cfg, &p);
     scan_logs_and_ides(ctx, rows, cfg, &p);
     scan_review(ctx, rows, cfg, &p);
+    scan_project_output(ctx, rows, cfg);
     scan_other_app_data(ctx, rows, cfg, &p);
     scan_disks(ctx, rows, &p);
 }
@@ -687,6 +689,48 @@ fn scan_review(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, p: &Places) {
         &existing(list),
         "Rebuilt or re-downloaded, but may hold data you want: check before deleting.",
         cfg.min_bytes,
+    );
+}
+
+fn scan_project_output(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
+    let (unreal, review): (Vec<PathBuf>, Vec<PathBuf>) = artifacts(ctx)
+        .iter()
+        .filter(|d| is_project_output(d))
+        .cloned()
+        .partition(|d| {
+            d.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| UNREAL_OUTPUT.contains(&n))
+        });
+    let cat = Cat {
+        id: "project-review",
+        title: "Project folders to check",
+        desc: "Visual Studio .vs folders beside a solution, Unity Library folders, old NuGet packages folders untouched for 90+ days and TestResults beside a test project.",
+        risk: "review",
+        pre: "0",
+    };
+    sized(
+        ctx,
+        rows,
+        &cat,
+        &review,
+        "Rebuilt by the IDE or the build, but may hold per-user settings, a long re-import or test logs: check before deleting.",
+        cfg.min_bytes,
+    );
+    let cat = Cat {
+        id: "unreal-projects",
+        title: "Unreal project data (report only)",
+        desc: "DerivedDataCache, Intermediate and Saved folders beside a .uproject. Listed for awareness — never deleted by this skill.",
+        risk: "report",
+        pre: "0",
+    };
+    sized(
+        ctx,
+        rows,
+        &cat,
+        &unreal,
+        "DerivedDataCache and Intermediate are rebuilt by the editor; Saved holds autosaves and config.",
+        1,
     );
 }
 
