@@ -60,11 +60,19 @@ jobs:
           jq empty plugins/disk-clean/.claude-plugin/plugin.json
 
   disk-clean-linux:
-    name: disk-clean cli (Linux)
-    runs-on: ubuntu-latest
+    name: disk-clean cli (Linux, ${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
     defaults:
       run:
         working-directory: plugins/disk-clean/cli
@@ -76,6 +84,7 @@ jobs:
         with:
           toolchain: "1.93"
           components: rustfmt, clippy
+          targets: ${{ matrix.target }}
       - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
         with:
           mode: firewall-free
@@ -95,7 +104,12 @@ jobs:
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
-      - run: cargo test --frozen
+      - run: cargo clippy --frozen --all-targets --target "$TARGET" -- -D warnings
+        env:
+          TARGET: ${{ matrix.target }}
+      - run: cargo test --frozen --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
 
   zizmor:
     name: zizmor
