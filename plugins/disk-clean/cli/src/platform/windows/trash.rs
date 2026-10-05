@@ -1,18 +1,16 @@
+use super::disk::is_fixed_drive;
+use super::path::{from_wide, same_text, wide};
+use super::protected::{RECYCLE_BIN, user_sid};
+use crate::platform::path_text;
 use std::cell::RefCell;
 use std::fs;
 use std::io;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::{Path, PathBuf};
-use windows::Win32::Foundation::{
-    ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree,
-};
-use windows::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
-use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
-use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+use std::path::Path;
+use windows::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, ERROR_SUCCESS};
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES, GetDiskFreeSpaceExW, GetDriveTypeW,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES, GetDiskFreeSpaceExW,
     GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, MOVE_FILE_FLAGS,
     MoveFileExW, SetFileAttributesW,
 };
@@ -25,7 +23,6 @@ use windows::Win32::System::RestartManager::{
     CCH_RM_SESSION_KEY, RM_PROCESS_INFO, RmEndSession, RmGetList, RmRegisterResources,
     RmStartSession,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Shell::{
     COPYENGINE_E_SHARING_VIOLATION_SRC, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
     FOF_WANTNUKEWARNING, FOFX_RECYCLEONDELETE, FileOperation, IFileOperation,
@@ -36,8 +33,6 @@ use windows::core::{ComObject, HRESULT, HSTRING, PCWSTR, PWSTR, Ref, implement};
 
 pub const RESTORE_BY_HAND: &str = "Restore in the Recycle Bin";
 
-const RECYCLE_BIN: &str = "$Recycle.Bin";
-const DRIVE_FIXED: u32 = 3;
 const NO_BIN: &str = "this drive has no Recycle Bin";
 const TOO_LARGE: &str = "larger than the Recycle Bin on this drive";
 const BIN_OFF: &str = "the Recycle Bin is turned off on this drive";
@@ -54,27 +49,8 @@ pub struct Checked {
     pub ino_hi: u64,
 }
 
-fn long(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    if text.starts_with(r"\\?\") || !path.is_absolute() {
-        return path.to_path_buf();
-    }
-    PathBuf::from(format!(r"\\?\{}", text.replace('/', "\\")))
-}
-
 fn shell_form(path: &str) -> String {
     path.replace('/', "\\")
-}
-
-fn record_form(path: &str) -> String {
-    let path = path
-        .strip_prefix(r"\\?\")
-        .unwrap_or(path)
-        .replace('\\', "/");
-    match path.as_bytes() {
-        [drive, b':', ..] => format!("{}{}", char::from(*drive).to_ascii_uppercase(), &path[1..]),
-        _ => path,
-    }
 }
 
 fn io_error(e: windows::core::Error) -> io::Error {
@@ -86,54 +62,8 @@ fn io_error(e: windows::core::Error) -> io::Error {
     }
 }
 
-fn same_name(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<u16>, Vec<u16>) = (a.encode_utf16().collect(), b.encode_utf16().collect());
-    // SAFETY: CompareStringOrdinal only reads the two slices it is given with their lengths.
-    unsafe { CompareStringOrdinal(&a, &b, true) == CSTR_EQUAL }
-}
-
-fn user_sid() -> Option<String> {
-    let mut token = HANDLE::default();
-    // SAFETY: the pseudo handle of this process needs no closing; token receives a new handle.
-    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.ok()?;
-    // SAFETY: OpenProcessToken succeeded, so token is an open handle owned by nobody else.
-    let owned = unsafe { OwnedHandle::from_raw_handle(token.0) };
-    let token = HANDLE(owned.as_raw_handle());
-    let mut len = 0u32;
-    // SAFETY: a null buffer of length 0 only asks for the needed length.
-    let _ = unsafe { GetTokenInformation(token, TokenUser, None, 0, &mut len) };
-    let mut buf = vec![0u64; (len as usize).div_ceil(8)];
-    // SAFETY: buf is 8-byte aligned and at least len bytes long.
-    unsafe {
-        GetTokenInformation(
-            token,
-            TokenUser,
-            Some(buf.as_mut_ptr().cast()),
-            len,
-            &mut len,
-        )
-    }
-    .ok()?;
-    // SAFETY: GetTokenInformation(TokenUser) filled buf with a TOKEN_USER whose SID lives in buf.
-    let user = unsafe { &*buf.as_ptr().cast::<TOKEN_USER>() };
-    let mut text = PWSTR::null();
-    // SAFETY: the SID is valid while buf lives; text receives a LocalAlloc'd string.
-    unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) }.ok()?;
-    // SAFETY: text is a NUL-terminated string from ConvertSidToStringSidW, freed once with LocalFree.
-    unsafe {
-        let sid = text.to_string().ok();
-        LocalFree(Some(HLOCAL(text.0.cast())));
-        sid
-    }
-}
-
-fn is_fixed_drive(root: &str) -> bool {
-    // SAFETY: GetDriveTypeW only reads the NUL-terminated root path.
-    unsafe { GetDriveTypeW(&HSTRING::from(root)) == DRIVE_FIXED }
-}
-
 fn is_plain_dir(path: &Path) -> bool {
-    fs::symlink_metadata(long(path))
+    fs::symlink_metadata(path)
         .is_ok_and(|m| m.is_dir() && m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0)
 }
 
@@ -144,7 +74,7 @@ pub fn no_follow() -> fs::OpenOptions {
 }
 
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(long(dir))
+    fs::create_dir_all(dir)
 }
 
 pub fn uid() -> u32 {
@@ -164,23 +94,18 @@ pub fn is_trash_dir(dir: &Path, _home: &str) -> bool {
     };
     let drive_letter = matches!(drive.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic());
     drive_letter
-        && same_name(bin, RECYCLE_BIN)
-        && user_sid().is_some_and(|me| same_name(sid, &me))
+        && same_text(bin, RECYCLE_BIN)
+        && user_sid().is_some_and(|me| same_text(sid, &me))
         && is_fixed_drive(&format!("{drive}\\"))
         && is_plain_dir(Path::new(&format!("{drive}/{bin}")))
         && is_plain_dir(dir)
 }
 
-fn until_nul(text: &[u16]) -> String {
-    let len = text.iter().position(|&c| c == 0).unwrap_or(text.len());
-    String::from_utf16_lossy(&text[..len])
-}
-
 fn recycle_bin(path: &Path) -> Option<HSTRING> {
     let mut root = vec![0u16; 1024];
     // SAFETY: GetVolumePathNameW reads the NUL-terminated path and writes at most root.len() units.
-    unsafe { GetVolumePathNameW(&HSTRING::from(long(path).as_path()), &mut root) }.ok()?;
-    let root = until_nul(&root);
+    unsafe { GetVolumePathNameW(PCWSTR(wide(path).as_ptr()), &mut root) }.ok()?;
+    let root = from_wide(&root).to_string_lossy().into_owned();
     let root = root.strip_prefix(r"\\?\").unwrap_or(&root);
     let drive_root =
         matches!(root.as_bytes(), [letter, b':', b'\\'] if letter.is_ascii_alphabetic());
@@ -191,7 +116,7 @@ fn recycle_bin(path: &Path) -> Option<HSTRING> {
     let mut fs_name = [0u16; 261];
     // SAFETY: GetVolumeInformationW reads the NUL-terminated root and writes into fs_name only.
     unsafe { GetVolumeInformationW(&root, None, None, None, None, Some(&mut fs_name)) }.ok()?;
-    if !["NTFS", "ReFS"].contains(&until_nul(&fs_name).as_str()) {
+    if !["NTFS", "ReFS"].contains(&from_wide(&fs_name).to_string_lossy().as_ref()) {
         return None;
     }
     let mut info = SHQUERYRBINFO {
@@ -234,7 +159,7 @@ fn bin_limit(root: &HSTRING) -> Result<u64, &'static str> {
     let mut name = [0u16; 64];
     // SAFETY: GetVolumeNameForVolumeMountPointW reads the NUL-terminated root, writes into name only.
     unsafe { GetVolumeNameForVolumeMountPointW(root, &mut name) }.map_err(|_| NO_BIN)?;
-    let name = until_nul(&name);
+    let name = from_wide(&name).to_string_lossy().into_owned();
     let volume = name
         .find('{')
         .and_then(|start| {
@@ -270,7 +195,7 @@ fn bin_problem(path: &Path) -> Option<&'static str> {
     };
     match bin_limit(&root) {
         Err(why) => Some(why),
-        Ok(limit) => (item_bytes(&long(path)) > limit).then_some(TOO_LARGE),
+        Ok(limit) => (item_bytes(path) > limit).then_some(TOO_LARGE),
     }
 }
 
@@ -316,7 +241,7 @@ fn holders_in(session: u32, path: &str) -> Vec<String> {
     let mut names: Vec<String> = list
         .iter()
         .take(count as usize)
-        .map(|p| until_nul(&p.strAppName))
+        .map(|p| from_wide(&p.strAppName).to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .collect();
     names.sort();
@@ -492,7 +417,7 @@ fn recycle(path: &str) -> Result<String, String> {
     }
     hr.ok().map_err(refused)?;
     match seen {
-        Some((_, Some(landed))) => Ok(record_form(&landed)),
+        Some((_, Some(landed))) => Ok(path_text(Path::new(&landed)).unwrap_or(landed)),
         Some((_, None)) => Err(DELETED_FOR_GOOD.to_string()),
         None => Err("the Recycle Bin did not report the move".to_string()),
     }
@@ -522,17 +447,20 @@ pub fn call_trash(paths: &[Checked]) -> Vec<Result<String, String>> {
 }
 
 pub fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
-    let (from, to) = (
-        HSTRING::from(long(from).as_path()),
-        HSTRING::from(long(to).as_path()),
-    );
+    let (from, to) = (wide(from), wide(to));
     // SAFETY: MoveFileExW only reads the two NUL-terminated paths; no flag replaces or copies.
-    unsafe { MoveFileExW(&from, &to, MOVE_FILE_FLAGS(0)) }.map_err(io_error)
+    unsafe {
+        MoveFileExW(
+            PCWSTR(from.as_ptr()),
+            PCWSTR(to.as_ptr()),
+            MOVE_FILE_FLAGS(0),
+        )
+    }
+    .map_err(io_error)
 }
 
 pub fn make_removable(path: &Path) {
-    let path = long(path);
-    let Ok(meta) = fs::symlink_metadata(&path) else {
+    let Ok(meta) = fs::symlink_metadata(path) else {
         return;
     };
     let attrs = meta.file_attributes();
@@ -545,12 +473,12 @@ pub fn make_removable(path: &Path) {
             rest => FILE_FLAGS_AND_ATTRIBUTES(rest),
         };
         // SAFETY: SetFileAttributesW only reads the NUL-terminated path; the entry is no reparse point.
-        let _ = unsafe { SetFileAttributesW(&HSTRING::from(path.as_path()), cleared) };
+        let _ = unsafe { SetFileAttributesW(PCWSTR(wide(path).as_ptr()), cleared) };
     }
     if !meta.is_dir() {
         return;
     }
-    let Ok(list) = fs::read_dir(&path) else {
+    let Ok(list) = fs::read_dir(path) else {
         return;
     };
     for entry in list.flatten() {
@@ -566,6 +494,6 @@ pub fn drop_trash_info(trashed: &Path) {
         return;
     };
     if let Some(rest) = name.strip_prefix("$R") {
-        let _ = fs::remove_file(long(&dir.join(format!("$I{rest}"))));
+        let _ = fs::remove_file(dir.join(format!("$I{rest}")));
     }
 }

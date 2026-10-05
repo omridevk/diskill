@@ -1,6 +1,6 @@
 use super::disk::is_fixed_drive;
 use super::path::{known_folder, user_folder, within};
-use super::protected::{owned_by_user, user_sid};
+use super::protected::{RECYCLE_BIN, owned_by_user, user_sid};
 use super::walk::find_one;
 use crate::platform::{self, path_text};
 use crate::scan::{
@@ -23,7 +23,6 @@ pub const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
 pub const THIS_COMPUTER: &str = "this PC";
 pub const DOCKER_NOTE: &str = "Frees space inside Docker Desktop's disk image, which does not shrink on its own: Windows gets the space back only after Docker Desktop's purge or with a sparse disk. Named volumes are never touched.";
 
-const RECYCLE_BIN: &str = "$Recycle.Bin";
 const TEMP_TICKED_DAYS: i64 = 7;
 const IDE_TICKED_DAYS: i64 = 180;
 const BROWSER_PROFILE_CACHES: &[&str] = &["Cache", "Code Cache", "GPUCache"];

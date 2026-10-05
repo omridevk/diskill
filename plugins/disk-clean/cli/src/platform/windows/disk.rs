@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetTempPath2W};
 use windows::Win32::UI::Shell::FOLDERID_Windows;
-use windows::core::PCWSTR;
+use windows::core::{HSTRING, PCWSTR};
 
-pub(super) const DRIVE_FIXED: u32 = 3;
+const DRIVE_FIXED: u32 = 3;
 const MAX_PATH: usize = 260;
 
 pub fn volume_stats(path: &Path) -> Option<VolumeStats> {
@@ -37,9 +37,9 @@ pub fn data_mount() -> PathBuf {
 }
 
 pub(super) fn is_fixed_drive(root: &str) -> bool {
-    let name = wide(Path::new(root));
+    let name = HSTRING::from(root.replace('/', "\\"));
     // SAFETY: GetDriveTypeW only reads the NUL-terminated root name.
-    unsafe { GetDriveTypeW(PCWSTR(name.as_ptr())) == DRIVE_FIXED }
+    unsafe { GetDriveTypeW(&name) == DRIVE_FIXED }
 }
 
 pub fn user_tmp_base() -> Option<String> {

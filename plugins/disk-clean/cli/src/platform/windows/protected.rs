@@ -116,7 +116,7 @@ const SYSTEM: &[&GUID] = &[
     &FOLDERID_ProgramFilesX86,
     &FOLDERID_ProgramData,
 ];
-const RECYCLE_BIN: &str = "$Recycle.Bin";
+pub(super) const RECYCLE_BIN: &str = "$Recycle.Bin";
 const SYSTEM_VOLUME_INFORMATION: &str = "System Volume Information";
 
 fn app_data(home: &str, var: &str, id: &GUID, default: &str) -> Vec<String> {
@@ -274,15 +274,15 @@ pub fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
     allowed && !in_system(p, home)
 }
 
-fn token_user() -> Option<Vec<u8>> {
+fn token_user() -> Option<Vec<u64>> {
     let mut token = HANDLE::default();
     // SAFETY: OpenProcessToken writes the token handle of this process into the local.
     unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()? };
     let mut len = 0u32;
-    // SAFETY: the first call only reports the size the TOKEN_USER needs; the second writes at most buf.len() bytes into buf; the token is closed exactly once.
+    // SAFETY: the first call only reports the size the TOKEN_USER needs; the second writes at most len bytes into buf, which is 8-byte aligned for TOKEN_USER and at least len bytes long; the token is closed exactly once.
     unsafe {
         let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
-        let mut buf = vec![0u8; len as usize];
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
         let read = GetTokenInformation(
             token,
             TokenUser,
@@ -295,7 +295,7 @@ fn token_user() -> Option<Vec<u8>> {
     }
 }
 
-fn user_sid_of(token_user: &[u8]) -> PSID {
+fn user_sid_of(token_user: &[u64]) -> PSID {
     // SAFETY: token_user holds a TOKEN_USER written by GetTokenInformation, whose Sid points inside the same buffer.
     unsafe { (*token_user.as_ptr().cast::<TOKEN_USER>()).User.Sid }
 }
