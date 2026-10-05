@@ -1,10 +1,13 @@
 use super::disk::is_fixed_drive;
-use super::path::{at_or_within, known_folder, rel_of, same_text, user_folder, wide, within};
+use super::path::{
+    at_or_within, at_or_within16, known_folder, same_text, same16, text16, user_folder, wide,
+    within, within16,
+};
 use super::walk::{CLOUD_ATTRS, find_one, is_cloud_tag};
 use crate::platform::split_root;
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
@@ -179,12 +182,74 @@ fn matches(rel: &str, pattern: &str) -> bool {
             .all(|(want, have)| *want == "*" || same_text(want, have))
 }
 
-fn outside_caches(p: &str, base: &str, rules: &[(&str, &[&str])]) -> bool {
-    rules.iter().any(|(rel, caches)| {
-        let root = format!("{base}/{rel}");
-        same_text(p, &root)
-            || rel_of(p, &root).is_some_and(|rel| !caches.iter().any(|c| matches(&rel, c)))
-    })
+fn outside_caches(p: &[u16], root: &[u16], caches: &[&str]) -> bool {
+    same16(p, root)
+        || (within16(p, root)
+            && String::from_utf16(&p[root.len() + 1..])
+                .is_ok_and(|rel| !caches.iter().any(|c| matches(&rel, c))))
+}
+
+struct Rules {
+    home: Vec<u16>,
+    app_data: Vec<Vec<u16>>,
+    caches_only: Vec<(Vec<u16>, &'static [&'static str])>,
+    never: Vec<Vec<u16>>,
+    temp: Vec<Vec<u16>>,
+    profiles: Option<Vec<u16>>,
+    system: Vec<Vec<u16>>,
+}
+
+fn cache_roots(
+    bases: &[String],
+    rules: &[(&str, &'static [&'static str])],
+) -> Vec<(Vec<u16>, &'static [&'static str])> {
+    bases
+        .iter()
+        .flat_map(|base| {
+            rules
+                .iter()
+                .map(move |(rel, caches)| (text16(&format!("{base}/{rel}")), *caches))
+        })
+        .collect()
+}
+
+fn build_rules(home: &str) -> Rules {
+    let (local, roaming) = (local_bases(home), roaming_bases(home));
+    let mut caches = cache_roots(&local, LOCAL_CACHES_ONLY);
+    caches.extend(cache_roots(&roaming, ROAMING_CACHES_ONLY));
+    Rules {
+        home: text16(home),
+        app_data: [format!("{home}/AppData")]
+            .iter()
+            .chain(&local)
+            .chain(&roaming)
+            .map(|base| text16(base))
+            .collect(),
+        caches_only: caches,
+        never: never_roots(home).iter().map(|root| text16(root)).collect(),
+        temp: local
+            .iter()
+            .map(|base| text16(&format!("{base}/Temp")))
+            .collect(),
+        profiles: known_folder(&FOLDERID_UserProfiles).map(|users| text16(&users)),
+        system: SYSTEM
+            .iter()
+            .filter_map(|id| known_folder(id))
+            .filter(|s| !at_or_within(home, s))
+            .map(|s| text16(&s))
+            .collect(),
+    }
+}
+
+fn rules(home: &str) -> Arc<Rules> {
+    static BUILT: Mutex<Vec<(String, Arc<Rules>)>> = Mutex::new(Vec::new());
+    let mut built = BUILT.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, rules)) = built.iter().find(|(known, _)| known == home) {
+        return Arc::clone(rules);
+    }
+    let rules = Arc::new(build_rules(home));
+    built.push((home.to_string(), Arc::clone(&rules)));
+    rules
 }
 
 fn short_name(p: &str) -> bool {
@@ -227,26 +292,21 @@ fn in_cloud(p: &str, home: &str) -> bool {
 }
 
 pub fn is_protected(p: &str, home: &str) -> bool {
-    if at_or_within(home, p) {
+    let (rules, p16) = (rules(home), text16(p));
+    if at_or_within16(&rules.home, &p16) {
         return true;
     }
     let never_ext = Path::new(p)
         .extension()
         .and_then(|x| x.to_str())
         .is_some_and(|x| NEVER_EXTENSIONS.iter().any(|n| x.eq_ignore_ascii_case(n)));
-    let (local, roaming) = (local_bases(home), roaming_bases(home));
-    let app_data_root = same_text(p, &format!("{home}/AppData"))
-        || local.iter().chain(&roaming).any(|base| same_text(p, base));
-    let caches_only = local
-        .iter()
-        .any(|base| outside_caches(p, base, LOCAL_CACHES_ONLY))
-        || roaming
-            .iter()
-            .any(|base| outside_caches(p, base, ROAMING_CACHES_ONLY));
     never_ext
-        || app_data_root
-        || caches_only
-        || never_roots(home).iter().any(|root| at_or_within(p, root))
+        || rules.app_data.iter().any(|base| same16(&p16, base))
+        || rules
+            .caches_only
+            .iter()
+            .any(|(root, caches)| outside_caches(&p16, root, caches))
+        || rules.never.iter().any(|root| at_or_within16(&p16, root))
         || short_name(p)
         || in_cloud(p, home)
 }
@@ -258,32 +318,29 @@ fn in_own_recycle_bin(p: &str) -> bool {
     within(rest, &format!("{RECYCLE_BIN}/{sid}")) && is_fixed_drive(root)
 }
 
-fn in_system(p: &str, home: &str) -> bool {
+fn in_system(p: &str, p16: &[u16], rules: &Rules) -> bool {
     let Some((_, rest)) = split_root(p) else {
         return true;
     };
-    let other_profile = known_folder(&FOLDERID_UserProfiles)
-        .is_some_and(|users| within(p, &users) && !at_or_within(p, home));
+    let other_profile = rules
+        .profiles
+        .as_ref()
+        .is_some_and(|users| within16(p16, users) && !at_or_within16(p16, &rules.home));
     other_profile
         || at_or_within(rest, SYSTEM_VOLUME_INFORMATION)
         || (at_or_within(rest, RECYCLE_BIN) && !in_own_recycle_bin(p))
-        || SYSTEM
-            .iter()
-            .filter_map(|id| known_folder(id))
-            .any(|s| at_or_within(p, &s) && !at_or_within(home, &s))
+        || rules.system.iter().any(|s| at_or_within16(p16, s))
 }
 
 pub fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
+    let (rules, p16) = (rules(home), text16(p));
     let tmp_base = tmp_base.filter(|t| !t.is_empty());
-    let temp_folder = local_bases(home)
-        .iter()
-        .map(|base| format!("{base}/Temp"))
-        .chain(tmp_base.map(str::to_string))
-        .any(|temp| at_or_within(p, &temp));
-    let allowed = (within(p, home) && !temp_folder)
+    let temp_folder = rules.temp.iter().any(|temp| at_or_within16(&p16, temp))
+        || tmp_base.is_some_and(|temp| at_or_within(p, temp));
+    let allowed = (within16(&p16, &rules.home) && !temp_folder)
         || tmp_base.is_some_and(|t| within(p, t))
         || in_own_recycle_bin(p);
-    allowed && !in_system(p, home)
+    allowed && !in_system(p, &p16, &rules)
 }
 
 fn token_user() -> Option<Vec<u64>> {

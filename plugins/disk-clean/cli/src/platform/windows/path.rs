@@ -86,27 +86,31 @@ pub(super) fn user_folder(var: &str, id: &GUID) -> Option<String> {
     }
 }
 
-pub(super) fn same_text(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<u16>, Vec<u16>) = (a.encode_utf16().collect(), b.encode_utf16().collect());
+pub(super) fn text16(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
+pub(super) fn same16(a: &[u16], b: &[u16]) -> bool {
     // SAFETY: CompareStringOrdinal only reads the two slices.
-    unsafe { CompareStringOrdinal(&a, &b, true) == CSTR_EQUAL }
+    unsafe { CompareStringOrdinal(a, b, true) == CSTR_EQUAL }
+}
+
+pub(super) fn within16(p: &[u16], root: &[u16]) -> bool {
+    p.len() > root.len() && p[root.len()] == u16::from(b'/') && same16(&p[..root.len()], root)
+}
+
+pub(super) fn at_or_within16(p: &[u16], root: &[u16]) -> bool {
+    same16(p, root) || within16(p, root)
+}
+
+pub(super) fn same_text(a: &str, b: &str) -> bool {
+    same16(&text16(a), &text16(b))
 }
 
 pub(super) fn within(p: &str, root: &str) -> bool {
-    let (p16, root16): (Vec<u16>, Vec<u16>) =
-        (p.encode_utf16().collect(), root.encode_utf16().collect());
-    p16.len() > root16.len()
-        && p16[root16.len()] == u16::from(b'/')
-        // SAFETY: CompareStringOrdinal only reads the two slices.
-        && unsafe { CompareStringOrdinal(&p16[..root16.len()], &root16, true) == CSTR_EQUAL }
-}
-
-pub(super) fn rel_of(p: &str, root: &str) -> Option<String> {
-    let skip = root.encode_utf16().count() + 1;
-    within(p, root)
-        .then(|| String::from_utf16(&p.encode_utf16().skip(skip).collect::<Vec<u16>>()).ok())?
+    within16(&text16(p), &text16(root))
 }
 
 pub(super) fn at_or_within(p: &str, root: &str) -> bool {
-    same_text(p, root) || within(p, root)
+    at_or_within16(&text16(p), &text16(root))
 }
