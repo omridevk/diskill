@@ -362,6 +362,9 @@ fn clean_end_to_end_on_fixture() {
     fs::write(&doomed_file, b"bytes").unwrap();
     let not_in_scan = root.join("not-in-scan");
     fs::create_dir_all(&not_in_scan).unwrap();
+    let protected = root.join(".ssh/id_rsa");
+    fs::create_dir_all(root.join(".ssh")).unwrap();
+    fs::write(&protected, b"key").unwrap();
     common::sh(
         root,
         "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init",
@@ -372,7 +375,7 @@ fn clean_end_to_end_on_fixture() {
     let scan = [
         scan_row("caches", "rm", &p(&doomed)),
         scan_row("caches", "rm", &p(&doomed_file)),
-        scan_row("caches", "rm", "/etc/hosts"),
+        scan_row("caches", "rm", &p(&protected)),
         scan_row("worktrees", "worktree", &p(&repo)),
     ]
     .concat();
@@ -382,7 +385,7 @@ fn clean_end_to_end_on_fixture() {
         selection_item("rm", &p(&doomed)),
         selection_item("rm", &p(&doomed_file)),
         selection_item("rm", &p(&not_in_scan)),
-        selection_item("rm", "/etc/hosts"),
+        selection_item("rm", &p(&protected)),
         selection_item("worktree", &p(&repo)),
         selection_item("rm", &p(&repo)),
         r#"{"action": "cmd", "cmd_id": "rm-rf-everything", "bytes": 1}"#.to_string(),
@@ -416,7 +419,7 @@ fn clean_end_to_end_on_fixture() {
         "{plan}"
     );
     assert!(
-        plan.contains("# rejected (protected path): /etc/hosts"),
+        plan.contains(&format!("# rejected (protected path): {}", p(&protected))),
         "{plan}"
     );
     assert!(
@@ -451,7 +454,7 @@ fn clean_end_to_end_on_fixture() {
         "{rejected}"
     );
     assert!(
-        rejected.contains("protected path\t/etc/hosts\n"),
+        rejected.contains(&format!("protected path\t{}\n", p(&protected))),
         "{rejected}"
     );
     assert!(
@@ -515,7 +518,7 @@ fn clean_end_to_end_on_fixture() {
             .join("nested/deeper/file")
             .exists()
     );
-    assert!(not_in_scan.exists() && repo.join("a").exists() && Path::new("/etc/hosts").exists());
+    assert!(not_in_scan.exists() && repo.join("a").exists() && protected.exists());
 }
 
 #[test]
@@ -523,10 +526,13 @@ fn clean_rejects_everything() {
     let t = common::temp_dir("clean-none");
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
+    let protected = t.0.join(".ssh/id_rsa");
+    fs::create_dir_all(t.0.join(".ssh")).unwrap();
+    fs::write(&protected, b"key").unwrap();
     fs::write(run.join("scan.tsv"), "").unwrap();
     fs::write(
         run.join("selection.json"),
-        r#"{"items": [{"path": "/etc/hosts"}]}"#,
+        format!(r#"{{"items": [{{"path": "{}"}}]}}"#, text(&protected)),
     )
     .unwrap();
     let out = common::cli(&["clean", &run.to_string_lossy()], &t.0, &[]);
@@ -1025,7 +1031,10 @@ fn dry_run_exit_codes_match_the_real_run() {
         String::from_utf8_lossy(&out.stderr)
     );
     let run = t.0.join("run");
-    write_run(&run, "", &[selection_item("rm", "/etc/hosts")], None);
+    let protected = t.0.join(".ssh/id_rsa");
+    fs::create_dir_all(t.0.join(".ssh")).unwrap();
+    fs::write(&protected, b"key").unwrap();
+    write_run(&run, "", &[selection_item("rm", &text(&protected))], None);
     let dry = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
     assert_eq!(dry.status.code(), Some(3));
     let real = common::cli(&["clean", &text(&run)], &t.0, &[]);
