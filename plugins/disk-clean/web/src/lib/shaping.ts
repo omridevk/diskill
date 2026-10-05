@@ -133,7 +133,16 @@ function useOpenRows(db: Db, section: {id: string; risk: Risk} | null, shape: Sh
   })
 }
 
-export function useShaped(db: Db, section: {id: string; risk: Risk} | null, shape: Shape, on: RowSelectionState) {
+function useNameOrderAhead(db: Db, settled: boolean) {
+  const items = db.scan.items.collection
+  useLiveQuery({
+    query: q => (settled ? ORDER['name-asc'](fromItems(q, items)).where(({i}) => eq(i.section, '')) : undefined),
+    gcTime: Infinity,
+  })
+}
+
+export function useShaped(db: Db, section: {id: string; risk: Risk} | null, shape: Shape, on: RowSelectionState, settled: boolean) {
+  useNameOrderAhead(db, settled)
   const filtering = isFiltering(shape)
   const keep = useKept(shape, on)
   const {data, isReady} = useOpenRows(db, section, shape)
