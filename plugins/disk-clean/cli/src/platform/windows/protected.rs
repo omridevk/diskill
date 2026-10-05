@@ -1,4 +1,4 @@
-use super::disk::{is_fixed_drive, local_disks};
+use super::disk::{is_fixed_drive, is_local_disk, local_disks};
 use super::path::{
     at_or_within, at_or_within16, known_folder, same_text, same16, text16, user_folder, wide,
     within, within16,
@@ -342,6 +342,7 @@ fn in_system(p: &str, p16: &[u16], rules: &Rules) -> bool {
         .is_some_and(|users| within16(p16, users) && !at_or_within16(p16, &rules.home));
     other_profile
         || at_or_within(rest, SYSTEM_VOLUME_INFORMATION)
+        || NEVER_AT_ROOT.iter().any(|name| at_or_within(rest, name))
         || (at_or_within(rest, RECYCLE_BIN) && !in_own_recycle_bin(p))
         || rules.system.iter().any(|s| at_or_within16(p16, s))
 }
@@ -405,18 +406,39 @@ pub fn belongs_to_user(path: &Path, home: &str) -> bool {
     crate::platform::path_text(path).is_some_and(|p| within(&p, home)) || owned_by_user(path)
 }
 
+fn owned_or_restored_into_owned(p: &Path) -> bool {
+    if fs::symlink_metadata(p).is_ok() {
+        return owned_by_user(p);
+    }
+    p.parent().is_some_and(owned_by_user)
+}
+
+fn on_own_local_disk(p: &str) -> bool {
+    split_root(p).is_some_and(|(root, rest)| {
+        !rest.is_empty() && is_local_disk(root) && owned_or_restored_into_owned(Path::new(p))
+    })
+}
+
 pub fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
     let (rules, p16) = (rules(home), text16(p));
+    if in_system(p, &p16, &rules) {
+        return false;
+    }
     let tmp_base = tmp_base.filter(|t| !t.is_empty());
     let temp_folder = rules.temp.iter().any(|temp| at_or_within16(&p16, temp))
         || tmp_base.is_some_and(|temp| at_or_within(p, temp));
-    let allowed = (within16(&p16, &rules.home) && !temp_folder)
+    (within16(&p16, &rules.home) && !temp_folder)
         || tmp_base.is_some_and(|t| within(p, t))
-        || in_own_recycle_bin(p);
-    allowed && !in_system(p, &p16, &rules)
+        || in_own_recycle_bin(p)
+        || (!at_or_within16(&p16, &rules.home) && !temp_folder && on_own_local_disk(p))
 }
 
-fn token_user() -> Option<Vec<u64>> {
+fn token_user() -> Option<&'static [u64]> {
+    static USER: OnceLock<Option<Vec<u64>>> = OnceLock::new();
+    USER.get_or_init(read_token_user).as_deref()
+}
+
+fn read_token_user() -> Option<Vec<u64>> {
     let mut token = HANDLE::default();
     // SAFETY: OpenProcessToken writes the token handle of this process into the local.
     unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()? };
@@ -449,7 +471,7 @@ pub(super) fn user_sid() -> Option<String> {
         let mut text = PWSTR::null();
         // SAFETY: ConvertSidToStringSidW reads the SID inside user and returns a LocalAlloc'd string we read once and free.
         unsafe {
-            ConvertSidToStringSidW(user_sid_of(&user), &mut text).ok()?;
+            ConvertSidToStringSidW(user_sid_of(user), &mut text).ok()?;
             let sid = text.to_string().ok();
             LocalFree(Some(HLOCAL(text.0.cast())));
             sid
@@ -477,7 +499,7 @@ pub(super) fn owned_by_user(path: &Path) -> bool {
             None,
             &mut descriptor,
         );
-        let same = read.is_ok() && EqualSid(owner, user_sid_of(&user)).is_ok();
+        let same = read.is_ok() && EqualSid(owner, user_sid_of(user)).is_ok();
         if !descriptor.0.is_null() {
             LocalFree(Some(HLOCAL(descriptor.0)));
         }
