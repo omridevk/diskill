@@ -104,3 +104,7 @@ pub fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+
+pub fn make_removable(_path: &Path) {}
+
+pub fn drop_trash_info(_trashed: &Path) {}
