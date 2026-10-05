@@ -82,7 +82,7 @@ stay green unedited except where a test is split per platform.
 | Empty | delete only recorded `$R…` items whose identity still matches, with their `$I…`; read-only attributes cleared first; never `SHEmptyRecycleBin` |
 | Sync | same rules as macOS: at the `$R…` path with the same identity is "in the Recycle Bin"; at the original with the same identity is "put back"; neither is "emptied"; anything else is failed |
 | Protected | section 7 Never list of the research, case-insensitive: profile root and ancestors; Known Folders Documents, Desktop, Pictures, Music, Videos at their resolved target and their default path; OneDrive and every registered cloud sync root; `.ssh .gnupg .aws .kube .azure .claude .docker`; `%APPDATA%\gnupg`; DPAPI, Credentials, Vault, Crypto, SystemCertificates; browser profiles minus their named caches; Outlook and `*.pst`; Thunderbird; password managers and `*.kdbx`; packaged-app state (W11); WSL and Docker disks; toolchain roots X1 to X8; `~/.cache/disk-clean`'s Windows twin (the plugin data folder); `%LOCALAPPDATA%\Programs` (per-user installed apps; added at integration) |
-| Allowed roots | inside the profile; the per-user temp base from above; the user's own `$Recycle.Bin\<SID>` folders on fixed drives (for Empty) |
+| Allowed roots | inside the profile; the per-user temp base from above; the user's own `$Recycle.Bin\<SID>` folders on fixed drives (for Empty); outside the profile, the rule in "All fixed drives" |
 | `SYSTEM` backstop | `FOLDERID_Windows`, `ProgramFiles`, `ProgramFilesX86`, `ProgramData`, other users' profiles, `System Volume Information`, other SIDs' Recycle Bin folders |
 | `uid` | unused for ownership on Windows; owner checks compare the entry's owner SID with the token user's SID |
 | Fixed commands | `docker-prune` only, Review first, with the Windows note (owner answer 5). No Homebrew, no simulators, no Scoop commands |
@@ -125,6 +125,35 @@ Unity cache, D10 Unity `Library` (both siblings present), D11 Unreal DDC, `packa
 
 Report only: R1 big files, R2 old Downloads (`FOLDERID_Downloads`), D12, D13 WSL disks and D14 Docker
 disk (with how to compact), P6 per-drive pnpm stores.
+
+## All fixed drives (added 2026-10-05: the user, "I want to scan all drives")
+
+Developers on Windows keep code on `D:`, a Dev Drive (ReFS) or `C:\code`, outside the profile. The scan covers
+every fixed local drive, not only the profile.
+
+- **Which drives:** every drive `GetDriveTypeW` reports as fixed with an NTFS or ReFS file system (Dev Drives
+  included). Never removable, network, optical or RAM drives. The profile's drive is walked as today; the rest of
+  every fixed drive (the rest of `C:` included) is walked from its root.
+- **Never walked:** the Windows folder, `Program Files`, `Program Files (x86)`, `ProgramData`, other users'
+  profiles, `System Volume Information`, `$Recycle.Bin` (the user's own bin is read for the Trash row as today),
+  `$WinREAgent`, `Recovery`, `PerfLogs`, the page file, hibernation and swap files, and every toolchain root and
+  reparse point, as in the profile.
+- **What is offered outside the profile:** only what the scan already finds by rule: `node_modules`, stale build
+  output (the `DEV_NAMES` rules, the .NET `bin`/`obj` rule and the project-folder rows), git worktrees with no
+  leftover work, and the per-drive pnpm stores (`<drive>:\.pnpm-store`, now Review first instead of Report only).
+  No cache, temp or app-data row comes from outside the profile. Big files there are Report only, as in the
+  profile.
+- **Ownership:** outside the profile an item is offered only when its owner SID is the user's (the same check temp
+  entries use), so another account's projects on a shared drive are never offered.
+- **Allowed roots** (validation, right before the move) widen to match: an item outside the profile is allowed when
+  it is on a fixed local NTFS/ReFS drive, is not a drive root, is not inside any never-walked folder above, is not
+  protected, and is owned by the user. "Only paths the scan showed" still applies, so nothing beyond those rows can
+  be deleted.
+- **Trash:** each drive's own Recycle Bin, with the existing checks (bin present and on, item not larger than it).
+- **Totals and Storage:** the "free space" header and the Storage map stay on the profile's drive in this step;
+  rows from other drives show their full path (`D:\...`) and count toward "Selected to free". A per-drive Storage
+  map is a later step.
+- **macOS and Linux** are unchanged in this step.
 
 ## Launcher
 
