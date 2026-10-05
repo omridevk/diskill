@@ -304,6 +304,7 @@ fn attribute(text: &str) -> String {
 pub fn render(data: &Value, token: &str) -> String {
     let json = data.to_string().replace('<', "\\u003c");
     PAGE.replacen("__TOKEN__", token, 1)
+        .replacen("__PLATFORM__", platform::PAGE_PLATFORM, 1)
         .replacen("__HOME__", &attribute(&util::home()), 1)
         .replacen("__DATA__", &json, 1)
 }

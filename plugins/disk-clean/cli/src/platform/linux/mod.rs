@@ -14,3 +14,5 @@ pub use process::*;
 pub use protected::*;
 pub use trash::*;
 pub use walk::*;
+
+pub const PAGE_PLATFORM: &str = "linux";

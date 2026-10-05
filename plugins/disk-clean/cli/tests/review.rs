@@ -267,6 +267,16 @@ fn render_keeps_hostile_paths_inside_the_data_script() {
     assert!(page.contains(r#"<meta name="disk-clean-token" content="tok""#));
 }
 
+#[test]
+fn render_tells_the_page_its_platform() {
+    let page = clean_disk_render(&serde_json::json!({}));
+    let meta = format!(
+        r#"<meta name="disk-clean-platform" content="{}""#,
+        std::env::consts::OS
+    );
+    assert!(page.contains(&meta), "{meta}");
+}
+
 fn clean_disk_render(data: &Value) -> String {
     disk_clean::review::render(data, "tok")
 }
