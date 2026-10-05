@@ -7,6 +7,10 @@ pub fn drives_to_walk(_home: &str) -> (Vec<PathBuf>, HashSet<PathBuf>) {
     (Vec::new(), HashSet::new())
 }
 
+pub fn planning<T>(plan: impl FnOnce() -> T) -> T {
+    plan()
+}
+
 pub fn belongs_to_user(_path: &Path, _home: &str) -> bool {
     true
 }

@@ -151,6 +151,10 @@ pub fn plan(index: &ScanIndex, items: &[Value]) -> Plan {
 }
 
 pub fn plan_in(index: &ScanIndex, items: &[Value], home: &str) -> Plan {
+    platform::planning(|| plan_checked(index, items, home))
+}
+
+fn plan_checked(index: &ScanIndex, items: &[Value], home: &str) -> Plan {
     let home = home.to_string();
     let tmp_base = platform::user_tmp_base();
     let mut plan = Plan::default();

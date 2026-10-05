@@ -16,8 +16,8 @@ use windows::Win32::Storage::FileSystem::{
     FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FIND_FIRST_EX_LARGE_FETCH,
     FileAttributeTagInfo, FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo,
     FileStandardInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
-    GetFileAttributesExW, GetFileExInfoStandard, GetFileInformationByHandleEx, OPEN_EXISTING,
-    WIN32_FILE_ATTRIBUTE_DATA, WIN32_FIND_DATAW,
+    FindNextFileW, GetFileAttributesExW, GetFileExInfoStandard, GetFileInformationByHandleEx,
+    OPEN_EXISTING, WIN32_FILE_ATTRIBUTE_DATA, WIN32_FIND_DATAW,
 };
 use windows::core::PCWSTR;
 
@@ -211,6 +211,26 @@ pub(super) fn find_one(path: &Path) -> Option<(u32, u32)> {
     // SAFETY: find is the open search handle and is closed exactly once.
     let _ = unsafe { FindClose(find) };
     Some((data.dwFileAttributes, data.dwReserved0))
+}
+
+pub(super) fn find_each(dir: &Path) -> Option<Vec<(OsString, u32, u32)>> {
+    let mut data = WIN32_FIND_DATAW::default();
+    let find = find_first(&wide(&dir.join("*")), &mut data).ok()?;
+    let mut out = Vec::new();
+    let done = loop {
+        out.push((
+            super::path::from_wide(&data.cFileName),
+            data.dwFileAttributes,
+            data.dwReserved0,
+        ));
+        // SAFETY: find is the open search handle; FindNextFileW writes one WIN32_FIND_DATAW into data.
+        if let Err(e) = unsafe { FindNextFileW(find, &mut data) } {
+            break e.code() == ERROR_NO_MORE_FILES.to_hresult();
+        }
+    };
+    // SAFETY: find is the open search handle and is closed exactly once.
+    let _ = unsafe { FindClose(find) };
+    done.then_some(out)
 }
 
 fn entry_meta(e: &FILE_ID_EXTD_DIR_INFO, dev: u64) -> Meta {

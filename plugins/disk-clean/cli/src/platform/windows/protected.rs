@@ -3,9 +3,10 @@ use super::path::{
     at_or_within, at_or_within16, known_folder, same_text, same16, text16, user_folder, wide,
     within, within16,
 };
-use super::walk::{CLOUD_ATTRS, find_one, is_cloud_tag};
+use super::walk::{CLOUD_ATTRS, find_each, find_one, is_cloud_tag};
 use crate::platform::split_root;
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -290,12 +291,52 @@ fn short_name(p: &str) -> bool {
     false
 }
 
+fn is_cloud(attrs: u32, tag: u32) -> bool {
+    attrs & CLOUD_ATTRS != 0 || is_cloud_tag(attrs, tag)
+}
+
+type CloudNames = HashMap<PathBuf, Option<Vec<String>>>;
+
+thread_local! {
+    static FOLDERS: RefCell<Option<CloudNames>> = const { RefCell::new(None) };
+}
+
+pub fn planning<T>(plan: impl FnOnce() -> T) -> T {
+    FOLDERS.set(Some(HashMap::new()));
+    let planned = plan();
+    FOLDERS.set(None);
+    planned
+}
+
+fn cloud_names(dir: &Path) -> Option<Vec<String>> {
+    Some(
+        find_each(dir)?
+            .into_iter()
+            .filter(|(_, attrs, tag)| is_cloud(*attrs, *tag))
+            .filter_map(|(name, _, _)| name.into_string().ok())
+            .collect(),
+    )
+}
+
+fn listed_cloud(at: &Path) -> Option<bool> {
+    let (dir, name) = (at.parent()?, at.file_name()?.to_str()?);
+    FOLDERS.with_borrow_mut(|folders| {
+        let names = folders
+            .as_mut()?
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| cloud_names(dir));
+        names
+            .as_ref()
+            .map(|names| names.iter().any(|n| same_text(n, name)))
+    })
+}
+
 fn in_cloud(p: &str, home: &str) -> bool {
     let mut at = Path::new(p);
     loop {
-        if find_one(at)
-            .is_some_and(|(attrs, tag)| attrs & CLOUD_ATTRS != 0 || is_cloud_tag(attrs, tag))
-        {
+        let cloud = listed_cloud(at)
+            .unwrap_or_else(|| find_one(at).is_some_and(|(attrs, tag)| is_cloud(attrs, tag)));
+        if cloud {
             return true;
         }
         match at.parent() {
