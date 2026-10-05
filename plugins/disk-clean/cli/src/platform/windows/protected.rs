@@ -334,11 +334,11 @@ fn listing(dir: &Path) -> Option<Listing> {
 fn listed<T>(at: &Path, answer: impl FnOnce(&Listing, &str) -> T) -> Option<T> {
     let (dir, name) = (at.parent()?, at.file_name()?.to_str()?);
     FOLDERS.with_borrow_mut(|folders| {
-        let listing = folders
-            .as_mut()?
-            .entry(dir.to_path_buf())
-            .or_insert_with(|| listing(dir));
-        listing.as_ref().map(|listing| answer(listing, name))
+        let folders = folders.as_mut()?;
+        if !folders.contains_key(dir) {
+            folders.insert(dir.to_path_buf(), listing(dir));
+        }
+        folders[dir].as_ref().map(|listing| answer(listing, name))
     })
 }
 

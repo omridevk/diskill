@@ -90,7 +90,17 @@ pub(super) fn text16(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
+fn ascii16(s: &[u16]) -> bool {
+    s.iter().all(|c| *c < 0x80)
+}
+
 pub(super) fn same16(a: &[u16], b: &[u16]) -> bool {
+    if ascii16(a) && ascii16(b) {
+        return a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| (*x as u8).eq_ignore_ascii_case(&(*y as u8)));
+    }
     // SAFETY: CompareStringOrdinal only reads the two slices.
     unsafe { CompareStringOrdinal(a, b, true) == CSTR_EQUAL }
 }
@@ -104,13 +114,21 @@ pub(super) fn at_or_within16(p: &[u16], root: &[u16]) -> bool {
 }
 
 pub(super) fn same_text(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        return a.eq_ignore_ascii_case(b);
+    }
     same16(&text16(a), &text16(b))
 }
 
 pub(super) fn within(p: &str, root: &str) -> bool {
+    if p.is_ascii() && root.is_ascii() {
+        return p.len() > root.len()
+            && p.as_bytes()[root.len()] == b'/'
+            && p[..root.len()].eq_ignore_ascii_case(root);
+    }
     within16(&text16(p), &text16(root))
 }
 
 pub(super) fn at_or_within(p: &str, root: &str) -> bool {
-    at_or_within16(&text16(p), &text16(root))
+    same_text(p, root) || within(p, root)
 }
