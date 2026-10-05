@@ -42,8 +42,8 @@ download() {
   command -v sha256sum >/dev/null 2>&1 && sum=(sha256sum)
   command -v "${sum[0]}" >/dev/null 2>&1 || return 1
   echo "disk-clean: downloading release v$version..." >&2
-  curl -fsL --retry 2 -o "$tmp/$asset" "$url" || return 1
-  curl -fsL --retry 2 -o "$tmp/$asset.sha256" "$url.sha256" || return 1
+  curl --proto '=https' --tlsv1.2 -fsL --retry 2 -o "$tmp/$asset" "$url" || return 1
+  curl --proto '=https' --tlsv1.2 -fsL --retry 2 -o "$tmp/$asset.sha256" "$url.sha256" || return 1
   if [ "$(awk '{print $2}' "$tmp/$asset.sha256")" != "$asset" ] ||
     ! (cd "$tmp" && "${sum[@]}" -c "$asset.sha256" >/dev/null 2>&1); then
     echo "disk-clean: checksum mismatch on the downloaded v$version release, refusing to run it" >&2
