@@ -1,4 +1,4 @@
-use crate::util::spawn;
+use crate::util::{self, spawn};
 use std::fs;
 use std::io;
 use std::os::fd::{AsRawFd, RawFd};
@@ -84,4 +84,16 @@ pub fn open_in_browser(url: &str) -> io::Result<ExitStatus> {
 pub fn fill_random(buf: &mut [u8]) {
     // SAFETY: arc4random_buf fills exactly buf.len() bytes of the buffer.
     unsafe { libc::arc4random_buf(buf.as_mut_ptr().cast(), buf.len()) };
+}
+
+pub fn process_cwds() -> Vec<String> {
+    let uid = crate::platform::uid().to_string();
+    util::output("lsof", &["-a", "-d", "cwd", "-u", &uid, "-Fn"])
+        .map(|(_, out)| {
+            out.lines()
+                .filter_map(|l| l.strip_prefix('n'))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }

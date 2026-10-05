@@ -52,7 +52,9 @@ pub fn now_f64() -> f64 {
 }
 
 pub fn free_bytes() -> u64 {
-    volume_stats(&data_mount()).map(|s| s.avail).unwrap_or(0)
+    crate::platform::volume_stats(&crate::platform::data_mount())
+        .map(|s| s.avail)
+        .unwrap_or(0)
 }
 
 static OPENING_INHERITABLE_FDS: Mutex<()> = Mutex::new(());

@@ -154,7 +154,7 @@ pub fn categories_of(lines: &[String]) -> Vec<Category> {
 }
 
 fn disk_stats() -> (u64, u64) {
-    util::volume_stats(&util::data_mount()).map_or((0, 0), |s| (s.avail, s.total))
+    platform::volume_stats(&platform::data_mount()).map_or((0, 0), |s| (s.avail, s.total))
 }
 
 pub fn load_facts(run_dir: &Path) -> HashMap<String, i64> {
