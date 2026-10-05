@@ -186,7 +186,6 @@ jobs:
 
   disk-clean-windows-arm:
     name: disk-clean cli (Windows, arm64)
-    needs: disk-clean-windows
     runs-on: windows-11-arm
     timeout-minutes: 40
     permissions:
@@ -203,8 +202,33 @@ jobs:
         with:
           toolchain: "1.93"
           components: rustfmt, clippy
-      - name: fetch crates (Cargo.lock checksums match what the x86_64 job fetched through Socket Firewall)
-        run: cargo fetch --locked
+      - name: install Socket Firewall
+        env:
+          SFW_ASSET: sfw-free-windows-arm64.exe
+          SFW_SHA256: 16607f9c64055b8e0af918dc93a72a342ca8352f46e6e3f810d1a378a380a82a
+        run: |
+          dir="$RUNNER_TEMP/sfw"
+          mkdir -p "$dir"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$dir/sfw.exe" \
+            "https://github.com/SocketDev/sfw-free/releases/download/v1.15.4/$SFW_ASSET"
+          echo "$SFW_SHA256  $dir/sfw.exe" | sha256sum -c
+          chmod 755 "$dir/sfw.exe"
+          echo "$dir" >> "$GITHUB_PATH"
+          echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
+      - name: fetch crates through Socket Firewall
+        run: sfw cargo fetch --locked
+      - name: Socket Firewall report
+        if: ${{ !cancelled() }}
+        run: |
+          crates=$(grep -c '^name = ' Cargo.lock)
+          blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
+          unparsed=$(jq '.parseFail // [] | length' "$SFW_JSON_REPORT_PATH")
+          {
+            echo "### Socket Firewall"
+            echo "$crates crates in Cargo.lock fetched through sfw: $blocked blocked, $unparsed unparsed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          jq . "$SFW_JSON_REPORT_PATH"
+          [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
       - run: cargo test --frozen
