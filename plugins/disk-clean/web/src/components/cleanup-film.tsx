@@ -6,7 +6,7 @@ import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
 import {counted, formatBytes, plural} from '@/lib/data'
 import type {Db} from '@/lib/db'
-import {pathIn} from '@/lib/platform'
+import {textIn} from '@/lib/platform'
 import {finaleOf, formatDuration, logFeed, useLatest, useStaged, type Cleanup, type FilmPlan, type LogFeed, type MovieFeed, type Outcome, type Totals} from '@/lib/progress'
 import {createFilm, gaugeOf, pump, type Film as FilmState, type ParticlePhase} from '@/lib/film'
 import {cssMs, useReducedMotion} from '@/lib/motion'
@@ -126,14 +126,14 @@ function ProblemTile({label, rows, path}: {label: string; rows: readonly Outcome
   )
 }
 
-function Tiles({totals, path}: {totals: Totals; path: (path: string) => string}) {
+function Tiles({totals, path, bin}: {totals: Totals; path: (path: string) => string; bin: (text: string) => string}) {
   return (
     <div className="grid w-full grid-cols-3 gap-3">
       <Tile label="removed for good">
         <span data-ticker={totals.removed.length}>{totals.removed.length}</span> · {formatBytes(totals.reclaimed)}
       </Tile>
       {totals.trashed.length > 0 && (
-        <Tile label="in the Trash, can be undone">
+        <Tile label={bin('in the Trash, can be undone')}>
           <span data-ticker={totals.trashed.length}>{totals.trashed.length}</span> · {formatBytes(totals.trashedBytes)}
         </Tile>
       )}
@@ -403,12 +403,12 @@ function figureOf(cleanup: Cleanup, totals: Totals, all: readonly Outcome[], fre
   return totals.removed.length === 0 ? emptySummary(totals, all) : formatBytes(freed)
 }
 
-function TrashNote({cleanup, totals, actions}: {cleanup: Cleanup; totals: Totals; actions: ReactNode}) {
+function TrashNote({cleanup, totals, actions, bin}: {cleanup: Cleanup; totals: Totals; actions: ReactNode; bin: (text: string) => string}) {
   if (totals.trashed.length === 0 || cleanup.abandoned) return null
   return (
     <div data-film="trash-actions" className="flex flex-col items-center gap-3">
       <p className="text-sm text-muted-foreground">
-        in the Trash · undo available · space comes back when the Trash is emptied
+        {bin('in the Trash · undo available · space comes back when the Trash is emptied')}
         {totals.reclaimed > 0 && ` · freed ${formatBytes(totals.reclaimed)}`}
       </p>
       {actions}
@@ -422,8 +422,8 @@ function Finale({plan, cleanup, all, db, elapsed, particles, actions, onLanded, 
   const totals = useMemo(() => finaleOf(latest, done, elapsed), [latest, done, elapsed])
   const freed = totals.reclaimed
   const empty = (totals.removed.length === 0 && totals.trashed.length === 0) || abandoned !== null
-  const heading = headingOf(cleanup, totals, all)
-  const path = pathIn(db.loaded.platform)
+  const {path, bin} = textIn(db.loaded.platform)
+  const heading = bin(headingOf(cleanup, totals, all))
   return (
     <div data-film="finale" className="invisible absolute inset-0 overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
@@ -442,9 +442,9 @@ function Finale({plan, cleanup, all, db, elapsed, particles, actions, onLanded, 
             )}
           </div>
         </div>
-        <TrashNote cleanup={cleanup} totals={totals} actions={actions} />
+        <TrashNote cleanup={cleanup} totals={totals} actions={actions} bin={bin} />
         {done && <FinaleGauge plan={plan} done={done} freed={freed} />}
-        <Tiles totals={totals} path={path} />
+        <Tiles totals={totals} path={path} bin={bin} />
         <div
           data-film="credits"
           tabIndex={0}
@@ -518,7 +518,7 @@ interface TakeProps extends FilmProps {
 
 function Take({container, db, plan, cleanup, elapsed, actions, running, onReplay}: TakeProps) {
   const [feed] = useState(() => logFeed(db))
-  const path = pathIn(db.loaded.platform)
+  const {path} = textIn(db.loaded.platform)
   const {shred, particles, landed} = useFilm(container, plan, feed, running, path)
   const all = useStaged(db)
   const waiting = cleanup.waiting && !cleanup.started
@@ -576,15 +576,15 @@ function StillFinale({db, plan, cleanup, elapsed, actions}: FilmProps & {actions
   const latest = useLatest(db)
   const all = useStaged(db)
   const totals = useMemo(() => finaleOf(latest, cleanup.done, elapsed), [latest, cleanup.done, elapsed])
-  const heading = cleanup.done || cleanup.abandoned ? headingOf(cleanup, totals, all) : 'Cleaning up'
-  const path = pathIn(db.loaded.platform)
+  const {path, bin} = textIn(db.loaded.platform)
+  const heading = cleanup.done || cleanup.abandoned ? bin(headingOf(cleanup, totals, all)) : 'Cleaning up'
   return (
     <div className="fixed inset-0 overflow-y-auto bg-background text-foreground">
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
         <h2 className="text-2xl font-semibold tracking-tight">{heading}</h2>
         <div className="text-5xl font-bold tabular-nums">{figureOf(cleanup, totals, all, totals.reclaimed)}</div>
-        <TrashNote cleanup={cleanup} totals={totals} actions={actions} />
-        <Tiles totals={totals} path={path} />
+        <TrashNote cleanup={cleanup} totals={totals} actions={actions} bin={bin} />
+        <Tiles totals={totals} path={path} bin={bin} />
         <ol aria-label="Everything removed" className="flex w-full flex-col gap-4 text-left">
           <CreditList plan={plan} totals={totals} path={path} />
         </ol>

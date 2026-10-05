@@ -1,12 +1,13 @@
 import type {RouterHistory} from '@tanstack/react-router'
 import {gsap} from 'gsap'
 import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest'
-import {userEvent} from 'vitest/browser'
+import {page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {formatBytes, type Loaded, type Platform, type ScanData, type TrashEntry} from './lib/data'
 import {at, entry, fixture, onDrive, trashedEvents, windowsFixture} from './test/fixture'
-import {fakeEventSource, mockServer, PLAN, query, sendAll} from './test/page'
+import {fakeEventSource, mockServer, PLAN, query, ringPoints, sendAll} from './test/page'
+import {foldersOf} from './lib/folders'
 import './index.css'
 
 const GB = 1024 ** 3
@@ -102,23 +103,32 @@ describe('the page on Windows', () => {
   const WINDOWS = {loaded: windowsFixture, plan: onDrive(PLAN)}
   const CTRL_K = '{Control>}k{/Control}'
 
-  afterEach(() => vi.restoreAllMocks())
+  beforeEach(() => gsap.globalTimeline.timeScale(20))
+  afterEach(() => {
+    gsap.globalTimeline.timeScale(1)
+    vi.restoreAllMocks()
+  })
 
   test('names the Recycle Bin and its own keys', async () => {
     const {screen} = await openApp(WINDOWS)
     const about = await aboutDeleting(screen)
-    await expect.element(about.getByText('Delete moves files to the Recycle Bin. Undo puts them back; Restore in the Recycle Bin works too. Space comes back when the Trash is emptied.')).toBeVisible()
+    await expect.element(about.getByText('Delete moves files to the Recycle Bin. Undo puts them back; Restore in the Recycle Bin works too. Space comes back when the Recycle Bin is emptied.')).toBeVisible()
     await expect.element(about.getByText(/^Delete Ctrl\+⌫ · Delete immediately Shift\+⌦ or Shift\+⌫$/)).toBeVisible()
   })
 
-  test('Trash tab and Empty dialog name the Recycle Bin and show Windows paths', async () => {
+  test('Recycle Bin tab and Empty dialog name the Recycle Bin and show Windows paths', async () => {
     const {screen} = await openApp({...WINDOWS, url: '/trash', trash: onDrive([entry(0, 'trashed'), entry(1, 'put-back')])})
-    const list = screen.getByRole('list', {name: 'Items disk-clean moved to the Trash'})
+    await expect.element(screen.getByRole('tab', {name: 'Recycle Bin'})).toBeVisible()
+    await expect.element(screen.getByRole('tab', {name: 'Trash'})).not.toBeInTheDocument()
+    const list = screen.getByRole('list', {name: 'Items disk-clean moved to the Recycle Bin'})
+    await expect.element(list.getByText('In the Recycle Bin', {exact: true})).toBeVisible()
+    await expect.element(screen.getByText('1 item in the Recycle Bin · 2.0 GB').first()).toBeVisible()
     await expect.element(list.getByText('Restored from the Recycle Bin', {exact: true})).toBeVisible()
     await expect.element(list.getByRole('checkbox', {name: '~\\Library\\Caches\\app-a'})).toBeVisible()
     await list.getByRole('button', {name: 'Empty…'}).click()
-    const confirm = screen.getByRole('dialog', {name: 'Empty these from the Trash?'})
-    await expect.element(confirm.getByText(/Undo and Restore in the Recycle Bin stop working for them\./)).toBeVisible()
+    const confirm = screen.getByRole('dialog', {name: 'Empty these from the Recycle Bin?'})
+    await expect.element(confirm.getByText(/Undo and Restore in the Recycle Bin stop working for them\. Nothing else in your Recycle Bin is touched\./)).toBeVisible()
+    await expect.element(confirm.getByRole('button', {name: 'Keep them in the Recycle Bin'})).toBeVisible()
   })
 
   test('Storage rows, the overcount note and the chart name', async () => {
@@ -145,7 +155,7 @@ describe('the page on Windows', () => {
     }
 
     await userEvent.keyboard('{Control>}{Backspace}{/Control}')
-    await expect.element(screen.getByRole('dialog', {name: 'Move to the Trash'})).toBeVisible()
+    await expect.element(screen.getByRole('dialog', {name: 'Move to the Recycle Bin'})).toBeVisible()
   })
 
   test('the palette and the cheatsheet label keys Ctrl+⌫ and Ctrl+K', async () => {
@@ -179,10 +189,58 @@ describe('the page on Windows', () => {
     expect(write).toHaveBeenCalledWith('C:\\Users\\you\\Library\\Caches\\app-a\nC:\\Users\\you\\Library\\Caches\\app-b')
 
     await userEvent.keyboard('{Control>}{Backspace}{/Control}')
-    const confirm = screen.getByRole('dialog', {name: 'Move to the Trash'})
-    await expect.element(confirm.getByRole('list', {name: 'Moved to the Trash'}).getByRole('listitem').first()).toHaveTextContent('~\\Library\\Caches\\app-a2.0 GB')
+    const confirm = screen.getByRole('dialog', {name: 'Move to the Recycle Bin'})
+    await expect.element(confirm.getByRole('heading', {name: /^Moved to the Recycle Bin \(undo available\) · space comes back when the Recycle Bin is emptied$/})).toBeVisible()
+    await expect.element(confirm.getByText('4 to the Recycle Bin')).toBeVisible()
+    await expect.element(confirm.getByRole('button', {name: "Move 4 items to the Recycle Bin + 2 that can't be undone"})).toBeVisible()
+    await expect.element(confirm.getByRole('list', {name: 'Moved to the Recycle Bin'}).getByRole('listitem').first()).toHaveTextContent('~\\Library\\Caches\\app-a2.0 GB')
     await expect.element(confirm.getByRole('list', {name: "Can't be undone"})).toHaveTextContent('git -C ~\\code worktree remove ~\\code\\wtgit -C ~\\code worktree prunedocker system prune -f')
     await expect.element(confirm.getByRole('list', {name: 'Rejected by the safety checks'})).toHaveTextContent('~\\old: already gone')
+  })
+
+  test('the palette names the Recycle Bin, and a cleanup reports into it', async () => {
+    const {screen, source} = await openApp(WINDOWS)
+    await userEvent.keyboard(CTRL_K)
+    await expect.element(option(screen, /^Go to the Recycle Bin$/)).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await screen.getByRole('button', {name: DELETE}).click()
+    await screen.getByRole('dialog').getByRole('button', {name: /^Move 4 items to the Recycle Bin/}).click()
+    await sendAll(source, trashedEvents)
+    await expect.element(screen.getByRole('contentinfo').getByText(/^Moved to the Recycle Bin 3\.8 GB · undo available/)).toBeVisible()
+    await expect.element(screen.getByRole('contentinfo').getByText(/in your Recycle Bin until you empty it/)).toBeVisible()
+    await expect.element(screen.getByRole('contentinfo').getByRole('button', {name: 'Empty these from the Recycle Bin'})).toBeVisible()
+  })
+
+  test('Storage crumbs use a backslash and a drive root is the whole disk', async () => {
+    const home = windowsFixture.data.tree
+    if (!home) throw new Error('the fixture has a tree')
+    const tree = {name: 'C:', path: 'C:/', bytes: 400 * GB, files: 200_000, mtime: 1_700_000_000, children: [home]}
+    const library = foldersOf(tree).find(folder => folder.path === 'C:/Users/you/Library')
+    if (!library) throw new Error('the tree has Library')
+    const {screen} = await openApp({...WINDOWS, url: `/storage/${library.token}`, data: {...windowsFixture.data, tree}})
+    await expect.element(screen.getByRole('navigation', {name: 'Folder path'})).toHaveTextContent('C:\\~\\Library')
+    await screen.getByRole('navigation', {name: 'Folder path'}).getByRole('link', {name: 'C:'}).click()
+    const chart = screen.getByLabelText('Storage sunburst of C:\\')
+    await expect.element(chart).toBeVisible()
+    await userEvent.hover(chart, {position: ringPoints(chart.element())(0.3125, 0).local})
+    await expect.element(page.getByText('of Whole disk')).toBeVisible()
+  })
+
+  test('the path filter accepts backslashes', async () => {
+    const {screen} = await openApp(WINDOWS)
+    await screen.getByRole('textbox', {name: 'Filter paths'}).fill('Caches\\app-a')
+    await expect.element(screen.getByRole('checkbox', {name: '~\\Library\\Caches\\app-b'})).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('checkbox', {name: '~\\Library\\Caches\\app-a'})).toBeVisible()
+  })
+
+  test('a delete-for-good line is a Remove-Item command with the Windows path', async () => {
+    const plan = onDrive({...PLAN, paths: PLAN.paths.map((row, i) => (i === 0 ? {...row, trashed: true} : row))})
+    const {screen} = await openApp({...WINDOWS, plan})
+    await userEvent.click(screen.getByRole('heading', {name: 'Application caches'}))
+    await userEvent.keyboard('{Control>}{Backspace}{/Control}')
+    const confirm = screen.getByRole('dialog', {name: 'Move to the Recycle Bin'})
+    await expect.element(confirm.getByRole('list', {name: "Can't be undone"}).getByRole('listitem').first()).toHaveTextContent("Remove-Item -LiteralPath 'C:\\Users\\you\\Library\\Caches\\app-a' -Recurse -Force")
+    await expect.element(confirm.getByText(/rm -rf/)).not.toBeInTheDocument()
   })
 
   test('Insights lists the largest files in Windows form', async () => {

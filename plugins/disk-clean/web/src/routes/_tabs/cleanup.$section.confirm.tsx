@@ -41,11 +41,12 @@ function useMode() {
 }
 
 function Checking() {
+  const db = useDb()
   const home = useHome()
   const scanning = useScanning()
   const mode = useMode()
   const {dialog} = useExit()
-  return <ConfirmDialog plan={null} mode={mode} home={home} scanning={scanning} {...dialog} onConfirm={dialog.onClose} />
+  return <ConfirmDialog plan={null} mode={mode} home={home} platform={db.loaded.platform} scanning={scanning} {...dialog} onConfirm={dialog.onClose} />
 }
 
 function Failed({error}: ErrorComponentProps) {

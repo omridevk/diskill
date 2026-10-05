@@ -36,8 +36,10 @@ function pendingText(progress: CleanupProgress) {
 
 function ItemStatus({path, progress}: {path: string; progress: CleanupProgress}) {
   const outcome = progress.byKey.get(path)
+  const {bin} = usePlatform()
   if (!outcome) return <span className="text-xs text-muted-foreground">{pendingText(progress)}</span>
-  const [text, tone] = OUTCOME_TEXT[outcome.kind]
+  const [said, tone] = OUTCOME_TEXT[outcome.kind]
+  const text = bin(said)
   return <span className={`text-xs ${tone}`}>{outcome.reason ? `${text}: ${outcome.reason}` : text}</span>
 }
 

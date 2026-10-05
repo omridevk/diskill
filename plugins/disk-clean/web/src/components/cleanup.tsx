@@ -492,7 +492,8 @@ export const ListingContext = createContext<Listing | null>(null)
 
 export function useListing(db: Db, list: CleanupSearch, selection: Selection): Listing {
   const on = selection.rowSelection
-  const keep = useMemo(() => predicateOf(list, on), [list, on])
+  const {typed} = usePlatform()
+  const keep = useMemo(() => predicateOf(list, on, typed), [list, on, typed])
   const search = useRef<HTMLInputElement>(null)
   const heads = useSections(db)
   const section = useParams({strict: false, select: params => params.section})

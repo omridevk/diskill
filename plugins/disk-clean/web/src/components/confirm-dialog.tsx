@@ -5,7 +5,7 @@ import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
 import type {Mode, Plan} from '@/lib/api'
 import {counted, formatBytes, plural, tilde, tildeWords, type Platform} from '@/lib/data'
-import {pathIn} from '@/lib/platform'
+import {textIn} from '@/lib/platform'
 import {WarningLines, type SelectionWarnings} from './selection-warnings'
 
 const ROW = 28
@@ -110,11 +110,11 @@ function confirmLabel(plan: Plan, mode: Mode, split: Split) {
   return `Move ${plural(split.trash.length, 'item', 'items')} to the Trash${rest}`
 }
 
-function Totals({plan, mode, split}: {plan: Plan; mode: Mode; split: Split}) {
+function Totals({plan, mode, split, bin}: {plan: Plan; mode: Mode; split: Split; bin: (text: string) => string}) {
   const figures = [
     {n: formatBytes(plan.bytes), label: `${plural(plan.count, 'item', 'items')} in total`},
     mode === 'trash'
-      ? {n: formatBytes(split.trashBytes), label: `${counted(split.trash.length)} to the Trash`}
+      ? {n: formatBytes(split.trashBytes), label: bin(`${counted(split.trash.length)} to the Trash`)}
       : {n: formatBytes(split.goneBytes), label: `${counted(split.gone.length)} deleted for good`},
     {n: counted(plan.final_count + (mode === 'trash' ? split.gone.length : 0)), label: mode === 'trash' ? "can't be undone" : 'worktrees and commands'},
     {n: counted(plan.rejected.length), label: 'rejected'},
@@ -141,26 +141,26 @@ function Difference({plan, selected}: {plan: Plan; selected: number}) {
 }
 
 function Body({plan, mode, home, platform, selected}: {plan: Plan; mode: Mode; home: string; platform: Platform | undefined; selected: number}) {
-  const path = pathIn(platform)
+  const {path, bin, removeForGood} = textIn(platform)
   const split = splitOf(plan, mode)
-  const gone = split.gone.map(row => `rm -rf -- ${path(tilde(row.path, home))}`)
+  const gone = split.gone.map(row => removeForGood(row.path, home))
   const final = [...gone, ...plan.final.map(line => tildeWords(line, home, path))]
   return (
     <>
-      <Totals plan={plan} mode={mode} split={split} />
+      <Totals plan={plan} mode={mode} split={split} bin={bin} />
       <Difference plan={plan} selected={selected} />
       {split.trash.length > 0 && (
-        <Group title="Moved to the Trash (undo available)" note="space comes back when the Trash is emptied" tone="text-foreground">
-          <PathRows rows={split.trash} home={home} path={path} label="Moved to the Trash" />
+        <Group title={bin('Moved to the Trash (undo available)')} note={bin('space comes back when the Trash is emptied')} tone="text-foreground">
+          <PathRows rows={split.trash} home={home} path={path} label={bin('Moved to the Trash')} />
         </Group>
       )}
       {mode === 'now' && split.gone.length > 0 && (
-        <Group title="Deleted immediately" note="skips the Trash, can't be undone" tone="text-destructive">
+        <Group title="Deleted immediately" note={bin("skips the Trash, can't be undone")} tone="text-destructive">
           <PathRows rows={split.gone} home={home} path={path} label="Deleted immediately" />
         </Group>
       )}
       {(mode === 'trash' ? final : plan.final).length > 0 && (
-        <Group title="Can't be undone" note={mode === 'trash' ? 'items already in a Trash, worktree removals and fixed commands run exactly as below' : 'worktree removals and fixed commands run exactly as below'} tone="text-amber-300">
+        <Group title="Can't be undone" note={mode === 'trash' ? bin('items already in a Trash, worktree removals and fixed commands run exactly as below') : 'worktree removals and fixed commands run exactly as below'} tone="text-amber-300">
           <Lines label="Can't be undone" lines={mode === 'trash' ? final : plan.final.map(line => tildeWords(line, home, path))} />
         </Group>
       )}
@@ -200,6 +200,7 @@ function Decision({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const {bin} = textIn(platform)
   return (
     <>
       {plan ? <Body plan={plan} mode={mode} home={home} platform={platform} selected={selected} /> : <Checking />}
@@ -211,7 +212,7 @@ function Decision({
           Cancel
         </Button>
         <Button variant="destructive" disabled={!plan || plan.count === 0} onClick={onConfirm}>
-          {plan ? confirmLabel(plan, mode, splitOf(plan, mode)) : mode === 'now' ? 'Delete immediately' : 'Move to the Trash'}
+          {plan ? bin(confirmLabel(plan, mode, splitOf(plan, mode))) : mode === 'now' ? 'Delete immediately' : bin('Move to the Trash')}
         </Button>
       </DialogFooter>
     </>
@@ -245,13 +246,14 @@ export function ConfirmDialog({
 }: Exit & {plan: Plan | null; mode?: Mode; home: string; platform?: Platform; selected?: number; scanning?: boolean; warnings?: SelectionWarnings; onConfirm: () => void}) {
   const warned = warnings.hidden.length > 0 || warnings.risky > 0
   const cancel = useRef<HTMLButtonElement>(null)
+  const {bin} = textIn(platform)
   return (
     <Dialog open={open} onOpenChange={next => next || onClose()} onOpenChangeComplete={next => next || onClosed()}>
       <DialogContent className="sm:max-w-3xl" initialFocus={mode === 'now' ? cancel : undefined}>
         <DialogHeader>
-          <DialogTitle>{TITLE[mode]}</DialogTitle>
+          <DialogTitle>{bin(TITLE[mode])}</DialogTitle>
           <DialogDescription>
-            {mode === 'now' && <b className="font-semibold text-destructive">These skip the Trash and are removed for good. </b>}
+            {mode === 'now' && <b className="font-semibold text-destructive">{bin('These skip the Trash and are removed for good. ')}</b>}
             Nothing has run yet. Each path is resolved again right before it moves and is kept if a parent folder now points
             elsewhere; a symlink is moved itself, never followed. Worktrees are re-checked and git refuses any that changed.
           </DialogDescription>

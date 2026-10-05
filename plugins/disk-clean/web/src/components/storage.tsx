@@ -17,7 +17,7 @@ import {useDb} from '@/lib/db'
 import {zoomLink, type Folder} from '@/lib/folders'
 import {SHAPES, type Shape} from '@/lib/search'
 import {useHome, useSelection} from '@/lib/page-data'
-import {usePlatform} from '@/lib/platform'
+import {isDiskRoot, usePlatform} from '@/lib/platform'
 import type {Disk} from '@/lib/scan-feed'
 import {useCleanable, useDisk, useFolders, useInside, useScanState} from '@/lib/views'
 import {squarifyInBounds} from '@/lib/treemap-tile'
@@ -72,7 +72,7 @@ function nodeOf(point: ChartPoint | null) {
 }
 
 function titleOf(node: TreeNode) {
-  if (node.path === '/') return 'Whole disk'
+  if (isDiskRoot(node.path)) return 'Whole disk'
   return node.name === '~' ? 'Home folder' : node.name
 }
 
@@ -298,11 +298,12 @@ function drillTarget(point: ChartPoint | null, flat: ReturnType<typeof flatten>,
 }
 
 function Crumbs({chain, folders}: {chain: readonly TreeNode[]; folders: ReadonlyMap<string, Folder>}) {
+  const {separator} = usePlatform()
   return (
     <nav aria-label="Folder path" className="flex grow flex-wrap items-center gap-1 text-sm">
       {chain.map((n, i) => (
         <Fragment key={n.path}>
-          {i > 0 && <span className="text-muted-foreground">/</span>}
+          {i > 0 && <span className="text-muted-foreground">{separator}</span>}
           <Link
             {...zoomLink(folders.get(n.path))}
             activeOptions={{exact: true}}

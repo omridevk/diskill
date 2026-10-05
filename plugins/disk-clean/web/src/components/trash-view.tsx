@@ -112,7 +112,9 @@ function Icon({label, disabled, onClick, children}: {label: string; disabled: bo
 }
 
 function StateBadge({entry}: {entry: TrashEntry}) {
-  const [text, variant] = stateOf(usePlatform().putBack)[entry.state]
+  const {putBack, bin} = usePlatform()
+  const [said, variant] = stateOf(putBack)[entry.state]
+  const text = bin(said)
   const badge = <Badge variant={variant}>{text}</Badge>
   if (!entry.reason) return badge
   return (
@@ -128,7 +130,8 @@ function StateBadge({entry}: {entry: TrashEntry}) {
 
 function ItemLine({entry, picked, busy, home, actions}: {entry: TrashEntry; picked: boolean; busy: boolean; home: string; actions: TrashActions}) {
   const live = isTrashed(entry)
-  const shown = usePlatform().path(tilde(entry.original, home))
+  const {path, bin} = usePlatform()
+  const shown = path(tilde(entry.original, home))
   return (
     <div className="grid h-full grid-cols-[1.5rem_minmax(0,1fr)_6rem_8rem_minmax(0,14rem)_3.5rem] items-center gap-3 border-b border-border/50 px-7 text-sm">
       <Checkbox aria-label={shown} checked={live && picked} disabled={!live} onCheckedChange={on => actions.onPick([entry.id], on)} />
@@ -146,7 +149,7 @@ function ItemLine({entry, picked, busy, home, actions}: {entry: TrashEntry; pick
             <Icon label="Undo: put it back" disabled={busy} onClick={() => actions.onUndo([entry.id])}>
               <Undo2 />
             </Icon>
-            <Icon label="Empty from the Trash…" disabled={busy} onClick={() => actions.onEmpty(`item:${entry.id}`)}>
+            <Icon label={bin('Empty from the Trash…')} disabled={busy} onClick={() => actions.onEmpty(`item:${entry.id}`)}>
               <Trash2 />
             </Icon>
           </>
@@ -160,6 +163,7 @@ function RunLine({run, current, picked, busy, actions}: {run: Run; current: bool
   const ids = run.inTrash.map(e => e.id)
   const on = ids.length > 0 && ids.every(id => picked.has(id))
   const some = !on && ids.some(id => picked.has(id))
+  const {bin} = usePlatform()
   return (
     <div className="flex h-full items-center gap-3 border-b bg-muted/40 px-7 text-sm">
       <Checkbox aria-label={`Select the cleanup of ${whenOf(run.at)}`} checked={on} indeterminate={some} disabled={ids.length === 0} onCheckedChange={next => actions.onPick(ids, next)} />
@@ -168,7 +172,7 @@ function RunLine({run, current, picked, busy, actions}: {run: Run; current: bool
         {current && <span className="text-muted-foreground"> · this cleanup</span>}
       </span>
       <span className="grow text-xs text-muted-foreground tabular-nums">
-        {plural(run.inTrash.length, 'item', 'items')} in the Trash · {formatBytes(run.bytes)}
+        {plural(run.inTrash.length, 'item', 'items')} {bin('in the Trash')} · {formatBytes(run.bytes)}
         {run.entries.length > run.inTrash.length && ` · ${counted(run.entries.length - run.inTrash.length)} no longer there`}
       </span>
       <Button variant="ghost" size="xs" disabled={busy || ids.length === 0} onClick={() => actions.onUndo(ids)}>
@@ -187,6 +191,7 @@ function linesOf(runs: readonly Run[]): Line[] {
 
 function Lines({runs, current, picked, busy, actions}: {runs: readonly Run[]; current: string; picked: ReadonlySet<string>; busy: boolean; actions: TrashActions}) {
   const home = useHome()
+  const {bin} = usePlatform()
   const scroller = useRef<HTMLDivElement>(null)
   const lines = useMemo(() => linesOf(runs), [runs])
   const virtualizer = useVirtualizer({
@@ -202,7 +207,7 @@ function Lines({runs, current, picked, busy, actions}: {runs: readonly Run[]; cu
   })
   return (
     <div ref={scroller} className="min-h-0 grow overflow-y-auto">
-      <div role="list" aria-label="Items disk-clean moved to the Trash" className="relative" style={{height: virtualizer.getTotalSize()}}>
+      <div role="list" aria-label={bin('Items disk-clean moved to the Trash')} className="relative" style={{height: virtualizer.getTotalSize()}}>
         {virtualizer.getVirtualItems().map(virtual => {
           const line = lines[virtual.index]
           if (!line) return null
@@ -246,9 +251,10 @@ function RunFilter({runs, value, onRun}: {runs: readonly Run[]; value: string; o
 }
 
 function Empty({filtered, onAll}: {filtered: boolean; onAll: () => void}) {
+  const {bin} = usePlatform()
   return (
     <div className="flex grow flex-col items-center justify-center gap-3 p-10 text-center text-sm text-muted-foreground">
-      <p>{filtered ? 'This cleanup put nothing in the Trash.' : 'Nothing disk-clean moved to the Trash yet.'}</p>
+      <p>{bin(filtered ? 'This cleanup put nothing in the Trash.' : 'Nothing disk-clean moved to the Trash yet.')}</p>
       {filtered && (
         <Button variant="outline" size="sm" onClick={onAll}>
           Show all cleanups
@@ -265,12 +271,13 @@ export function TrashView({search, actions}: {search: TrashSearch; actions: Tras
   const {shown, picked, inTrash, chosen} = useMemo(() => pickedIn(runs, search), [runs, search])
   const chosenIds = chosen.map(entry => entry.id)
   const picking = !busy && chosen.length > 0
+  const {bin} = usePlatform()
   return (
     <div className="flex min-h-0 grow flex-col">
       <div className="flex h-12 shrink-0 items-center gap-3 border-b px-7">
         <RunFilter runs={runs} value={search.run} onRun={actions.onRun} />
         <span className="w-72 shrink-0 truncate text-sm tabular-nums">
-          {plural(inTrash.length, 'item', 'items')} in the Trash · {formatBytes(sumOf(inTrash))}
+          {plural(inTrash.length, 'item', 'items')} {bin('in the Trash')} · {formatBytes(sumOf(inTrash))}
         </span>
         <span className="w-40 shrink-0 text-sm text-muted-foreground tabular-nums">{counted(chosen.length)} selected</span>
         <div className="flex min-w-0 grow justify-end gap-2">

@@ -4,6 +4,7 @@ import {isPutBack, type CleanupProgress, type Job, type Phase} from '@/lib/progr
 import {HERO_LABEL} from './cleanup-progress'
 import type {Disk} from '@/lib/scan-feed'
 import {useReducedMotion} from '@/lib/motion'
+import {usePlatform} from '@/lib/platform'
 import type {Selection} from '@/lib/page-data'
 import {DISK_COLORS, DiskDonut} from './disk-donut'
 import {FlowField} from './radiant/flow-field'
@@ -73,6 +74,7 @@ function Bold({bytes}: {bytes: number}) {
 }
 
 function FreeSpace({phase, disk, total}: {phase: Phase; disk: Figures; total: number}) {
+  const {bin} = usePlatform()
   if (phase === 'scanning' || phase === 'reviewing') {
     return (
       <>
@@ -84,7 +86,7 @@ function FreeSpace({phase, disk, total}: {phase: Phase; disk: Figures; total: nu
   if (KEEPS_SPACE.has(phase) && !moved) {
     return (
       <>
-        free space <Bold bytes={disk.free} /> of {formatBytes(total)} · the Trash keeps the space until it is emptied
+        free space <Bold bytes={disk.free} /> of {formatBytes(total)} · {bin('the Trash keeps the space until it is emptied')}
       </>
     )
   }
@@ -130,12 +132,13 @@ export function Summary({
   progress?: CleanupProgress | null
 }) {
   const disk = diskFigures(data, selection, progress, phase)
+  const {bin} = usePlatform()
   return (
     <section className="relative isolate flex items-center gap-7 border-b px-7 py-5">
       <LoadingBackdrop scanning={scanning} />
       <DiskDonut used={disk.used} selected={disk.pending} free={disk.free} total={data.total} size={132} />
       <div className="flex grow flex-col gap-2">
-        <div className="text-xs text-muted-foreground">{heroLabel(phase, progress)}</div>
+        <div className="text-xs text-muted-foreground">{bin(heroLabel(phase, progress))}</div>
         <div className="relative h-12 text-5xl leading-none font-bold tracking-tighter tabular-nums">
           <div className={overlay ? 'invisible w-fit' : 'w-fit'}>
             <SpinningBytes bytes={bytes} />

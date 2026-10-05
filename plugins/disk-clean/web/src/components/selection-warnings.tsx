@@ -8,6 +8,7 @@ import type {Selection} from '@/lib/page-data'
 import type {Entry} from '@/lib/scan-feed'
 import {CLEANUP_DEFAULTS} from '@/lib/search'
 import {isFiltering, predicateOf} from '@/lib/shaping'
+import {usePlatform} from '@/lib/platform'
 
 export interface SelectionWarnings {
   hidden: Entry[]
@@ -16,7 +17,7 @@ export interface SelectionWarnings {
 
 export function useSelectionWarnings(selection: Selection): SelectionWarnings {
   const shape = {...CLEANUP_DEFAULTS, ...useSearch({strict: false})}
-  const keep = predicateOf(shape, selection.rowSelection)
+  const keep = predicateOf(shape, selection.rowSelection, usePlatform().typed)
   const hidden = isFiltering(shape) ? selection.selected.filter(entry => !keep(entry)) : []
   return {hidden, risky: selection.risky}
 }
