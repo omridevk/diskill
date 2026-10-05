@@ -1,7 +1,6 @@
 import {RotateCw} from 'lucide-react'
 import {useState} from 'react'
 import {Button} from '@/components/ui/button'
-import {useCommands} from '@/lib/commands'
 import {useClock} from '@/lib/clock'
 import {plural} from '@/lib/data'
 import type {ScanState as Scan} from '@/lib/scan-feed'
@@ -46,7 +45,6 @@ export function ScanStatus({scan}: {scan: Scan}) {
 
 export function RescanButton({scan, approved, onRescan}: {scan: Scan; approved: boolean; onRescan: () => void}) {
   const busy = !scan.done && scan.error === ''
-  useCommands([{id: 'rescan', name: 'Rescan', group: 'Clean up', enabled: !approved && !busy, run: onRescan}])
   if (approved) return null
   return (
     <Button variant="ghost" size="xs" disabled={busy} onClick={onRescan}>

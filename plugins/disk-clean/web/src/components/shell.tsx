@@ -1,20 +1,26 @@
-import {getRouteApi, Link, linkOptions, Outlet, useLinkProps, useNavigate} from '@tanstack/react-router'
+import {useHotkeys} from '@tanstack/react-hotkeys'
+import {getRouteApi, Link, linkOptions, Outlet, useLinkProps, useMatch, useNavigate, useParams} from '@tanstack/react-router'
 import {HardDrive} from 'lucide-react'
-import {useRef, useSyncExternalStore, type ReactNode, type RefObject} from 'react'
+import {useRef, useState, useSyncExternalStore, type ReactNode, type RefObject} from 'react'
 import {TAB_LINK, TabLinks} from '@/components/ui/tabs'
-import {useCommands} from '@/lib/commands'
+import {bindingsOf, everyCommand, HOTKEY_OPTIONS} from '@/lib/commands'
 import {plural} from '@/lib/data'
 import {useDb, type Action, type Db, type Link as StreamLink} from '@/lib/db'
-import {useShownOnMount} from '@/lib/motion'
+import {useReducedMotion, useShownOnMount} from '@/lib/motion'
 import {firstSectionNow, useDecisions, useProgress, useScan, useSelection, type Ending, type Selection} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import {heroBytes, type CleanupProgress, type Phase} from '@/lib/progress'
-import {useDisk, usePending, useSession} from '@/lib/views'
-import {ActionBar, DeleteReady, deleteState, useOpenConfirm} from './action-bar'
+import {CLEANUP_DEFAULTS} from '@/lib/search'
+import {useDisk, usePending, useScanState, useSession} from '@/lib/views'
+import {ActionBar, deleteState, TableDelete, useOpenConfirm} from './action-bar'
+import {ListingContext, useListChange, useListing} from './cleanup'
 import {BarText, CleanupCounter, CleanupStatus, CleanupTracker, DetailsButton, ProgressTrack, TrashActions, trashOffer} from './cleanup-progress'
 import {CommandMenu} from './command-menu'
+import {commandsFor} from './commands'
 import {RequestError} from './request-error'
 import {ScanCounter, useScanHero} from './scan-hero'
 import {RescanButton, ScanStatus} from './scan-status'
+import {BUSY, useTrashActions, useTrashRuns} from './trash-view'
 import {Summary} from './summary'
 
 function Finished({title, body}: Ending) {
@@ -79,9 +85,6 @@ function TabLink({tab}: {tab: (typeof TABS)[number]}) {
 }
 
 function Tabs() {
-  const tabs = root.useRouteContext({select: context => context.tabs})
-  const navigate = useNavigate()
-  useCommands(TABS.map(tab => ({id: tab.id, name: `Go to ${tab.label}`, group: 'Go to', enabled: true, run: () => navigate(tabs.placeOf(tab.id) ?? tab.link)})))
   return (
     <TabLinks label="Views">
       {TABS.map(tab => (
@@ -153,19 +156,14 @@ function ScanSummary({db, scan, selection, progress, phase, approved}: {db: Db; 
 
 const TRASH_ACTIONS: readonly Action[] = ['undo', 'empty']
 
-function useTrashActions(db: Db, progress: CleanupProgress | null, phase: Phase, trash: (action: 'undo' | 'empty', ids: readonly string[]) => void, sectionOf: (params: {section?: string}) => string) {
+function useCleanupTrash(db: Db, progress: CleanupProgress | null, phase: Phase, trash: (action: 'undo' | 'empty', ids: readonly string[]) => void, sectionOf: (params: {section?: string}) => string) {
   const navigate = useNavigate()
   const busy = usePending(db, TRASH_ACTIONS)
   const offer = progress && trashOffer(progress, phase, busy)
   const ready = offer !== null && offer.offered && !offer.waiting
   const undo = () => trash('undo', progress?.inTrash.ids ?? [])
   const empty = () => navigate({to: '/cleanup/$section/empty', params: prev => ({section: sectionOf(prev)}), search: true})
-  useCommands([
-    {id: 'undo-cleanup', name: 'Undo this cleanup', group: 'Clean up', enabled: ready, run: undo},
-    {id: 'empty-cleanup', name: 'Empty these from Trash…', group: 'Clean up', enabled: ready, run: empty},
-  ])
-  if (!progress) return null
-  return (
+  const actions = progress && (
     <TrashActions
       progress={progress}
       phase={phase}
@@ -180,6 +178,7 @@ function useTrashActions(db: Db, progress: CleanupProgress | null, phase: Phase,
       onEmpty={empty}
     />
   )
+  return {ready, undo, empty, actions}
 }
 
 function Tracker({progress, ...props}: {db: Db; progress: CleanupProgress | null; phase: Phase; returnFocus: RefObject<HTMLButtonElement | null>; actions: ReactNode}) {
@@ -203,24 +202,73 @@ export function Shell() {
   const decisions = useDecisions()
   const session = useSession(db)
   const navigate = useNavigate()
+  const tabs = root.useRouteContext({select: context => context.tabs})
   const detailsRef = useRef<HTMLButtonElement>(null)
+  const [about, setAbout] = useState(false)
+  const [shortcuts, setShortcuts] = useState(false)
   const sectionOf = (params: {section?: string}) => params.section ?? firstSectionNow(db) ?? ''
-  const actions = useTrashActions(db, progress, phase, decisions.trash, sectionOf)
+  const cleanupTrash = useCleanupTrash(db, progress, phase, decisions.trash, sectionOf)
   const openConfirm = useOpenConfirm()
   const onDetails = () => navigate({to: '.', search: prev => ({...prev, overlay: 'progress'})})
-  useCommands([{id: 'details', name: 'Show cleanup details', group: 'Clean up', enabled: progress !== null, run: onDetails}])
+  const list = useMatch({from: '/_tabs/cleanup', shouldThrow: false, select: match => match.search})
+  const listing = useListing(db, list ?? CLEANUP_DEFAULTS, selection)
+  const onList = useListChange()
+  const section = useParams({strict: false, select: params => params.section})
+  const shape = useMatch({from: '/_tabs/storage', shouldThrow: false, select: match => match.search.shape})
+  const tree = useScanState(db).tree
+  const trashSearch = useMatch({from: '/_tabs/trash', shouldThrow: false, select: match => match.search})
+  const runs = useTrashRuns()
+  const trashBusy = usePending(db, BUSY)
+  const trashActions = useTrashActions()
+  const reduced = useReducedMotion()
+  const {deleteNow} = usePlatform()
+  const deleteReady = deleteState(selection, scan.scan).ready && !progress
+  const commands = commandsFor({
+    tabs: TABS,
+    selection,
+    progress: progress !== null,
+    approved: decisions.approved,
+    scanning: !scan.scan.done && scan.scan.error === '',
+    deleteReady,
+    deleteNow,
+    reduced,
+    cleanupTrash: cleanupTrash.ready,
+    cleanup: list ? {listing, section, onList} : null,
+    storage: shape ? {shape, drawn: tree !== null} : null,
+    trash: trashSearch ? {search: trashSearch, runs, busy: trashBusy, actions: trashActions} : null,
+    on: {
+      tab: id => {
+        const tab = TABS.find(each => each.id === id)
+        if (tab) void navigate(tabs.placeOf(id) ?? tab.link)
+      },
+      section: id => navigate({to: '/cleanup/$section', params: {section: id}, search: true}),
+      confirm: openConfirm,
+      rescan: scan.rescan,
+      details: onDetails,
+      movie: () => navigate({to: '.', search: prev => ({...prev, overlay: 'movie', take: 0})}),
+      undoCleanup: cleanupTrash.undo,
+      emptyCleanup: cleanupTrash.empty,
+      reshape: next => navigate({to: '.', search: prev => ({...prev, shape: next})}),
+      shortcuts: () => setShortcuts(true),
+      about: () => setAbout(true),
+    },
+  })
+  const leaves = everyCommand(commands)
+  useHotkeys(bindingsOf(leaves.filter(command => !command.scoped)), HOTKEY_OPTIONS)
 
   if (decisions.done) return <Finished {...decisions.done} />
 
   return (
     <div className="flex h-svh flex-col">
-      <Tracker db={db} progress={progress} phase={phase} returnFocus={detailsRef} actions={actions} />
+      <Tracker db={db} progress={progress} phase={phase} returnFocus={detailsRef} actions={cleanupTrash.actions} />
       <Header items={selection.count} progress={progress} phase={phase} link={session.scanLink} onDetails={onDetails} detailsRef={detailsRef} />
       <ScanSummary db={db} scan={scan} selection={selection} progress={progress} phase={phase} approved={decisions.approved} />
       <div className="relative flex min-h-0 flex-1 flex-col text-sm">
-        <DeleteReady value={deleteState(selection, scan.scan).ready && !progress}>
-          <Outlet />
-        </DeleteReady>
+        <TableDelete value={leaves.find(command => command.scoped) ?? null}>
+          <ListingContext value={listing}>
+            <Outlet />
+          </ListingContext>
+        </TableDelete>
         <ScanProblem error={scan.scan.error} />
       </div>
       <ActionBar
@@ -229,12 +277,14 @@ export function Shell() {
         scan={scan.scan}
         progress={progress}
         phase={phase}
-        actions={actions}
+        actions={cleanupTrash.actions}
         failure={<Failures db={db} onApprove={decisions.retry} onCancel={decisions.cancel} />}
+        about={about}
+        onAbout={setAbout}
         onCancel={decisions.cancel}
         onDelete={openConfirm}
       />
-      <CommandMenu />
+      <CommandMenu commands={commands} shortcuts={shortcuts} onShortcuts={setShortcuts} />
     </div>
   )
 }

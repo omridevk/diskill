@@ -2,12 +2,11 @@ import {createRootRouteWithContext, retainSearchParams, stripSearchParams, useRo
 import {NotFound} from '@/components/not-found'
 import {Button} from '@/components/ui/button'
 import {messageOf} from '@/lib/api'
-import type {CommandList} from '@/lib/commands'
 import type {Db} from '@/lib/db'
 import type {TabMemory} from '@/lib/tab-memory'
 import {ROOT_DEFAULTS, rootSearch} from '@/lib/search'
 
-export const Route = createRootRouteWithContext<{db: Db; tabs: TabMemory; commands: CommandList}>()({
+export const Route = createRootRouteWithContext<{db: Db; tabs: TabMemory}>()({
   validateSearch: rootSearch,
   search: {middlewares: [stripSearchParams(ROOT_DEFAULTS), retainSearchParams(['add', 'drop'])]},
   notFoundComponent: NotFound,

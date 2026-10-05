@@ -1,49 +1,33 @@
-import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
-import {useRouteContext} from '@tanstack/react-router'
-import {useCallback, useState, useSyncExternalStore, type RefObject} from 'react'
+import type {Hotkey, UseHotkeyDefinition} from '@tanstack/react-hotkeys'
 
 export const GROUPS = ['Go to', 'Filter and view', 'Select', 'Clean up', 'Trash', 'Help'] as const
 
 export type Group = (typeof GROUPS)[number]
 
-export interface Command {
+interface Entry {
   id: string
   name: string
+  label?: string
   group: Group
   keywords?: readonly string[]
   hotkey?: Hotkey | readonly Hotkey[]
   checked?: boolean
   enabled: boolean
-  run: () => void
+  scoped?: true
 }
 
-interface Owner {
+export type Command = Entry & ({run: () => void; children?: never} | {children: readonly Command[]; run?: never})
+
+export interface Commands {
+  selected: {heading: string; commands: readonly Command[]} | null
   commands: readonly Command[]
 }
 
-export function createCommandList() {
-  let owners: readonly Owner[] = []
-  const listeners = new Set<() => void>()
-  const changed = (next: readonly Owner[]) => {
-    owners = next
-    for (const listener of listeners) listener()
-  }
-  return {
-    subscribe: (listener: () => void) => {
-      listeners.add(listener)
-      return () => {
-        listeners.delete(listener)
-      }
-    },
-    owners: () => owners,
-    join: (owner: Owner) => {
-      changed([...owners, owner])
-      return () => changed(owners.filter(other => other !== owner))
-    },
-  }
-}
+export const page = (id: string, name: string, group: Group, children: readonly Command[]): Command => ({id, name, group, enabled: children.some(child => child.enabled), children})
 
-export type CommandList = ReturnType<typeof createCommandList>
+export const leavesOf = (commands: readonly Command[]): Command[] => commands.flatMap(command => (command.children ? leavesOf(command.children) : [command]))
+
+export const everyCommand = ({selected, commands}: Commands) => leavesOf([...(selected?.commands ?? []), ...commands])
 
 const LAYER = '[role="dialog"], [role="alertdialog"], [role="listbox"], [role="menu"]'
 
@@ -53,30 +37,18 @@ export const inOverlay = (event: KeyboardEvent) => layerOpen() || (event.target 
 
 export const hotkeysOf = (command: Command): readonly Hotkey[] => (command.hotkey === undefined ? [] : [command.hotkey].flat())
 
-const unchanged = () => 0
+export const HOTKEY_OPTIONS = {preventDefault: false, stopPropagation: false, ignoreInputs: true}
 
-export function useCommandList() {
-  return useRouteContext({from: '__root__', select: context => context.commands})
-}
-
-export function useCommands(commands: readonly Command[], scope?: RefObject<HTMLElement | null>) {
-  const list = useCommandList()
-  const [owner] = useState<Owner>(() => ({commands}))
-  owner.commands = commands
-  const join = useCallback(() => (scope ? () => {} : list.join(owner)), [list, owner, scope])
-  useSyncExternalStore(join, unchanged)
-  useHotkeys(
-    commands.flatMap(command =>
-      hotkeysOf(command).map(hotkey => ({
-        hotkey,
-        callback: (event: KeyboardEvent) => {
-          if (inOverlay(event)) return
-          event.preventDefault()
-          command.run()
-        },
-        options: {enabled: command.enabled, meta: {name: command.name, group: command.group}},
-      })),
-    ),
-    {preventDefault: false, stopPropagation: false, ignoreInputs: true, target: scope},
+export function bindingsOf(commands: readonly Command[]): UseHotkeyDefinition[] {
+  return commands.flatMap(command =>
+    hotkeysOf(command).map(hotkey => ({
+      hotkey,
+      callback: (event: KeyboardEvent) => {
+        if (inOverlay(event)) return
+        event.preventDefault()
+        command.run?.()
+      },
+      options: {enabled: command.enabled},
+    })),
   )
 }

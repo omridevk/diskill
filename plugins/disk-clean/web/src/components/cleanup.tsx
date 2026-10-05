@@ -10,12 +10,11 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {useCommands, type Command} from '@/lib/commands'
 import {counted, formatBytes, isPickable, RISK_LABEL, type Risk} from '@/lib/data'
 import {useDb, type Db} from '@/lib/db'
 import type {CleanupProgress, Removal} from '@/lib/progress'
 import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
-import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
+import {CLEANUP_DEFAULTS, MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
 import {usePlatform} from '@/lib/platform'
@@ -34,17 +33,17 @@ const RISK_BADGE: Record<Risk, string> = {
   report: 'bg-muted text-muted-foreground',
 }
 export const RISK_BAR: Record<Risk, string> = {safe: 'bg-blue-400', review: 'bg-amber-500', report: 'bg-zinc-600'}
-const SORT_LABEL: Record<Sort, string> = {
+export const SORT_LABEL: Record<Sort, string> = {
   'size-desc': 'Largest first',
   'size-asc': 'Smallest first',
   'name-asc': 'Name',
   'age-desc': 'Oldest first',
   'age-asc': 'Newest first',
 }
-const SIZE_LABEL = (n: number) => (n === 0 ? 'Any size' : `≥ ${formatBytes(n)}`)
-const AGE_LABEL = (n: number) => (n === -1 ? 'Any age' : `Idle ${n}+ days`)
-const QUICK_SELECT_MIN = 4
-const toggled = (risks: readonly Risk[], risk: Risk) => (risks.includes(risk) ? risks.filter(r => r !== risk) : [...risks, risk])
+export const SIZE_LABEL = (n: number) => (n === 0 ? 'Any size' : `≥ ${formatBytes(n)}`)
+export const AGE_LABEL = (n: number) => (n === -1 ? 'Any age' : `Idle ${n}+ days`)
+export const QUICK_SELECT_MIN = 4
+export const toggled = (risks: readonly Risk[], risk: Risk) => (risks.includes(risk) ? risks.filter(r => r !== risk) : [...risks, risk])
 
 const SEARCH_WAIT = 150
 
@@ -61,14 +60,14 @@ interface Shown {
   picked: number
 }
 
-interface Group {
+export interface Group {
   category: Section
   shown: Shown
 }
 
 type Keep = (entry: Item) => boolean
 
-type Choose = (section: string | null, wanted: Keep) => void
+export type Choose = (section: string | null, wanted: Keep) => void
 
 function sectionProgress(removal: Removal | undefined, total: number) {
   const done = removal?.count ?? 0
@@ -150,13 +149,6 @@ function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
   const {category, shown} = group
   const few = shown.selectable < QUICK_SELECT_MIN
   const idle = (days: number) => () => choose(category.id, entry => (entry.age ?? -1) >= days)
-  const aged = !few && shown.aged > 0
-  useCommands([
-    {id: 'section-all', name: 'Select all in this section', group: 'Select', enabled: !few, run: () => choose(category.id, () => true)},
-    {id: 'section-idle-90', name: 'Select items idle 90+ days in this section', group: 'Select', enabled: aged, run: idle(90)},
-    {id: 'section-idle-365', name: 'Select items idle 1+ year in this section', group: 'Select', enabled: aged, run: idle(365)},
-    {id: 'section-none', name: 'Select none in this section', group: 'Select', enabled: !few, run: () => choose(category.id, () => false)},
-  ])
   return (
     <div className={`flex items-center gap-1 text-xs text-muted-foreground ${few ? 'invisible' : ''}`} inert={few}>
       <span className="pr-1">Select:</span>
@@ -180,7 +172,7 @@ function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
   )
 }
 
-type ChangeList = (patch: Partial<CleanupSearch>, how?: {replace: boolean}) => void
+export type ChangeList = (patch: Partial<CleanupSearch>, how?: {replace: boolean}) => void
 
 function SectionLink({section, ...props}: {section: string; className?: string; children?: ReactNode}) {
   return <Link to="/cleanup/$section" params={{section}} search activeOptions={{includeSearch: false}} {...props} />
@@ -467,7 +459,7 @@ function groupsOf(sections: readonly Section[], {totals, shadow, picked}: Shapin
   )
 }
 
-function useListChange(): ChangeList {
+export function useListChange(): ChangeList {
   const navigate = useNavigate()
   return (patch, how) => navigate({to: '.', search: prev => ({...prev, ...patch}), replace: how?.replace})
 }
@@ -487,8 +479,21 @@ interface ListState {
 
 const ListContext = createContext<ListState | null>(null)
 
-function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep) {
+export interface Listing {
+  list: CleanupSearch
+  groups: Group[]
+  listed: ReadonlySet<string>
+  rows: readonly Item[]
+  choose: Choose
+  search: RefObject<HTMLInputElement | null>
+}
+
+export const ListingContext = createContext<Listing | null>(null)
+
+export function useListing(db: Db, list: CleanupSearch, selection: Selection): Listing {
   const on = selection.rowSelection
+  const keep = useMemo(() => predicateOf(list, on), [list, on])
+  const search = useRef<HTMLInputElement>(null)
   const heads = useSections(db)
   const section = useParams({strict: false, select: params => params.section})
   const open = useMemo(() => heads.find(head => head.id === section) ?? null, [heads, section])
@@ -500,30 +505,8 @@ function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep
   const nests = db.scan.nests.version()
   const shadow = useMemo(() => shadowOf(db, keep), [db, keep, items, nests])
   const listed = useMemo(() => new Set(sections.filter(section => section.count > 0).map(section => section.id)), [sections])
-  return {groups: groupsOf(sections, {totals, shadow, picked: filtering ? null : selection.picked}), listed, rows}
-}
-
-interface Listing {
-  list: CleanupSearch
-  onList: ChangeList
-  search: RefObject<HTMLInputElement | null>
-  groups: readonly Group[]
-  goTo: (section: string) => void
-}
-
-function listCommands({list, onList, search, groups, goTo}: Listing): Command[] {
-  const view = list.view === 'list' ? 'cards' : 'list'
-  return [
-    ...groups.map(({category}) => ({id: `section:${category.id}`, name: `Go to section: ${category.title}`, group: 'Go to' as const, enabled: true, run: () => goTo(category.id)})),
-    {id: 'filter-paths', name: 'Filter paths', group: 'Filter and view', hotkey: '/', enabled: true, run: () => search.current?.focus()},
-    ...RISKS.map(risk => ({id: `risk:${risk}`, name: `Show ${RISK_LABEL[risk]}`, group: 'Filter and view' as const, checked: list.risk.includes(risk), enabled: true, run: () => onList({risk: toggled(list.risk, risk)})})),
-    ...MIN_SIZES.map(minSize => ({id: `min-size:${minSize}`, name: `Minimum size: ${SIZE_LABEL(minSize)}`, group: 'Filter and view' as const, checked: list.minSize === minSize, enabled: true, run: () => onList({minSize})})),
-    ...MIN_AGES.map(minAge => ({id: `min-age:${minAge}`, name: `Minimum idle: ${AGE_LABEL(minAge)}`, group: 'Filter and view' as const, checked: list.minAge === minAge, enabled: true, run: () => onList({minAge})})),
-    ...SORTS.map(sort => ({id: `sort:${sort}`, name: `Sort: ${SORT_LABEL[sort]}`, group: 'Filter and view' as const, checked: list.sort === sort, enabled: true, run: () => onList({sort})})),
-    {id: 'only-selected', name: 'Only selected', group: 'Filter and view', checked: list.only, enabled: true, run: () => onList({only: !list.only})},
-    {id: 'switch-view', name: `Switch to ${view} view`, group: 'Filter and view', hotkey: 'V', enabled: true, run: () => onList({view})},
-    {id: 'clear-filters', name: 'Clear filters', group: 'Filter and view', enabled: isFiltering(list), run: () => onList(NO_FILTERS)},
-  ]
+  const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
+  return {list, groups: groupsOf(sections, {totals, shadow, picked: filtering ? null : selection.picked}), listed, rows, choose, search}
 }
 
 function Body({groups, list, progressed, choose, children}: {groups: Group[]; list: CleanupSearch; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
@@ -542,27 +525,16 @@ function Body({groups, list, progressed, choose, children}: {groups: Group[]; li
   )
 }
 
-export function Cleanup({list, children}: {list: CleanupSearch; children: ReactNode}) {
-  const db = useDb()
+export function Cleanup({children}: {children: ReactNode}) {
+  const listing = use(ListingContext)
   const selection = useSelection()
   const {progress} = useProgress()
   const onList = useListChange()
-  const navigate = useNavigate()
-  const search = useRef<HTMLInputElement>(null)
-  const replay = useReveal(list.view)
-  const on = selection.rowSelection
-  const keep = useMemo(() => predicateOf(list, on), [list, on])
-  const {groups, listed, rows} = useGroups(db, list, selection, keep)
+  const replay = useReveal(listing?.list.view ?? CLEANUP_DEFAULTS.view)
+  if (!listing) return null
+  const {list, groups, listed, rows, choose, search} = listing
   const progressed = progress && {progress, removals: progress.removals}
-  const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
-  const open = !progress
-
-  useCommands([
-    ...listCommands({list, onList, search, groups, goTo: section => navigate({to: '/cleanup/$section', params: {section}, search: true})}),
-    {id: 'select-all', name: 'Select all shown', group: 'Select', hotkey: 'A', enabled: open, run: () => choose(null, () => true)},
-    {id: 'clear-selection', name: 'Clear selection', group: 'Select', hotkey: 'D', enabled: open, run: () => selection.setRowSelection({})},
-    {id: 'reset-selection', name: 'Reset to recommended', group: 'Select', hotkey: 'R', enabled: open, run: () => selection.reset()},
-  ])
+  const on = selection.rowSelection
 
   return (
     <ListContext value={{groups, progressed, list, onList, listed, rows, selected: selection.selected.length, on, setRowSelection: selection.setRowSelection, choose}}>

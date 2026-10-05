@@ -5,7 +5,6 @@ import {memo, useMemo, useRef, type ReactNode, type Ref, type RefObject} from 'r
 import {Button} from '@/components/ui/button'
 import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/components/ui/sheet'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {useCommands} from '@/lib/commands'
 import {counted, formatBytes, plural, tilde} from '@/lib/data'
 import {useHome} from '@/lib/page-data'
 import type {Db} from '@/lib/db'
@@ -527,7 +526,6 @@ export function TrashActions({
 
 export function CleanupTracker({db, progress, phase, returnFocus, actions}: {db: Db; progress: CleanupProgress; phase: Phase; returnFocus: RefObject<HTMLButtonElement | null>; actions: ReactNode}) {
   const movie = useMovie(db)
-  const reduced = useReducedMotion()
   const overlay = useSearch({strict: false, select: search => search.overlay})
   const log = useSearch({strict: false, select: search => search.log}) ?? 'all'
   const take = useSearch({strict: false, select: search => search.take}) ?? 0
@@ -535,7 +533,6 @@ export function CleanupTracker({db, progress, phase, returnFocus, actions}: {db:
   const back = useBack()
   const close = () => back({to: '.', search: prev => ({...prev, overlay: undefined, log: undefined, take: undefined})})
   const layer = (patch: {overlay?: Overlay; log?: LogFilter; take?: number}) => navigate({to: '.', search: prev => ({...prev, ...patch}), replace: true})
-  useCommands([{id: 'movie', name: 'Watch the movie', group: 'Clean up', enabled: !reduced, run: () => navigate({to: '.', search: prev => ({...prev, overlay: 'movie', take: 0})})}])
   return (
     <>
       <ProgressPanel

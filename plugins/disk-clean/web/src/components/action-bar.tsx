@@ -1,4 +1,4 @@
-import type {Hotkey} from '@tanstack/react-hotkeys'
+import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
 import {useNavigate} from '@tanstack/react-router'
 import {Eraser, Info, RotateCcw, Trash2, X} from 'lucide-react'
 import {createContext, use, useState, type AnimationEvent, type ReactNode, type RefObject} from 'react'
@@ -6,7 +6,7 @@ import {Button} from '@/components/ui/button'
 import {Kbd} from '@/components/ui/kbd'
 import {Popover, PopoverContent, PopoverTitle, PopoverTrigger} from '@/components/ui/popover'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
-import {useCommands} from '@/lib/commands'
+import {bindingsOf, HOTKEY_OPTIONS, type Command} from '@/lib/commands'
 import type {CleanupProgress, Phase} from '@/lib/progress'
 import {formatBytes, plural, sizeOf} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
@@ -78,16 +78,14 @@ function hint(scan: ScanState) {
   return !scan.done && scan.error === '' ? 'You can delete what is listed while the scan runs.' : 'Cancel gives you a few seconds to undo.'
 }
 
-const DELETE: Hotkey = 'Mod+Backspace'
+export const DELETE: Hotkey = 'Mod+Backspace'
 
-function HelpLine({scan}: {scan: ScanState}) {
+function HelpLine({scan, about, onAbout}: {scan: ScanState; about: boolean; onAbout: (open: boolean) => void}) {
   const {trash, restoreByHand, deleteNow, label} = usePlatform()
-  const [open, setOpen] = useState(false)
-  useCommands([{id: 'how-delete-works', name: 'How Delete works', group: 'Help', enabled: true, run: () => setOpen(true)}])
   return (
     <div className="flex h-5 items-center gap-1 text-xs whitespace-nowrap text-muted-foreground">
       Delete moves files to the Trash, so you can undo
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover open={about} onOpenChange={onAbout}>
         <PopoverTrigger render={<Button variant="ghost" size="icon-xs" aria-label="About deleting" />}>
           <Info />
         </PopoverTrigger>
@@ -140,12 +138,11 @@ export function useOpenConfirm() {
   return (now: boolean) => navigate({to: '/cleanup/$section/confirm', params: prev => ({section: prev.section ?? firstSectionNow(db) ?? ''}), search: prev => ({...prev, now})})
 }
 
-export const DeleteReady = createContext(false)
+export const TableDelete = createContext<Command | null>(null)
 
 export function useTableDeleteKeys(table: RefObject<HTMLElement | null>) {
-  const ready = use(DeleteReady)
-  const open = useOpenConfirm()
-  useCommands([{id: 'delete-in-table', name: 'Delete… (in the item list)', group: 'Clean up', hotkey: ['Backspace', 'Delete'], enabled: ready, run: () => open(false)}], table)
+  const command = use(TableDelete)
+  useHotkeys(bindingsOf(command ? [command] : []), {...HOTKEY_OPTIONS, target: table})
 }
 
 export function ActionBar({
@@ -155,6 +152,8 @@ export function ActionBar({
   phase,
   actions,
   failure,
+  about,
+  onAbout,
   onCancel,
   onDelete,
 }: {
@@ -164,17 +163,14 @@ export function ActionBar({
   phase: Phase
   actions?: ReactNode
   failure?: ReactNode
+  about: boolean
+  onAbout: (open: boolean) => void
   onCancel: () => void
   onDelete: (now: boolean) => void
 }) {
   const warnings = useSelectionWarnings(selection)
   const action = deleteState(selection, scan)
   const {deleteNow, label} = usePlatform()
-  const enabled = action.ready && !progress
-  useCommands([
-    {id: 'delete', name: 'Delete…', group: 'Clean up', hotkey: DELETE, enabled, run: () => onDelete(false)},
-    {id: 'delete-now', name: 'Delete immediately…', group: 'Clean up', keywords: ['skip the Trash'], hotkey: deleteNow, enabled, run: () => onDelete(true)},
-  ])
   if (progress) return <ProgressFooter progress={progress} phase={phase} actions={actions} />
   const count = selection.selected.length
 
@@ -191,7 +187,7 @@ export function ActionBar({
             <WarningChip warnings={warnings} />
           </div>
         </div>
-        <HelpLine scan={scan} />
+        <HelpLine scan={scan} about={about} onAbout={onAbout} />
         {failure}
       </div>
       <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />

@@ -1,4 +1,5 @@
 import {useLiveQuery} from '@tanstack/react-db'
+import {useNavigate} from '@tanstack/react-router'
 import {useVirtualizer} from '@tanstack/react-virtual'
 import {Trash2, Undo2} from 'lucide-react'
 import {useMemo, useRef, type ReactNode} from 'react'
@@ -7,10 +8,9 @@ import {Button} from '@/components/ui/button'
 import {Checkbox} from '@/components/ui/checkbox'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
-import {useCommands} from '@/lib/commands'
 import {counted, formatBytes, plural, tilde, type TrashEntry, type TrashState} from '@/lib/data'
 import {useDb, type Action} from '@/lib/db'
-import {useHome} from '@/lib/page-data'
+import {useDecisions, useHome} from '@/lib/page-data'
 import {usePlatform} from '@/lib/platform'
 import type {TrashSearch} from '@/lib/search'
 import {usePending} from '@/lib/views'
@@ -18,7 +18,7 @@ import {RequestError} from './request-error'
 
 const ROW = 40
 const HEAD = 44
-const BUSY: readonly Action[] = ['undo', 'empty']
+export const BUSY: readonly Action[] = ['undo', 'empty']
 
 export interface Run {
   id: string
@@ -41,7 +41,7 @@ const stateOf = (putBack: string): Record<TrashState, [string, 'secondary' | 'ou
 const isTrashed = (entry: TrashEntry) => entry.state === 'trashed'
 const sumOf = (entries: readonly TrashEntry[]) => entries.reduce((sum, e) => sum + e.bytes, 0)
 
-function whenOf(seconds: number) {
+export function whenOf(seconds: number) {
   return new Date(seconds * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'})
 }
 
@@ -68,6 +68,34 @@ export interface TrashActions {
   onEmpty: (target: string) => void
   onRun: (run: string) => void
   onRetry: (action: 'undo' | 'empty') => void
+}
+
+function picksAfter(pick: string, ids: readonly string[], on: boolean) {
+  const picked = new Set(pick.split('.').filter(Boolean))
+  for (const id of ids) {
+    if (on) picked.add(id)
+    else picked.delete(id)
+  }
+  return [...picked].join('.')
+}
+
+export function useTrashActions(): TrashActions {
+  const navigate = useNavigate()
+  const {trash, retryTrash} = useDecisions()
+  return {
+    onPick: (ids, on) => navigate({to: '/trash', search: prev => ({...prev, pick: picksAfter(prev.pick ?? '', ids, on)}), replace: true}),
+    onUndo: ids => trash('undo', ids),
+    onEmpty: target => navigate({to: '/trash/empty', search: prev => ({...prev, target})}),
+    onRun: run => navigate({to: '/trash', search: prev => ({...prev, run, pick: ''})}),
+    onRetry: retryTrash,
+  }
+}
+
+export function pickedIn(runs: readonly Run[], search: TrashSearch) {
+  const shown = search.run ? runs.filter(run => run.id === search.run) : runs
+  const picked = new Set(search.pick.split('.').filter(Boolean))
+  const inTrash = shown.flatMap(run => run.inTrash)
+  return {shown, picked, inTrash, chosen: inTrash.filter(entry => picked.has(entry.id))}
 }
 
 function Icon({label, disabled, onClick, children}: {label: string; disabled: boolean; onClick: () => void; children: ReactNode}) {
@@ -233,18 +261,9 @@ export function TrashView({search, actions}: {search: TrashSearch; actions: Tras
   const db = useDb()
   const runs = useTrashRuns()
   const busy = usePending(db, BUSY)
-  const shown = useMemo(() => (search.run ? runs.filter(run => run.id === search.run) : runs), [runs, search.run])
-  const picked = useMemo(() => new Set(search.pick.split('.').filter(Boolean)), [search.pick])
-  const inTrash = shown.flatMap(run => run.inTrash)
-  const chosen = inTrash.filter(entry => picked.has(entry.id))
+  const {shown, picked, inTrash, chosen} = useMemo(() => pickedIn(runs, search), [runs, search])
   const chosenIds = chosen.map(entry => entry.id)
   const picking = !busy && chosen.length > 0
-  useCommands([
-    {id: 'trash-undo', name: 'Undo selected', group: 'Trash', enabled: picking, run: () => actions.onUndo(chosenIds)},
-    {id: 'trash-empty', name: 'Empty selected…', group: 'Trash', enabled: picking, run: () => actions.onEmpty('')},
-    {id: 'trash-all', name: 'Show all cleanups', group: 'Trash', enabled: search.run !== '', run: () => actions.onRun('')},
-    ...runs.map(run => ({id: `trash-run:${run.id}`, name: `Show cleanup of ${whenOf(run.at)}`, group: 'Trash' as const, enabled: run.id !== search.run, run: () => actions.onRun(run.id)})),
-  ])
   return (
     <div className="flex min-h-0 grow flex-col">
       <div className="flex h-12 shrink-0 items-center gap-3 border-b px-7">

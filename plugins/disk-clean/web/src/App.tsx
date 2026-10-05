@@ -1,7 +1,6 @@
 import {HotkeysProvider} from '@tanstack/react-hotkeys'
 import {createRouter, RouterProvider, type RouterHistory} from '@tanstack/react-router'
 import {useState} from 'react'
-import {createCommandList} from './lib/commands'
 import type {Loaded} from './lib/data'
 import {createDb, type Db} from './lib/db'
 import {knownPicks} from './lib/page-data'
@@ -13,7 +12,7 @@ import {routeTree} from './routeTree.gen'
 function createAppRouter(loaded: Loaded, history: RouterHistory) {
   const tabs = createTabMemory()
   const db = createDb(loaded)
-  const router = createRouter({routeTree, history, caseSensitive: true, search: {strict: true}, parseSearch, stringifySearch, context: {db, tabs, commands: createCommandList()}})
+  const router = createRouter({routeTree, history, caseSensitive: true, search: {strict: true}, parseSearch, stringifySearch, context: {db, tabs}})
   db.scan.turns.add(() => void router.invalidate())
   const tried = {href: ''}
   router.subscribe('onResolved', () => {

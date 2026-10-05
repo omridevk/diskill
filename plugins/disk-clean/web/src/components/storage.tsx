@@ -16,7 +16,6 @@ import {formatBytes, plural, tilde, type TreeNode} from '@/lib/data'
 import {useDb} from '@/lib/db'
 import {zoomLink, type Folder} from '@/lib/folders'
 import {SHAPES, type Shape} from '@/lib/search'
-import {useCommands} from '@/lib/commands'
 import {useHome, useSelection} from '@/lib/page-data'
 import {usePlatform} from '@/lib/platform'
 import type {Disk} from '@/lib/scan-feed'
@@ -33,7 +32,7 @@ interface Row {
 
 const renderer = motion({initial: false})
 
-const SHAPE_LABEL: Record<Shape, string> = {sunburst: 'Sunburst', treemap: 'Treemap'}
+export const SHAPE_LABEL: Record<Shape, string> = {sunburst: 'Sunburst', treemap: 'Treemap'}
 
 const HUES = [210, 28, 152, 340, 265, 46, 190, 120, 8, 300, 172, 65]
 
@@ -358,7 +357,6 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const [hover, setHover] = useState<TreeNode | null>(null)
   const {definition, onRender} = useStorageDefinition(flat, tree, shape, focus, cleanable)
   const reshape = (next: Shape) => navigate({to: '.', search: prev => ({...prev, shape: next})})
-  useCommands(SHAPES.map(next => ({id: `shape:${next}`, name: `Chart: ${SHAPE_LABEL[next]}`, group: 'Filter and view', checked: shape === next, enabled: tree !== null, run: () => reshape(next)})))
 
   if (!tree || !flat || !definition) {
     return <div className="p-10 text-center text-sm text-muted-foreground">No storage map in this run. Re-run the scan to build one.</div>

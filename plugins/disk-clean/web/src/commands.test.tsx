@@ -6,7 +6,7 @@ import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {formatBytes, type Platform, type ScanData, type TrashEntry} from './lib/data'
 import {at, entry, fixture, trashedEvents} from './test/fixture'
-import {fakeEventSource, mockServer, sendAll} from './test/page'
+import {fakeEventSource, mockServer, query, sendAll} from './test/page'
 import './index.css'
 
 const GB = 1024 ** 3
@@ -126,11 +126,27 @@ describe('the command palette', () => {
     }
   })
 
+  test('one Escape with an empty input closes it', async () => {
+    const {screen} = await openApp()
+    await userEvent.keyboard(MOD_K.macos)
+    await expect.element(palette(screen)).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(palette(screen)).not.toBeInTheDocument()
+  })
+
+  test('one click outside it closes it', async () => {
+    const {screen} = await openApp()
+    await userEvent.keyboard(MOD_K.macos)
+    await expect.element(palette(screen)).toBeVisible()
+    await userEvent.click(palette(screen), {position: {x: 10, y: -40}, force: true})
+    await expect.element(palette(screen)).not.toBeInTheDocument()
+  })
+
   test('typing filters, Enter runs the action, shortcuts show on the right', async () => {
     const {screen, history} = await openApp({platform: 'linux'})
     await userEvent.keyboard(MOD_K.linux)
-    await expect.element(option(screen, /^Delete… Ctrl\+⌫$/)).toBeVisible()
-    await expect.element(option(screen, /^Select all shown A$/)).toBeVisible()
+    await expect.element(option(screen, /^Delete 4 items… Ctrl\+⌫$/)).toBeVisible()
+    await expect.element(option(screen, /^Select…$/)).toBeVisible()
     await userEvent.keyboard('go to stor')
     await expect.element(option(screen, /^Go to Storage$/)).toBeVisible()
     await expect.element(option(screen, /^Select all shown/)).not.toBeInTheDocument()
@@ -143,7 +159,7 @@ describe('the command palette', () => {
     const {screen} = await openApp()
     await userEvent.keyboard(MOD_K.macos)
     await userEvent.keyboard('del')
-    await expect.element(palette(screen).getByRole('option').first()).toHaveAccessibleName(/^Delete… /)
+    await expect.element(palette(screen).getByRole('option').first()).toHaveAccessibleName(/^Delete 4 items… /)
     await userEvent.keyboard('{Enter}')
     const confirm = screen.getByRole('dialog', {name: 'Move to the Trash'})
     await expect.element(confirm).toBeVisible()
@@ -151,7 +167,7 @@ describe('the command palette', () => {
     await userEvent.keyboard('{Escape}')
     await expect.element(confirm).not.toBeInTheDocument()
     await userEvent.keyboard(MOD_K.macos)
-    await option(screen, /^Delete immediately…/).click()
+    await option(screen, /^Delete 4 items immediately…/).click()
     await expect.element(screen.getByRole('dialog', {name: NOW_TITLE})).toBeVisible()
     expect(posted('/decide')).toHaveLength(0)
   })
@@ -169,17 +185,18 @@ describe('the command palette', () => {
   test('Trash actions only on the Trash tab, Undo only after a cleanup', async () => {
     const {screen, source} = await openApp({trash: [entry(0, 'trashed')]})
     await userEvent.keyboard(MOD_K.macos)
-    await expect.element(option(screen, /^Show safe/)).toBeVisible()
-    await expect.element(option(screen, /^Undo selected/)).not.toBeInTheDocument()
+    await expect.element(option(screen, /^Filter…/)).toBeVisible()
+    await expect.element(option(screen, /^Undo 1 item/)).not.toBeInTheDocument()
     await expect.element(option(screen, /^Undo this cleanup/)).not.toBeInTheDocument()
     await userEvent.keyboard('{Escape}')
 
     await screen.getByRole('tab', {name: 'Trash'}).click()
     await screen.getByRole('checkbox', {name: '~/Library/Caches/app-a'}).click()
     await userEvent.keyboard(MOD_K.macos)
-    await expect.element(option(screen, /^Undo selected/)).toBeVisible()
-    await expect.element(option(screen, /^Empty selected…/)).toBeVisible()
-    await expect.element(option(screen, /^Show safe/)).not.toBeInTheDocument()
+    await expect.element(palette(screen).getByRole('listbox').getByRole('group').first()).toHaveAccessibleName(/^Selected: 1 item · /)
+    await expect.element(option(screen, /^Undo 1 item$/)).toBeVisible()
+    await expect.element(option(screen, /^Empty 1 item…$/)).toBeVisible()
+    await expect.element(option(screen, /^Filter…/)).not.toBeInTheDocument()
     await userEvent.keyboard('{Escape}')
 
     await screen.getByRole('tab', {name: 'Cleanup'}).click()
@@ -190,12 +207,59 @@ describe('the command palette', () => {
     await expect.element(screen.getByRole('contentinfo').getByRole('button', {name: 'Undo'})).toBeEnabled()
     await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
     await userEvent.keyboard(MOD_K.macos)
+    await expect.element(option(screen, /^Delete/)).not.toBeInTheDocument()
+    await option(screen, /^Cleanup…/).click()
     await expect.element(option(screen, /^Undo this cleanup/)).toBeVisible()
     await expect.element(option(screen, /^Empty these from Trash…/)).toBeVisible()
-    await expect.element(option(screen, /^Delete…/)).not.toBeInTheDocument()
     await option(screen, /^Empty these from Trash…/).click()
     await expect.element(screen.getByRole('dialog', {name: 'Empty these from the Trash?'})).toBeVisible()
     expect(posted('/empty')).toHaveLength(0)
+  })
+
+  test('Enter on Sort by… shows only the orders; choosing one sorts and closes', async () => {
+    const {screen, history} = await openApp()
+    await userEvent.keyboard(MOD_K.macos)
+    await userEvent.keyboard('sort by')
+    await expect.element(palette(screen).getByRole('option').first()).toHaveAccessibleName('Sort by…')
+    await userEvent.keyboard('{Enter}')
+    await expect.element(palette(screen).getByText('Sort by', {exact: true})).toBeVisible()
+    await expect.element(palette(screen).getByRole('textbox', {name: 'Command'}).or(palette(screen).getByRole('combobox', {name: 'Command'}))).toHaveValue('')
+    expect(palette(screen).getByRole('option').all().map(o => o.element().textContent)).toEqual(['Largest first', 'Smallest first', 'Name', 'Oldest first', 'Newest first'])
+    await option(screen, /^Smallest first/).click()
+    await expect.element(palette(screen)).not.toBeInTheDocument()
+    await expect.poll(() => query(history).sort).toBe('size-asc')
+  })
+
+  test('Backspace in the empty input goes back to the top page', async () => {
+    const {screen} = await openApp()
+    await userEvent.keyboard(MOD_K.macos)
+    await option(screen, /^Sort by…/).click()
+    await expect.element(option(screen, /^Go to Storage/)).not.toBeInTheDocument()
+    await userEvent.keyboard('{Backspace}')
+    await expect.element(option(screen, /^Go to Storage/)).toBeVisible()
+    await expect.element(palette(screen).getByText('Sort by', {exact: true})).not.toBeInTheDocument()
+  })
+
+  test('typing on the top page finds nested actions with their path', async () => {
+    const {screen} = await openApp()
+    await userEvent.keyboard(MOD_K.macos)
+    await userEvent.keyboard('largest')
+    await expect.element(option(screen, /^Sort by › Largest first$/)).toBeVisible()
+  })
+
+  test('Escape steps back a page, then closes', async () => {
+    const {screen} = await openApp()
+    await userEvent.keyboard(MOD_K.macos)
+    await option(screen, /^Filter…/).click()
+    await option(screen, /^Minimum size…/).click()
+    await expect.element(palette(screen).getByText('Filter › Minimum size', {exact: true})).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(palette(screen).getByText('Filter', {exact: true})).toBeVisible()
+    await expect.element(option(screen, /^Clear filters|^Only selected/).first()).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(option(screen, /^Go to Storage/)).toBeVisible()
+    await userEvent.keyboard('{Escape}')
+    await expect.element(palette(screen)).not.toBeInTheDocument()
   })
 
   test('Filter paths focuses the search box', async () => {
@@ -203,6 +267,50 @@ describe('the command palette', () => {
     await userEvent.keyboard(MOD_K.macos)
     await option(screen, /^Filter paths/).click()
     await expect.element(screen.getByRole('textbox', {name: 'Filter paths'})).toHaveFocus()
+  })
+})
+
+describe('the palette opens with the selection', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  async function twoTicked() {
+    const opened = await openApp()
+    await userEvent.click(opened.screen.getByRole('heading', {name: 'Application caches'}))
+    await userEvent.keyboard('d')
+    await expect.element(opened.screen.getByText('0 items selected', {exact: false})).toBeVisible()
+    await opened.screen.getByRole('checkbox', {name: '~/Library/Caches/app-a'}).click()
+    await opened.screen.getByRole('checkbox', {name: '~/Library/Caches/app-b'}).click()
+    await expect.element(opened.screen.getByText('2 items selected', {exact: false})).toBeVisible()
+    return opened
+  }
+
+  test('with items ticked the first group is the selection, Delete first', async () => {
+    const {screen} = await twoTicked()
+    await userEvent.keyboard(MOD_K.macos)
+    await expect.element(palette(screen).getByRole('listbox').getByRole('group').first()).toHaveAccessibleName(/^Selected: 2 items · /)
+    await expect.element(palette(screen).getByRole('option').first()).toHaveAccessibleName(/^Delete 2 items… /)
+    await expect.element(option(screen, /^Delete 2 items immediately…/)).toBeVisible()
+    await expect.element(option(screen, /^Show only selected/)).toBeVisible()
+    await expect.element(option(screen, /^Clear selection/)).toBeVisible()
+  })
+
+  test('Copy 2 paths puts both paths on the clipboard', async () => {
+    const {screen} = await twoTicked()
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+    await userEvent.keyboard(MOD_K.macos)
+    await option(screen, /^Copy 2 paths/).click()
+    await expect.element(palette(screen)).not.toBeInTheDocument()
+    expect(write).toHaveBeenCalledWith('/Users/you/Library/Caches/app-a\n/Users/you/Library/Caches/app-b')
+  })
+
+  test('nothing ticked, no selection group', async () => {
+    const {screen} = await openApp()
+    await userEvent.click(screen.getByRole('heading', {name: 'Application caches'}))
+    await userEvent.keyboard('d')
+    await userEvent.keyboard(MOD_K.macos)
+    await expect.element(option(screen, /^Go to Storage/)).toBeVisible()
+    await expect.element(palette(screen).getByText(/^Selected:/)).not.toBeInTheDocument()
+    await expect.element(option(screen, /^Copy/)).not.toBeInTheDocument()
   })
 })
 
