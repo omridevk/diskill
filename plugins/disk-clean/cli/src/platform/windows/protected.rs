@@ -131,6 +131,19 @@ fn app_data(home: &str, var: &str, id: &GUID, default: &str) -> Vec<String> {
     bases
 }
 
+fn local_bases(home: &str) -> Vec<String> {
+    app_data(
+        home,
+        "LOCALAPPDATA",
+        &FOLDERID_LocalAppData,
+        "AppData/Local",
+    )
+}
+
+fn roaming_bases(home: &str) -> Vec<String> {
+    app_data(home, "APPDATA", &FOLDERID_RoamingAppData, "AppData/Roaming")
+}
+
 fn env_root(name: &str) -> Option<String> {
     std::env::var_os(name).and_then(|v| crate::platform::path_text(Path::new(&v)))
 }
@@ -146,15 +159,10 @@ fn never_roots(home: &str) -> Vec<String> {
     roots.extend(IN_HOME.iter().map(|rel| format!("{home}/{rel}")));
     let scoop = env_root("SCOOP").unwrap_or_else(|| format!("{home}/scoop"));
     roots.extend(SCOOP_KEEP.iter().map(|rel| format!("{scoop}/{rel}")));
-    for base in app_data(home, "APPDATA", &FOLDERID_RoamingAppData, "AppData/Roaming") {
+    for base in roaming_bases(home) {
         roots.extend(IN_ROAMING.iter().map(|rel| format!("{base}/{rel}")));
     }
-    for base in app_data(
-        home,
-        "LOCALAPPDATA",
-        &FOLDERID_LocalAppData,
-        "AppData/Local",
-    ) {
+    for base in local_bases(home) {
         roots.extend(IN_LOCAL.iter().map(|rel| format!("{base}/{rel}")));
     }
     roots
@@ -225,18 +233,17 @@ pub fn is_protected(p: &str, home: &str) -> bool {
         .extension()
         .and_then(|x| x.to_str())
         .is_some_and(|x| NEVER_EXTENSIONS.iter().any(|n| x.eq_ignore_ascii_case(n)));
-    let caches_only = app_data(
-        home,
-        "LOCALAPPDATA",
-        &FOLDERID_LocalAppData,
-        "AppData/Local",
-    )
-    .iter()
-    .any(|base| outside_caches(p, base, LOCAL_CACHES_ONLY))
-        || app_data(home, "APPDATA", &FOLDERID_RoamingAppData, "AppData/Roaming")
+    let (local, roaming) = (local_bases(home), roaming_bases(home));
+    let app_data_root = same_text(p, &format!("{home}/AppData"))
+        || local.iter().chain(&roaming).any(|base| same_text(p, base));
+    let caches_only = local
+        .iter()
+        .any(|base| outside_caches(p, base, LOCAL_CACHES_ONLY))
+        || roaming
             .iter()
             .any(|base| outside_caches(p, base, ROAMING_CACHES_ONLY));
     never_ext
+        || app_data_root
         || caches_only
         || never_roots(home).iter().any(|root| at_or_within(p, root))
         || short_name(p)
@@ -266,8 +273,14 @@ fn in_system(p: &str, home: &str) -> bool {
 }
 
 pub fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
-    let allowed = within(p, home)
-        || tmp_base.is_some_and(|t| !t.is_empty() && within(p, t))
+    let tmp_base = tmp_base.filter(|t| !t.is_empty());
+    let temp_folder = local_bases(home)
+        .iter()
+        .map(|base| format!("{base}/Temp"))
+        .chain(tmp_base.map(str::to_string))
+        .any(|temp| at_or_within(p, &temp));
+    let allowed = (within(p, home) && !temp_folder)
+        || tmp_base.is_some_and(|t| within(p, t))
         || in_own_recycle_bin(p);
     allowed && !in_system(p, home)
 }
