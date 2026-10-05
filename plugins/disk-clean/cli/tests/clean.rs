@@ -1324,17 +1324,19 @@ fn clean_end_to_end_on_fixture_on_windows() {
     fs::write(&doomed_file, b"bytes").unwrap();
     let not_in_scan = root.join("not-in-scan");
     fs::create_dir_all(&not_in_scan).unwrap();
+    let protected = root.join(".ssh/id_rsa");
+    fs::create_dir_all(root.join(".ssh")).unwrap();
+    fs::write(&protected, b"key").unwrap();
     common::sh(
         root,
         "git init -q -b main repo && cd repo && echo a >a && git add a && git commit -qm init",
     );
     let repo = root.join("repo");
     let p = text;
-    let system = common::SYSTEM_FILE;
     let scan = [
         scan_row("caches", "rm", &p(&doomed)),
         scan_row("caches", "rm", &p(&doomed_file)),
-        scan_row("caches", "rm", system),
+        scan_row("caches", "rm", &p(&protected)),
         scan_row("worktrees", "worktree", &p(&repo)),
     ]
     .concat();
@@ -1343,7 +1345,7 @@ fn clean_end_to_end_on_fixture_on_windows() {
         selection_item("rm", &p(&doomed)),
         selection_item("rm", &p(&doomed_file)),
         selection_item("rm", &p(&not_in_scan)),
-        selection_item("rm", system),
+        selection_item("rm", &p(&protected)),
         selection_item("worktree", &p(&repo)),
         selection_item("rm", &p(&repo)),
         r#"{"action": "cmd", "cmd_id": "rm-rf-everything", "bytes": 1}"#.to_string(),
@@ -1367,7 +1369,7 @@ fn clean_end_to_end_on_fixture_on_windows() {
         "{plan}"
     );
     assert!(
-        plan.contains(&format!("# rejected (protected path): {system}")),
+        plan.contains(&format!("# rejected (protected path): {}", p(&protected))),
         "{plan}"
     );
     assert!(plan.contains("# 3 items, 12288 bytes"), "{plan}");
@@ -1408,7 +1410,7 @@ fn clean_end_to_end_on_fixture_on_windows() {
     }
     assert!(log.contains("trashed: 2 items, 8192 bytes"), "{log}");
     assert!(!doomed.exists() && !doomed_file.exists());
-    assert!(not_in_scan.exists() && repo.join("a").exists() && Path::new(system).exists());
+    assert!(not_in_scan.exists() && repo.join("a").exists() && protected.exists());
 }
 
 #[cfg(windows)]
