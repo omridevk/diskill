@@ -10,7 +10,11 @@ import {startWalk, stopWalk} from './walk-commands'
 const review = process.env.DISK_CLEAN_REVIEW_URL
 const slow = process.env.DISK_CLEAN_SLOW === '1'
 const SOFTWARE_GL = {'webgl.forbid-hardware': true, 'gfx.webrender.software': true}
-const launchOptions = slow ? {args: ['--disable-gpu'], firefoxUserPrefs: SOFTWARE_GL} : {}
+const ci = Boolean(process.env.CI)
+const launchOptions = {
+  args: [...(slow ? ['--disable-gpu'] : []), ...(ci ? ['--disable-webgl', '--disable-webgl2'] : [])],
+  firefoxUserPrefs: {...(slow ? SOFTWARE_GL : {}), ...(ci ? {'webgl.disabled': true} : {})},
+}
 const browsers = (contextOptions = {}) => playwright({launchOptions, contextOptions})
 const retina = browsers({deviceScaleFactor: 2})
 const reduced = browsers({reducedMotion: 'reduce'})
