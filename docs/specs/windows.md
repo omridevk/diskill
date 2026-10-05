@@ -164,6 +164,19 @@ every fixed local drive, not only the profile.
   other than `all` with a message saying it is Windows-only.
 - **macOS and Linux** are unchanged in this step.
 
+## Recycle Bin without a per-user folder (added 2026-10-06 from Windows arm64 CI)
+
+On the Windows arm64 runner the shell recycles into `<drive>/$RECYCLE.BIN/$R…` directly: the per-user
+`<drive>/$RECYCLE.BIN/<SID>` folder does not exist on that volume (CI log: "the item is at the reported path;
+…/<SID> could not be listed: The system cannot find the path specified"). x86_64 always uses the `<SID>` folder.
+The user asked for this to work on ARM Windows too.
+
+Rule: an item disk-clean recycled counts as in the Recycle Bin when it sits in the user's own `<SID>` folder, or
+directly in `<drive>/$RECYCLE.BIN/` when that is where the shell put it. Every action on it (sync, Undo, Empty)
+still requires the identity recorded at move time to match, exactly as today; nothing found only by name is ever
+acted on. The scan's "items already in the Recycle Bin" row still lists only the user's own `<SID>` folder, so
+other accounts' items are never offered.
+
 ## Launcher
 
 - `scripts/run.ps1` beside `run.sh`, same arguments, same data folder rule, same version read from
