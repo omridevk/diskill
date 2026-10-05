@@ -162,24 +162,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  build-windows:
-    name: build ${{ matrix.asset }} binary
-    runs-on: ${{ matrix.runner }}
+  build-windows-x86_64:
+    name: build windows-x86_64 binary
+    runs-on: windows-latest
     timeout-minutes: 45
     permissions:
       contents: read
     defaults:
       run:
         shell: bash
-    strategy:
-      matrix:
-        include:
-          - asset: windows-x86_64
-            target: x86_64-pc-windows-msvc
-            runner: windows-latest
-          - asset: windows-arm64
-            target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
+    env:
+      ASSET: disk-clean-windows-x86_64.zip
+      TARGET: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -187,7 +181,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: "1.93"
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
       - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
         with:
           mode: firewall-free
@@ -211,21 +205,15 @@ jobs:
       - name: build binary with the static C runtime
         working-directory: plugins/disk-clean/cli
         env:
-          TARGET: ${{ matrix.target }}
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release --frozen --target "$TARGET"
       - name: binary does not import the C runtime DLLs
-        env:
-          TARGET: ${{ matrix.target }}
         run: |
           if grep -aqiE 'vcruntime140|api-ms-win-crt-' "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe"; then
             echo "::error::disk-clean for $TARGET imports the dynamic C runtime"
             exit 1
           fi
       - name: package binary
-        env:
-          TARGET: ${{ matrix.target }}
-          ASSET: disk-clean-${{ matrix.asset }}.zip
         run: |
           mkdir -p dist
           cp "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe" dist/disk-clean.exe
@@ -235,16 +223,68 @@ jobs:
           cat "$ASSET.sha256"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: disk-clean-${{ matrix.asset }}
+          name: disk-clean-windows-x86_64
           path: |
-            dist/disk-clean-${{ matrix.asset }}.zip
-            dist/disk-clean-${{ matrix.asset }}.zip.sha256
+            dist/disk-clean-windows-x86_64.zip
+            dist/disk-clean-windows-x86_64.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows-arm64:
+    name: build windows-arm64 binary
+    needs: build-windows-x86_64
+    runs-on: windows-11-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      ASSET: disk-clean-windows-arm64.zip
+      TARGET: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: "1.93"
+          targets: aarch64-pc-windows-msvc
+      - name: fetch the lockfile-pinned crates the x86_64 job fetched through Socket Firewall
+        working-directory: plugins/disk-clean/cli
+        run: cargo fetch --locked
+      - name: build binary with the static C runtime
+        working-directory: plugins/disk-clean/cli
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --frozen --target "$TARGET"
+      - name: binary does not import the C runtime DLLs
+        run: |
+          if grep -aqiE 'vcruntime140|api-ms-win-crt-' "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe"; then
+            echo "::error::disk-clean for $TARGET imports the dynamic C runtime"
+            exit 1
+          fi
+      - name: package binary
+        run: |
+          mkdir -p dist
+          cp "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe" dist/disk-clean.exe
+          powershell -NoProfile -Command "Compress-Archive -LiteralPath dist/disk-clean.exe -DestinationPath dist/$ASSET"
+          cd dist
+          printf '%s  %s\n' "$(sha256sum "$ASSET" | cut -c1-64)" "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: disk-clean-windows-arm64
+          path: |
+            dist/disk-clean-windows-arm64.zip
+            dist/disk-clean-windows-arm64.zip.sha256
           if-no-files-found: error
           retention-days: 7
 
   publish:
     name: attest and publish release
-    needs: [build, build-linux, build-windows]
+    needs: [build, build-linux, build-windows-x86_64, build-windows-arm64]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
