@@ -61,7 +61,7 @@ stay green unedited except where a test is split per platform.
 
 | Area | Windows |
 |---|---|
-| Home | `FOLDERID_Profile` (`SHGetKnownFolderPath`), not `%USERPROFILE%` alone |
+| Home and per-user folders | `USERPROFILE`, `LOCALAPPDATA`, `APPDATA`, `TEMP`/`TMP` from the environment when set (Windows sets them for every process; the tests point them at the sandbox, the same seam as `HOME` on macOS and Linux); else the Known Folder (`FOLDERID_Profile`, `_LocalAppData`, `_RoamingAppData`) and `GetTempPath2W`. Protected Known Folders (Documents, Desktop, ...) are always resolved with `SHGetKnownFolderPath` as well, so a redirected folder is blocked whatever the environment says. Paths the binary prints and writes use the decision 1 form |
 | Volume totals, `data_mount` | `GetDiskFreeSpaceExW`; the data mount is the volume holding the profile |
 | `user_tmp_base` | `GetTempPath2W` result when it is inside the profile, or on a fixed local drive and not the Windows folder or a drive root (W2 rule, owner answer 6); else `None` |
 | Walk | `FindFirstFileExW` (`FindExInfoBasic`, large fetch) per folder; attributes from enumeration only; never opens a file carrying `RECALL_ON_OPEN` or `RECALL_ON_DATA_ACCESS`; allocated size from `GetCompressedFileSizeW` rounded up to the cluster, 0 for online-only placeholders; every reparse point whose tag is a name surrogate (junction, symlink, mount point) is a link, listed as itself and never entered; cloud-tagged entries are never offered |
@@ -179,8 +179,9 @@ disk (with how to compact), P6 per-drive pnpm stores.
 - New Windows cases (from `cross-platform.md`): Recycle Bin round trip; an item held open by another
   process kept and reported in use; a junction moved itself and its target untouched; case-different
   and 8.3 spellings of a protected path rejected; a path longer than 260 characters cleaned and
-  restored; an online-only placeholder sized 0 without hydration (simulated with the
-  `RECALL_ON_DATA_ACCESS` attribute where the runner allows it; else documented as manual); an item
+  restored; an online-only placeholder sized 0 without hydration is a manual check on a machine with
+  OneDrive (`RECALL_ON_DATA_ACCESS` cannot be set with `SetFileAttributesW`; a real placeholder needs a
+  registered sync root); an item
   larger than the bin's room kept; Explorer-style restore and empty picked up by sync.
 
 ## Tasks (parallel, disjoint files, each in its own worktree)
