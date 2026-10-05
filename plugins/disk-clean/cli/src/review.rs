@@ -173,7 +173,11 @@ pub fn load_facts(run_dir: &Path) -> HashMap<String, i64> {
 fn dirname(p: &str) -> &str {
     let head = &p[..p.rfind('/').map_or(0, |i| i + 1)];
     let trimmed = head.trim_end_matches('/');
-    if trimmed.is_empty() { head } else { trimmed }
+    if trimmed.is_empty() || util::is_root(head) {
+        head
+    } else {
+        trimmed
+    }
 }
 
 pub fn load_map(run_dir: &Path, home: &str, used: i64) -> Option<Node> {
@@ -200,13 +204,13 @@ pub fn load_map(run_dir: &Path, home: &str, used: i64) -> Option<Node> {
             order.push(p.to_string());
         }
     }
-    let root = if sizes.contains_key("/") {
-        "/".to_string()
-    } else {
-        home.to_string()
-    };
+    let root = order
+        .iter()
+        .find(|p| util::is_root(p))
+        .cloned()
+        .unwrap_or_else(|| home.to_string());
     let root_size = *sizes.get(&root)?;
-    if root == "/" && used > root_size {
+    if util::is_root(&root) && used > root_size {
         sizes.insert(root.clone(), used);
     }
     let mut children: HashMap<String, Vec<String>> = HashMap::new();
@@ -231,7 +235,7 @@ fn build(
 ) -> Node {
     let name = if p == home {
         "~".to_string()
-    } else if p == "/" {
+    } else if util::is_root(p) {
         "Whole disk (apparent sizes)".to_string()
     } else {
         p.rsplit('/').next().unwrap_or("").to_string()
@@ -252,7 +256,7 @@ fn build(
     let rest = bytes - shown;
     if !nodes.is_empty() && rest > 0 {
         nodes.push(Node {
-            name: if p == "/" {
+            name: if util::is_root(p) {
                 "unreadable or system-protected"
             } else {
                 "everything else in this folder"
@@ -960,9 +964,9 @@ fn live_scan() -> io::Result<i32> {
     if selection.is_some() {
         watch_after_approval(&dir, served);
     }
-    println!("{}", dir.display());
+    println!("{}", util::shown(&dir));
     if let Some(path) = selection {
-        println!("{}", path.display());
+        println!("{}", util::shown(&path));
     }
     Ok(code)
 }
@@ -983,7 +987,7 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
         watch_after_approval(&live.dir, served);
     }
     if let Some(path) = selection {
-        println!("{}", path.display());
+        println!("{}", util::shown(&path));
     }
     Ok(code)
 }

@@ -10,3 +10,14 @@ pub use linux::*;
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use self::windows::*;
+
+pub struct VolumeStats {
+    pub total: u64,
+    pub used: u64,
+    pub avail: u64,
+}

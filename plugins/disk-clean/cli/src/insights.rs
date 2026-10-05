@@ -180,7 +180,7 @@ pub fn to_json(acc: Insights, days: &[i64], now: i64, home: &str) -> Value {
         .into_sorted_vec()
         .into_iter()
         .map(|Reverse((bytes, path, mtime))| {
-            json!({"path": tilde(&path.to_string_lossy(), home), "bytes": bytes, "mtime": mtime})
+            json!({"path": tilde(&crate::util::shown(&path), home), "bytes": bytes, "mtime": mtime})
         })
         .collect();
     json!({

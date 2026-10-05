@@ -2,7 +2,6 @@ use crate::insights::{self, Ins, Insights};
 use crate::platform;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -101,20 +100,6 @@ const DEV_TOP: &[&str] = &[
     ".pyenv",
     ".docker",
     ".orbstack",
-];
-const DEV_NAMES: &[&str] = &[
-    ".venv",
-    "venv",
-    "target",
-    ".next",
-    ".nuxt",
-    ".turbo",
-    ".svelte-kit",
-    ".parcel-cache",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
 ];
 const REPO_SKIP: &[&str] = &[
     "node_modules",
@@ -247,7 +232,7 @@ fn classify(plan: &Plan, parent: Option<&Frame>, name: Option<&str>, meta: &Meta
     let dev_pruned = (d == 1 && (any(platform::HOME_SYSTEM_DIRS) || any(DEV_TOP)))
         || (d == 2 && ph.is_go && is("pkg"))
         || is(".git");
-    let dev_match = any(DEV_NAMES);
+    let dev_match = any(platform::DEV_NAMES);
     found.artifact =
         ph.dev && !dev_pruned && dev_match && (plan.now - meta.mtime) / 86400 > plan.stale_days;
     let big_pruned =
@@ -398,11 +383,7 @@ fn list(dir: &Path, from: Option<&Job>, reader: &Reader) -> Vec<Entry> {
     let mut found: Vec<(OsString, Meta)> = read_listing(dir, reader)
         .into_iter()
         .filter_map(|(name, meta)| {
-            let meta = meta.or_else(|| {
-                fs::symlink_metadata(dir.join(&name))
-                    .ok()
-                    .map(|m| platform::meta_of(&m))
-            })?;
+            let meta = meta.or_else(|| platform::meta_at(&dir.join(&name)))?;
             Some((name, meta))
         })
         .collect();
@@ -542,7 +523,7 @@ pub fn walk(
     out: &mut Walk,
     progress: &dyn Fn(&Walk, &Path),
 ) -> Option<u64> {
-    let root_meta = platform::meta_of(&fs::symlink_metadata(root).ok()?);
+    let root_meta = platform::meta_at(root)?;
     let threads = platform::efficiency_cores();
     let reader = Reader {
         dev: root_meta.dev,
