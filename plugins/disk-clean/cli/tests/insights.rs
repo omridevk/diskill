@@ -51,7 +51,12 @@ fn scan_writes_insights() {
 
     let out = common::output(
         common::bin(&home)
-            .args(["scan", &common::text(&run)])
+            .args([
+                "scan",
+                "--drives",
+                &common::drives_arg(&home),
+                &common::text(&run),
+            ])
             .env("DISK_CLEAN_SKIP_MAP", "1"),
     );
     assert!(

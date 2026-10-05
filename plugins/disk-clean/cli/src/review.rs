@@ -638,6 +638,7 @@ fn handle(
                 live.cancel.store(true, Ordering::Relaxed);
             }
             respond(&mut stream, "200 OK", "application/json", b"{}");
+            drop(stream);
             let mode = if payload.get("mode").and_then(Value::as_str) == Some("now") {
                 "now"
             } else {

@@ -1132,17 +1132,29 @@ fn info_of_recycled(trashed: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
-fn recycled_by_hand(bin: &Path, before: &[PathBuf]) -> PathBuf {
-    let mut added: Vec<PathBuf> = fs::read_dir(bin)
-        .unwrap()
-        .flatten()
-        .map(|e| PathBuf::from(text(&e.path())))
+fn recycled_from(info: &Path) -> Option<String> {
+    let bytes = fs::read(info).ok()?;
+    let chars = u32::from_le_bytes(bytes.get(24..28)?.try_into().ok()?) as usize;
+    let units: Vec<u16> = bytes
+        .get(28..28 + 2 * chars)?
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|c| *c != 0)
+        .collect();
+    Some(text(Path::new(&String::from_utf16(&units).ok()?)))
+}
+
+#[cfg(windows)]
+fn recycled_by_hand(bin: &Path, original: &Path) -> PathBuf {
+    let mut ours: Vec<PathBuf> = bin_entries(bin)
+        .into_iter()
         .filter(|p| {
-            p.file_name().unwrap().to_string_lossy().starts_with("$R") && !before.contains(p)
+            p.file_name().unwrap().to_string_lossy().starts_with("$R")
+                && recycled_from(&info_of_recycled(p)) == Some(text(original))
         })
         .collect();
-    assert_eq!(added.len(), 1, "{added:?}");
-    added.remove(0)
+    assert_eq!(ours.len(), 1, "{ours:?} recycled from {}", text(original));
+    ours.remove(0)
 }
 
 #[cfg(windows)]
@@ -1208,12 +1220,10 @@ fn the_recycle_bin_gets_an_r_and_i_pair_and_undo_removes_both() {
 #[test]
 fn items_already_in_the_recycle_bin_are_removed_for_good_not_trashed_again() {
     let s = sandbox("trash-old-windows");
-    let bin = common::trash_dir(&s.home);
     let doomed = s.home.join("old.txt");
     fs::write(&doomed, b"old").unwrap();
-    let before = bin_entries(&bin);
     common::recycle_by_hand(&doomed);
-    let old = recycled_by_hand(&bin, &before);
+    let old = recycled_by_hand(&common::trash_dir(&s.home), &doomed);
     let info = info_of_recycled(&old);
     assert!(info.is_file());
     approve(&s, &[("rm", &old, 4096)]);
@@ -1231,14 +1241,12 @@ fn items_already_in_the_recycle_bin_are_removed_for_good_not_trashed_again() {
 #[test]
 fn the_confirm_plan_lists_trash_moves_apart_from_steps_that_cannot_be_undone_on_windows() {
     let s = sandbox("trash-preview-windows");
-    let bin = common::trash_dir(&s.home);
     let a = s.home.join("AppData/Local/a");
     make(&a, 100);
     let doomed = s.home.join("old");
     make(&doomed, 100);
-    let before = bin_entries(&bin);
     common::recycle_by_hand(&doomed);
-    let old = recycled_by_hand(&bin, &before);
+    let old = recycled_by_hand(&common::trash_dir(&s.home), &doomed);
     let scan = scan_row("caches", "rm", &text(&a), 4096)
         + &scan_row("trash", "rm", &text(&old), 10)
         + "docker\tDocker\tD\treview\t0\tcmd\tdocker-prune\tdocker system prune -f\tcmd:docker-prune\t7\tn\t-\tvm\n";
@@ -1279,9 +1287,8 @@ fn empty_removes_only_recorded_items_still_in_the_recycle_bin() {
     let bin = common::trash_dir(&s.home);
     let theirs_original = s.home.join("theirs.txt");
     fs::write(&theirs_original, b"the user's").unwrap();
-    let before = bin_entries(&bin);
     common::recycle_by_hand(&theirs_original);
-    let theirs = recycled_by_hand(&bin, &before);
+    let theirs = recycled_by_hand(&bin, &theirs_original);
     let trashed = PathBuf::from(&record(&s)[0].trashed);
 
     let out = cli(&s, &["empty", &text(&s.run)]);
@@ -1344,36 +1351,168 @@ fn a_tampered_record_or_swapped_junction_is_never_followed() {
 }
 
 #[cfg(windows)]
-#[test]
-fn an_item_on_another_drive_goes_to_that_drives_recycle_bin() {
-    let s = sandbox("trash-windows-other");
-    let other = common::other_drive();
-    let (a, b) = (other.0.join("a"), other.0.join("b"));
-    make(&a, 100);
-    make(&b, 200);
-    let other_bin = common::recycle_bin(&other.0);
+const ADMINISTRATORS: &str = "S-1-5-32-544";
 
-    approve(&s, &[("rm", &a, 4096)]);
-    clean(&s);
-    let entry = record(&s).remove(0);
-    let trashed = PathBuf::from(&entry.trashed);
-    assert_eq!(trashed.parent(), Some(other_bin.as_path()), "{entry:?}");
-    assert!(info_of_recycled(&trashed).is_file());
+#[cfg(windows)]
+fn scan_with_drive(s: &Sandbox, drive: &Path) -> String {
+    let out = common::cli(
+        &["scan", "--drives", &text(drive)[..1], &text(&s.run)],
+        &s.home,
+        &[
+            ("DISK_CLEAN_SKIP_MAP", "1"),
+            ("DISK_CLEAN_MIN_BYTES", "1"),
+            ("DISK_CLEAN_NM_MIN_BYTES", "1"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::read_to_string(s.run.join("scan.tsv")).unwrap()
+}
+
+#[cfg(windows)]
+fn categories_of(rows: &str, path: &Path) -> Vec<String> {
+    let path = text(path);
+    rows.lines()
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .filter(|cols| cols.get(8) == Some(&path.as_str()))
+        .map(|cols| cols[0].to_string())
+        .collect()
+}
+
+#[cfg(windows)]
+fn select(s: &Sandbox, paths: &[&Path]) {
+    let items: Vec<String> = paths.iter().map(|p| item("rm", &text(p), 4096)).collect();
+    fs::write(
+        s.run.join("selection.json"),
+        format!(r#"{{"items": [{}], "mode": "trash"}}"#, items.join(",")),
+    )
+    .unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn a_project_folder_on_another_drive_goes_to_that_drives_recycle_bin_and_comes_back() {
+    let s = sandbox("trash-windows-other-drive");
+    let other = common::other_drive();
+    let sid = common::user_sid();
+    let code = other.0.join("code");
+    let node_modules = code.join("app/node_modules");
+    make(&node_modules.join("pkg"), 8192);
+    let notes = code.join("notes");
+    make(&notes, 8192);
+    common::set_owner(&code, &sid);
+    let shared = other.0.join("shared");
+    let theirs = shared.join("app/node_modules");
+    make(&theirs.join("pkg"), 8192);
+    common::set_owner(&shared, ADMINISTRATORS);
+
+    let rows = scan_with_drive(&s, &other.0);
+    assert_eq!(
+        categories_of(&rows, &node_modules),
+        ["node-modules"],
+        "{rows}"
+    );
+    assert!(categories_of(&rows, &notes).is_empty(), "{rows}");
+    assert!(categories_of(&rows, &theirs).is_empty(), "{rows}");
+
+    select(&s, &[&node_modules, &notes, &theirs]);
+    let log = clean_and_wait(&s);
+    let rejected = fs::read_to_string(s.run.join("rejected")).unwrap();
+    for p in [&notes, &theirs] {
+        assert!(
+            rejected.contains(&format!("not in scan\t{}\n", text(p))),
+            "{rejected}"
+        );
+        assert!(p.join("data").exists() || p.join("pkg/data").exists());
+    }
+    let entries = record(&s);
+    assert_eq!(entries.len(), 1, "{entries:?}\n{log}");
+    assert_eq!(entries[0].original, text(&node_modules));
+    assert_eq!(
+        Path::new(&entries[0].trashed).parent(),
+        Some(common::recycle_bin(&other.0).as_path()),
+        "{entries:?}"
+    );
+    assert!(!node_modules.exists());
+    assert!(Path::new(&entries[0].trashed).join("pkg/data").exists());
+
     let out = cli(&s, &["undo", &text(&s.run)]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(a.join("data").exists() && !trashed.exists());
-    assert!(!info_of_recycled(&trashed).exists());
+    assert!(node_modules.join("pkg/data").exists(), "{}", stdout(&out));
+    assert!(!Path::new(&entries[0].trashed).exists());
+}
 
-    approve(&s, &[("rm", &b, 4096)]);
-    clean(&s);
-    let entry = record(&s).pop().unwrap();
-    let trashed = PathBuf::from(&entry.trashed);
-    assert_eq!(trashed.parent(), Some(other_bin.as_path()));
-    let out = cli(&s, &["empty", &text(&s.run)]);
-    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(stdout(&out).contains("emptied: 1 items, 4096 bytes"));
-    assert!(!trashed.exists() && !info_of_recycled(&trashed).exists() && !b.exists());
-    assert_eq!(record(&s).pop().unwrap().state, "emptied");
+#[cfg(windows)]
+#[test]
+fn a_drive_root_and_never_walked_folders_on_another_drive_are_never_offered_or_allowed() {
+    let s = sandbox("trash-windows-never-walked");
+    let other = common::other_drive();
+    let sid = common::user_sid();
+    let tops = [
+        "Windows",
+        "Program Files",
+        "Program Files (x86)",
+        "ProgramData",
+        "$WinREAgent",
+        "Recovery",
+        "PerfLogs",
+        "code",
+    ];
+    let node_modules = |top: &str| other.0.join(top).join("app/node_modules");
+    for top in tops {
+        make(&node_modules(top).join("pkg"), 8192);
+        common::set_owner(&other.0.join(top), &sid);
+    }
+
+    let rows = scan_with_drive(&s, &other.0);
+    assert_eq!(
+        categories_of(&rows, &node_modules("code")),
+        ["node-modules"],
+        "{rows}"
+    );
+    let never: Vec<PathBuf> = tops[..tops.len() - 1]
+        .iter()
+        .map(|top| node_modules(top))
+        .collect();
+    for p in &never {
+        assert!(
+            categories_of(&rows, p).is_empty(),
+            "{}\n{rows}",
+            p.display()
+        );
+    }
+
+    let mut asked: Vec<&Path> = never.iter().map(PathBuf::as_path).collect();
+    asked.push(&other.0);
+    let listed: String = asked
+        .iter()
+        .map(|p| scan_row("node-modules", "rm", &text(p), 4096))
+        .collect();
+    fs::write(s.run.join("scan.tsv"), listed).unwrap();
+    select(&s, &asked);
+    let out = cli(&s, &["clean", &text(&s.run)]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rejected = fs::read_to_string(s.run.join("rejected")).unwrap();
+    for p in &never {
+        assert!(
+            rejected.contains(&format!("protected path\t{}\n", text(p))),
+            "{rejected}"
+        );
+        assert!(p.join("pkg/data").exists());
+    }
+    assert!(
+        rejected.contains(&format!("not a canonical path\t{}\n", text(&other.0))),
+        "{rejected}"
+    );
+    assert!(record(&s).is_empty());
 }
 
 #[cfg(windows)]

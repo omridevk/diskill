@@ -380,7 +380,14 @@ fn is_allowed_table_on_windows() {
         "C:/Program Files (x86)/App",
         "C:/ProgramData/x",
         "C:/System Volume Information/x",
+        "C:/$WinREAgent/x",
+        "C:/Recovery/x",
+        "C:/PerfLogs/x",
+        "C:/pagefile.sys",
+        "C:/hiberfil.sys",
+        "C:/swapfile.sys",
         "C:/$Recycle.Bin/S-1-5-21-1-2-3-1001/$RABC123.txt",
+        "C:/$Recycle.Bin/$RABC123.txt",
         "C:/Users/other/thing",
         "D:/x",
         "C:/Users/someone/Documents",
@@ -434,6 +441,22 @@ fn is_allowed_table_on_windows() {
         home,
         None
     ));
+}
+
+#[cfg(windows)]
+#[test]
+fn the_system_folders_of_this_pc_are_never_walked() {
+    let home = "C:/Users/someone";
+    let (drives, never) = disk_clean::platform::drives_to_walk(home);
+    assert!(drives.iter().any(|d| d == Path::new("C:/")), "{drives:?}");
+    let windows = text(Path::new(&std::env::var("SystemRoot").unwrap()));
+    for folder in [windows.as_str(), "C:/Program Files", "C:/ProgramData"] {
+        assert!(never.contains(Path::new(folder)), "{folder} {never:?}");
+    }
+    assert!(
+        !never.iter().any(|n| Path::new(home).starts_with(n)),
+        "{never:?}"
+    );
 }
 
 #[cfg(windows)]
@@ -500,8 +523,13 @@ fn protected_folders_spelled_by_case_or_short_name_are_rejected() {
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     for p in &spellings {
+        let shown = if p.contains('~') {
+            format!("'{p}'")
+        } else {
+            p.clone()
+        };
         assert!(
-            plan.contains(&format!("# rejected (protected path): {p}\n")),
+            plan.contains(&format!("# rejected (protected path): {shown}\n")),
             "{plan}"
         );
     }
@@ -960,11 +988,12 @@ fn an_unusable_home_is_refused() {
         &[selection_item("rm", &text(&doomed))],
         None,
     );
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     for home in ["", "relative/home", "/nonexistent/disk-clean-home"] {
         let out = common::output(
             Command::new(env!("CARGO_BIN_EXE_disk-clean"))
                 .args(["clean", "--dry-run", &text(&run)])
-                .env("HOME", home),
+                .env(home_var, home),
         );
         assert_eq!(out.status.code(), Some(1), "HOME={home:?}");
         let err = String::from_utf8_lossy(&out.stderr);
@@ -1390,7 +1419,11 @@ fn clean_end_to_end_on_fixture_on_windows() {
     let bin = common::trash_dir(root);
     for entry in &record {
         let trashed = Path::new(&entry.trashed);
-        assert_eq!(trashed.parent(), Some(bin.as_path()), "{entry:?}");
+        assert!(
+            [Some(bin.as_path()), bin.parent()].contains(&trashed.parent()),
+            "{entry:?}"
+        );
+        assert_eq!(entry.state, "trashed", "{entry:?}");
         assert!(
             trashed
                 .file_name()

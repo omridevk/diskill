@@ -1,6 +1,7 @@
-use super::disk::is_fixed_drive;
+use super::disk::{drive_roots, is_fixed_drive, local_disks};
 use super::path::{known_folder, user_folder, within};
-use super::protected::{RECYCLE_BIN, owned_by_user, user_sid};
+use super::protected::{owned_by_user, user_sid};
+use super::trash::bin_folder;
 use super::walk::{UNREAL_OUTPUT, find_one, is_project_output};
 use crate::platform::{self, path_text};
 use crate::scan::{
@@ -11,7 +12,7 @@ use crate::util::tilde;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_REPARSE_POINT, GetLogicalDrives};
+use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 use windows::Win32::UI::Shell::{
     FOLDERID_Downloads, FOLDERID_LocalAppData, FOLDERID_RoamingAppData,
 };
@@ -257,24 +258,10 @@ fn recycle_bins() -> Vec<PathBuf> {
     let Some(sid) = user_sid() else {
         return Vec::new();
     };
-    // SAFETY: GetLogicalDrives has no preconditions and only returns a bitmask.
-    let drives = unsafe { GetLogicalDrives() };
-    (0..26u8)
-        .filter(|i| drives & (1 << i) != 0)
-        .map(|i| format!("{}:/", char::from(b'A' + i)))
+    drive_roots()
         .filter(|root| is_fixed_drive(root))
-        .map(|root| PathBuf::from(format!("{root}{RECYCLE_BIN}/{sid}")))
+        .filter_map(|root| bin_folder(&root).map(|bin| PathBuf::from(format!("{bin}/{sid}"))))
         .filter(|bin| bin.is_dir())
-        .collect()
-}
-
-fn fixed_drives_other_than(home: &str) -> Vec<String> {
-    // SAFETY: GetLogicalDrives has no preconditions and only returns a bitmask.
-    let drives = unsafe { GetLogicalDrives() };
-    (0..26u8)
-        .filter(|i| drives & (1 << i) != 0)
-        .map(|i| format!("{}:/", char::from(b'A' + i)))
-        .filter(|root| !home.starts_with(root.as_str()) && is_fixed_drive(root))
         .collect()
 }
 
@@ -366,7 +353,7 @@ pub(crate) fn scan_app_data(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
     scan_review(ctx, rows, cfg, &p);
     scan_project_output(ctx, rows, cfg);
     scan_other_app_data(ctx, rows, cfg, &p);
-    scan_disks(ctx, rows, &p);
+    scan_disks(ctx, rows, cfg, &p);
 }
 
 pub(crate) fn scan_temp(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, tmp_base: Option<&str>) {
@@ -771,7 +758,7 @@ fn scan_other_app_data(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, p: &Places)
     );
 }
 
-fn scan_disks(ctx: &Ctx, rows: &mut Vec<Row>, p: &Places) {
+fn scan_disks(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, p: &Places) {
     let cat = Cat {
         id: "vm-disks",
         title: "WSL and Docker disks (report only)",
@@ -805,22 +792,24 @@ fn scan_disks(ctx: &Ctx, rows: &mut Vec<Row>, p: &Places) {
     );
     let cat = Cat {
         id: "pnpm-drive-stores",
-        title: "pnpm stores on other drives (report only)",
-        desc: "pnpm keeps a separate store on each drive that holds projects. Outside your profile, so never deleted by this skill.",
-        risk: "report",
+        title: "pnpm stores on other drives",
+        desc: "pnpm keeps a separate store on each drive that holds projects; node_modules on that drive hard-link into it.",
+        risk: "review",
         pre: "0",
     };
-    let stores: Vec<PathBuf> = fixed_drives_other_than(&p.home)
+    let stores: Vec<PathBuf> = local_disks()
         .into_iter()
+        .filter(|root| !p.home.starts_with(root.as_str()))
         .map(|root| PathBuf::from(format!("{root}.pnpm-store")))
+        .filter(|store| owned_by_user(store))
         .collect();
     sized(
         ctx,
         rows,
         &cat,
         &existing(stores),
-        "pnpm store prune, run in a project on that drive, removes the packages no project uses.",
-        1,
+        "Existing node_modules on that drive keep their hard-linked files, so this frees only packages no project links any more. Every project on that drive re-downloads on its next install. pnpm store prune, run in a project on that drive, removes only the unused packages.",
+        cfg.min_bytes,
     );
 }
 

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -43,8 +43,9 @@ pub fn free_port() -> u16 {
 
 pub fn connect(port: u16) -> TcpStream {
     let deadline = Instant::now() + Duration::from_secs(10);
+    let addr = (Ipv4Addr::LOCALHOST, port).into();
     loop {
-        match with_fd_lock(|| TcpStream::connect(("127.0.0.1", port))) {
+        match with_fd_lock(|| TcpStream::connect_timeout(&addr, Duration::from_millis(50))) {
             Ok(stream) => return stream,
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => panic!("nothing listened on {port}: {e}"),
@@ -193,9 +194,10 @@ fn create_vhdx(name: &str, assign: &str) -> PathBuf {
     ));
     assert!(
         made.status.success(),
-        "diskpart could not create {} (needs an administrator): {}",
+        "diskpart could not create {} (needs an administrator):\n{}\n{}",
         file.display(),
-        String::from_utf8_lossy(&made.stdout)
+        String::from_utf8_lossy(&made.stdout),
+        String::from_utf8_lossy(&made.stderr)
     );
     file
 }
@@ -210,7 +212,7 @@ fn detach_vhdx(file: &Path) {
 }
 
 #[cfg(windows)]
-fn free_letter() -> char {
+pub fn free_letter() -> char {
     ('G'..='Z')
         .rev()
         .find(|l| !Path::new(&format!("{l}:\\")).exists())
@@ -218,9 +220,16 @@ fn free_letter() -> char {
 }
 
 #[cfg(windows)]
+static ASSIGNING_LETTERS: Mutex<()> = Mutex::new(());
+
+#[cfg(windows)]
 fn attach_drive(name: &str) -> (PathBuf, PathBuf) {
+    let assigning = ASSIGNING_LETTERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let letter = free_letter();
     let file = create_vhdx(name, &format!("assign letter={letter}"));
+    drop(assigning);
     let short_names =
         output(Command::new("fsutil").args(["8dot3name", "set", &format!("{letter}:"), "0"]));
     assert!(
@@ -469,6 +478,16 @@ pub fn sleeper() -> Command {
     sleep
 }
 
+#[cfg(unix)]
+pub fn drives_arg(_home: &Path) -> String {
+    "all".to_string()
+}
+
+#[cfg(windows)]
+pub fn drives_arg(home: &Path) -> String {
+    text(home)[..1].to_string()
+}
+
 pub fn cli(args: &[&str], home: &Path, env: &[(&str, &str)]) -> std::process::Output {
     output(bin(home).args(args).envs(env.iter().copied()))
 }
@@ -518,7 +537,13 @@ pub fn user_sid() -> String {
 
 #[cfg(windows)]
 pub fn recycle_bin(root: &Path) -> PathBuf {
-    PathBuf::from(format!("{}$Recycle.Bin/{}", text(root), user_sid()))
+    let bin = std::fs::read_dir(root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|name| name.eq_ignore_ascii_case("$Recycle.Bin"))
+        .unwrap_or_else(|| "$Recycle.Bin".to_string());
+    PathBuf::from(format!("{}{bin}/{}", text(root), user_sid()))
 }
 
 #[cfg(windows)]
@@ -554,6 +579,25 @@ pub fn recycle_by_hand(path: &Path) {
         "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::{method}('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
         path.display().to_string().replace('\'', "''")
     ));
+}
+
+#[cfg(windows)]
+pub fn set_owner(path: &Path, sid: &str) {
+    assert_inside_ram_disk(path);
+    let native = text(path).replace('/', "\\");
+    let set = output(Command::new("icacls").args([
+        native.as_str(),
+        "/setowner",
+        &format!("*{sid}"),
+        "/T",
+        "/C",
+        "/Q",
+    ]));
+    assert!(
+        set.status.success(),
+        "icacls /setowner {sid} on {native} failed: {}",
+        String::from_utf8_lossy(&set.stdout)
+    );
 }
 
 #[cfg(windows)]

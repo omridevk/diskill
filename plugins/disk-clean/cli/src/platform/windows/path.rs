@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 use windows::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{FOLDERID_Profile, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
@@ -57,6 +58,17 @@ pub(super) fn from_wide(buf: &[u16]) -> OsString {
 }
 
 pub(super) fn known_folder(id: &GUID) -> Option<String> {
+    static RESOLVED: Mutex<Vec<(GUID, Option<String>)>> = Mutex::new(Vec::new());
+    let mut resolved = RESOLVED.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, path)) = resolved.iter().find(|(known, _)| known == id) {
+        return path.clone();
+    }
+    let path = resolve_known_folder(id);
+    resolved.push((*id, path.clone()));
+    path
+}
+
+fn resolve_known_folder(id: &GUID) -> Option<String> {
     // SAFETY: SHGetKnownFolderPath returns a NUL-terminated string we read once and free with CoTaskMemFree.
     let text = unsafe {
         let raw = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
@@ -74,25 +86,47 @@ pub(super) fn user_folder(var: &str, id: &GUID) -> Option<String> {
     }
 }
 
-pub(super) fn same_text(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<u16>, Vec<u16>) = (a.encode_utf16().collect(), b.encode_utf16().collect());
+pub(super) fn text16(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
+fn ascii16(s: &[u16]) -> bool {
+    s.iter().all(|c| *c < 0x80)
+}
+
+pub(super) fn same16(a: &[u16], b: &[u16]) -> bool {
+    if ascii16(a) && ascii16(b) {
+        return a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| (*x as u8).eq_ignore_ascii_case(&(*y as u8)));
+    }
     // SAFETY: CompareStringOrdinal only reads the two slices.
-    unsafe { CompareStringOrdinal(&a, &b, true) == CSTR_EQUAL }
+    unsafe { CompareStringOrdinal(a, b, true) == CSTR_EQUAL }
+}
+
+pub(super) fn within16(p: &[u16], root: &[u16]) -> bool {
+    p.len() > root.len() && p[root.len()] == u16::from(b'/') && same16(&p[..root.len()], root)
+}
+
+pub(super) fn at_or_within16(p: &[u16], root: &[u16]) -> bool {
+    same16(p, root) || within16(p, root)
+}
+
+pub(super) fn same_text(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        return a.eq_ignore_ascii_case(b);
+    }
+    same16(&text16(a), &text16(b))
 }
 
 pub(super) fn within(p: &str, root: &str) -> bool {
-    let (p16, root16): (Vec<u16>, Vec<u16>) =
-        (p.encode_utf16().collect(), root.encode_utf16().collect());
-    p16.len() > root16.len()
-        && p16[root16.len()] == u16::from(b'/')
-        // SAFETY: CompareStringOrdinal only reads the two slices.
-        && unsafe { CompareStringOrdinal(&p16[..root16.len()], &root16, true) == CSTR_EQUAL }
-}
-
-pub(super) fn rel_of(p: &str, root: &str) -> Option<String> {
-    let skip = root.encode_utf16().count() + 1;
-    within(p, root)
-        .then(|| String::from_utf16(&p.encode_utf16().skip(skip).collect::<Vec<u16>>()).ok())?
+    if p.is_ascii() && root.is_ascii() {
+        return p.len() > root.len()
+            && p.as_bytes()[root.len()] == b'/'
+            && p[..root.len()].eq_ignore_ascii_case(root);
+    }
+    within16(&text16(p), &text16(root))
 }
 
 pub(super) fn at_or_within(p: &str, root: &str) -> bool {

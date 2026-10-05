@@ -65,6 +65,13 @@ pub fn which(name: &str) -> bool {
 }
 
 pub fn spawn_detached(cmd: &mut Command) -> io::Result<Child> {
+    for handle in [
+        io::stdin().as_raw_handle(),
+        io::stdout().as_raw_handle(),
+        io::stderr().as_raw_handle(),
+    ] {
+        set_inherit(handle, false);
+    }
     cmd.creation_flags((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW).0);
     spawn(cmd)
 }

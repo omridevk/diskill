@@ -1,7 +1,7 @@
-use super::disk::is_fixed_drive;
+use super::disk::{is_fixed_drive, is_local_disk};
 use super::path::{from_wide, same_text, wide};
 use super::protected::{RECYCLE_BIN, user_sid};
-use crate::platform::path_text;
+use crate::platform::{path_text, split_root};
 use std::cell::RefCell;
 use std::fs;
 use std::io;
@@ -11,8 +11,8 @@ use windows::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, 
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES, GetDiskFreeSpaceExW,
-    GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, MOVE_FILE_FLAGS,
-    MoveFileExW, SetFileAttributesW,
+    GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, MOVE_FILE_FLAGS, MoveFileExW,
+    SetFileAttributesW,
 };
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance, CoInitializeEx,
@@ -90,16 +90,80 @@ pub fn same_item(path: &str, dev: u64, ino: u64, ino_hi: u64) -> Option<bool> {
 
 pub fn is_trash_dir(dir: &Path, _home: &str) -> bool {
     let text = dir.to_string_lossy();
-    let [drive, bin, sid] = text.split('/').collect::<Vec<_>>()[..] else {
-        return false;
+    let (drive, bin, sid) = match text.split('/').collect::<Vec<_>>()[..] {
+        [drive, bin] => (drive, bin, None),
+        [drive, bin, sid] => (drive, bin, Some(sid)),
+        _ => return false,
     };
     let drive_letter = matches!(drive.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic());
     drive_letter
         && same_text(bin, RECYCLE_BIN)
-        && user_sid().is_some_and(|me| same_text(sid, &me))
+        && sid.is_none_or(|sid| user_sid().is_some_and(|me| same_text(sid, &me)))
         && is_fixed_drive(&format!("{drive}\\"))
         && is_plain_dir(Path::new(&format!("{drive}/{bin}")))
         && is_plain_dir(dir)
+}
+
+pub(super) fn bin_folder(root: &str) -> Option<String> {
+    let bin = fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .find(|name| same_text(name, RECYCLE_BIN))?;
+    Some(format!("{root}{bin}"))
+}
+
+fn with_identity(dir: &str, item: &Checked) -> io::Result<Option<String>> {
+    Ok(fs::read_dir(dir)?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| name.starts_with("$R"))
+        .map(|name| format!("{dir}/{name}"))
+        .find(|path| same_item(path, item.dev, item.ino, item.ino_hi) == Some(true)))
+}
+
+fn searched(dir: &str, item: &Checked) -> String {
+    match with_identity(dir, item) {
+        Ok(Some(found)) => format!("{found} has its identity"),
+        Ok(None) => format!("no $R entry directly under {dir} has its identity"),
+        Err(e) => format!("{dir} could not be listed: {e}"),
+    }
+}
+
+pub fn find_trashed(item: &Checked, reported: &str) -> Result<String, String> {
+    if Path::new(reported)
+        .parent()
+        .is_some_and(|dir| is_trash_dir(dir, ""))
+    {
+        return Err(String::new());
+    }
+    let Some((root, _)) = split_root(&item.path) else {
+        return Err(String::new());
+    };
+    let Some(bin) = bin_folder(root) else {
+        return Err(format!("; {root} has no {RECYCLE_BIN}"));
+    };
+    let own = user_sid().map(|sid| format!("{bin}/{sid}"));
+    if let Some(found) = own
+        .iter()
+        .chain([&bin])
+        .find_map(|dir| with_identity(dir, item).ok().flatten())
+    {
+        return Ok(found);
+    }
+    let at_reported = match same_item(reported, item.dev, item.ino, item.ino_hi) {
+        Some(true) => "the item is at the reported path",
+        Some(false) => "something else is at the reported path",
+        None => "nothing is at the reported path",
+    };
+    let in_own = own.map_or_else(
+        || "the user's SID is unknown".to_string(),
+        |dir| searched(&dir, item),
+    );
+    Err(format!(
+        "; {at_reported}; {in_own}; {}",
+        searched(&bin, item)
+    ))
 }
 
 fn recycle_bin(path: &Path) -> Option<HSTRING> {
@@ -110,16 +174,10 @@ fn recycle_bin(path: &Path) -> Option<HSTRING> {
     let root = root.strip_prefix(r"\\?\").unwrap_or(&root);
     let drive_root =
         matches!(root.as_bytes(), [letter, b':', b'\\'] if letter.is_ascii_alphabetic());
-    if !drive_root || !is_fixed_drive(root) {
+    if !drive_root || !is_local_disk(root) {
         return None;
     }
     let root = HSTRING::from(root);
-    let mut fs_name = [0u16; 261];
-    // SAFETY: GetVolumeInformationW reads the NUL-terminated root and writes into fs_name only.
-    unsafe { GetVolumeInformationW(&root, None, None, None, None, Some(&mut fs_name)) }.ok()?;
-    if !["NTFS", "ReFS"].contains(&from_wide(&fs_name).to_string_lossy().as_ref()) {
-        return None;
-    }
     let mut info = SHQUERYRBINFO {
         cbSize: size_of::<SHQUERYRBINFO>() as u32,
         ..Default::default()

@@ -27,7 +27,12 @@ fn docker_reclaimable_parsing() {
 
 fn scan(home: &Path, run: &Path) -> String {
     let out = common::cli(
-        &["scan", &common::text(run)],
+        &[
+            "scan",
+            "--drives",
+            &common::drives_arg(home),
+            &common::text(run),
+        ],
         home,
         &[
             ("DISK_CLEAN_SKIP_MAP", "1"),
@@ -215,5 +220,43 @@ fn project_folders_are_offered_only_beside_their_project_files() {
     }
     for p in &never {
         assert!(cat_of(p).is_empty(), "{}\n{rows}", p.display());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn drives_other_than_all_are_windows_only() {
+    let t = common::temp_dir("scan-drives-unix");
+    let home = t.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let run = t.0.join("run");
+    scan(&home, &run);
+    assert!(run.join("scan.tsv").is_file());
+    for list in ["C", "c,d", "C D"] {
+        let out = common::cli(&["scan", "--drives", list], &home, &[]);
+        assert_eq!(out.status.code(), Some(2), "{list}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("Windows-only"), "{err}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_drive_that_is_not_a_fixed_local_disk_is_an_error_naming_it() {
+    let t = common::temp_dir("scan-drives-windows");
+    let home = t.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let free = common::free_letter();
+    for (list, named) in [
+        (
+            format!("{},{free}", common::drives_arg(&home)),
+            format!("{free}:"),
+        ),
+        ("C,?".to_string(), "?".to_string()),
+    ] {
+        let out = common::cli(&["scan", "--drives", &list], &home, &[]);
+        assert_eq!(out.status.code(), Some(2), "{list}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(&named), "{err}");
     }
 }

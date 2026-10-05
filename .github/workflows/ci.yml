@@ -168,6 +168,8 @@ jobs:
           echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
         run: sfw cargo fetch --locked
+        env:
+          CARGO_HTTP_CHECK_REVOKE: "false"
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
         run: |
@@ -182,7 +184,7 @@ jobs:
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
-      - run: cargo test --frozen
+      - run: cargo test --frozen --no-fail-fast
 
   disk-clean-windows-arm:
     name: disk-clean cli (Windows, arm64)
@@ -217,6 +219,8 @@ jobs:
           echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
         run: sfw cargo fetch --locked
+        env:
+          CARGO_HTTP_CHECK_REVOKE: "false"
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
         run: |
@@ -231,7 +235,7 @@ jobs:
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
-      - run: cargo test --frozen
+      - run: cargo test --frozen --no-fail-fast
 
   zizmor:
     name: zizmor

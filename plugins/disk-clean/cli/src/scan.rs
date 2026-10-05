@@ -231,6 +231,7 @@ fn probe_docker() -> Option<u64> {
 fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
     let (mut exact, parents) = platform::plan_locations(home, tmp_base);
     exact.insert(PathBuf::from(home));
+    let (roots, never) = platform::drives_to_walk(home);
     Plan {
         home: PathBuf::from(home),
         map_depth: (!cfg.skip_map).then_some(cfg.map_depth),
@@ -244,6 +245,8 @@ fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
         big_bytes: cfg.bigfile_bytes,
         exact,
         parents,
+        roots,
+        never,
         held: trash::legacy_held_root(home),
         repo_tx: None,
         days: insights::midnights(now),
@@ -263,7 +266,7 @@ impl Sink for FilesOnly {
 
 fn run_walk(
     cfg: &Config,
-    plan: Plan,
+    mut plan: Plan,
     home: &str,
     tmp_base: Option<&str>,
     mount: &Path,
@@ -271,22 +274,23 @@ fn run_walk(
 ) -> Walk {
     let mut out = Walk::default();
     let mut seen = HashSet::new();
+    let home_root = Path::new(platform::split_root(home).map_or("/", |(root, _)| root));
+    let on_a_drive = |p: &Path| plan.roots.iter().any(|root| p.starts_with(root));
+    let mut drives: Vec<PathBuf> = plan.roots.clone();
     if cfg.skip_map {
         let mut roots = vec![PathBuf::from(home), PathBuf::from(platform::SYSTEM_TMP)];
         roots.extend(tmp_base.map(PathBuf::from));
-        for root in roots.iter().filter(|r| r.is_dir()) {
+        roots.retain(|r| r.is_dir() && !on_a_drive(r));
+        for root in &roots {
             walk::walk(root, root, &plan, true, &mut seen, &mut out, progress);
         }
     } else {
-        walk::walk(
-            mount,
-            Path::new(platform::split_root(home).map_or("/", |(root, _)| root)),
-            &plan,
-            true,
-            &mut seen,
-            &mut out,
-            progress,
-        );
+        walk::walk(mount, home_root, &plan, true, &mut seen, &mut out, progress);
+        drives.retain(|root| root != home_root);
+        plan.map_depth = None;
+    }
+    for root in &drives {
+        walk::walk(root, root, &plan, true, &mut seen, &mut out, progress);
     }
     out
 }
@@ -433,6 +437,12 @@ fn unsettled(ctx: &Ctx, out: &Mutex<Published>) -> Vec<Row> {
     rows
 }
 
+fn users(rows: Vec<Row>, home: &str) -> Vec<Row> {
+    rows.into_iter()
+        .filter(|r| platform::belongs_to_user(Path::new(&r[8]), home))
+        .collect()
+}
+
 fn interrupted() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "scan cancelled")
 }
@@ -491,7 +501,10 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     let waiting: Mutex<Vec<worktrees::Checked>> = Mutex::new(Vec::new());
     let checked_so_far = AtomicUsize::new(0);
     let show_worktrees = |ctx: &Ctx, checked: &[worktrees::Checked]| {
-        let rows = worktrees::rows(checked, &home, |p| size_bytes(ctx, p).unwrap_or(0));
+        let rows = users(
+            worktrees::rows(checked, &home, |p| size_bytes(ctx, p).unwrap_or(0)),
+            &home,
+        );
         preview(&rows, &out, sink);
         unpend(
             checked
@@ -502,7 +515,11 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         );
     };
     let on_listed = |entries: &[worktrees::Entry]| {
-        pend(&worktrees::checking_rows(entries, &home), &out, sink);
+        pend(
+            &users(worktrees::checking_rows(entries, &home), &home),
+            &out,
+            sink,
+        );
     };
     let on_checked = |c: &worktrees::Checked| {
         checked_so_far.fetch_add(1, Ordering::Relaxed);
@@ -564,6 +581,15 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         if cancel.load(Ordering::Relaxed) {
             return Err(interrupted());
         }
+        walked
+            .node_modules
+            .retain(|p| platform::belongs_to_user(p, home));
+        walked
+            .artifacts
+            .retain(|p| platform::belongs_to_user(p, home));
+        walked
+            .big_files
+            .retain(|(p, ..)| platform::belongs_to_user(p, home));
         eprintln!("  walked the disk in {}s", started.elapsed().as_secs());
         let too_deep = walked.too_deep;
         if too_deep > 0 {
@@ -633,7 +659,10 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             checked.len(),
             started.elapsed().as_secs()
         );
-        let mut rows = worktrees::rows(&checked, home, |p| size_bytes(ctx, p).unwrap_or(0));
+        let mut rows = users(
+            worktrees::rows(&checked, home, |p| size_bytes(ctx, p).unwrap_or(0)),
+            home,
+        );
         scan_old_downloads(ctx, &mut rows, cfg);
         platform::scan_sims(ctx, &mut rows, sims.join().unwrap_or(0));
         scan_docker(&mut rows, cfg, docker.join().ok().flatten());

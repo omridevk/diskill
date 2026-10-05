@@ -151,6 +151,10 @@ pub fn plan(index: &ScanIndex, items: &[Value]) -> Plan {
 }
 
 pub fn plan_in(index: &ScanIndex, items: &[Value], home: &str) -> Plan {
+    platform::planning(|| plan_checked(index, items, home))
+}
+
+fn plan_checked(index: &ScanIndex, items: &[Value], home: &str) -> Plan {
     let home = home.to_string();
     let tmp_base = platform::user_tmp_base();
     let mut plan = Plan::default();
@@ -211,7 +215,7 @@ fn rm_rejection(
     if !is_allowed(value, home, tmp_base) {
         return Some("protected path");
     }
-    if fs::symlink_metadata(value).is_err() {
+    if platform::is_link(Path::new(value)).is_none() {
         return Some("already gone");
     }
     safe_to_remove(action, value, home, tmp_base).err()
@@ -224,6 +228,7 @@ pub fn is_canonical(p: &str) -> bool {
     })
 }
 
+#[cfg(unix)]
 pub(crate) fn inside(p: &str, root: &str) -> bool {
     p.strip_prefix(root)
         .is_some_and(|rest| rest.starts_with('/'))
@@ -255,8 +260,7 @@ pub fn safe_to_remove(
     if platform::path_text(&real_parent.join(name)).as_deref() != Some(target) {
         return Err(PATH_CHANGED);
     }
-    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
-    if action == "worktree" && is_link {
+    if action == "worktree" && platform::is_link(path) == Some(true) {
         return Err("the worktree folder is now a symlink");
     }
     Ok(())

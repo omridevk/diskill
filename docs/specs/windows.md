@@ -76,13 +76,13 @@ stay green unedited except where a test is split per platform.
 | Detached worker, run lock | `CreateProcessW` with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`; the lock is `LockFileEx` on the same lock file; the lock handle is passed only to the worker, never to fixed commands |
 | `process_cwds` | empty (decision 4) |
 | `rename_excl` | `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` and without `MOVEFILE_COPY_ALLOWED` (same volume only; a cross-volume move is reported, never copied) |
-| Trash | `IFileOperation` with `FOFX_RECYCLEONDELETE | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING`, not `FOFX_EARLYFAILURE`; the landed `$R…` path from `PostDeleteItem`'s `psiNewlyCreated`; `psiNewlyCreated == NULL` is treated as "deleted for good" and must never happen: before the move the item's volume must be a fixed local NTFS/ReFS volume with a Recycle Bin and the item no larger than that drive's Recycle Bin capacity, else it is kept and reported ("NOT TRASHED: larger than the Recycle Bin on this drive", "NOT TRASHED: this drive has no Recycle Bin", "NOT TRASHED: the Recycle Bin is turned off on this drive"). Corrected 2026-10-05: `SHQueryRecycleBinW` gives only the bin's current size, not its capacity (learn.microsoft.com shellapi `SHQUERYRBINFO`). The capacity and the "don't move files to the Recycle Bin" switch exist only as the per-volume registry values `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\{GUID}\MaxCapacity` (MB) and `NukeOnDelete`, which Microsoft does not document; disk-clean reads them read-only (volume GUID from `GetVolumeNameForVolumeMountPointW`); when `MaxCapacity` is absent it uses Windows' default (research section 9, Raymond Chen); `NukeOnDelete = 1` keeps every item on that drive. One `IFileOperation` per item, so the sink's callbacks belong to that item without matching paths. |
+| Trash | `IFileOperation` with `FOFX_RECYCLEONDELETE | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING`, not `FOFX_EARLYFAILURE`; the landed `$R…` path from `PostDeleteItem`'s `psiNewlyCreated`; `psiNewlyCreated == NULL` is treated as "deleted for good" and must never happen: before the move the item's volume must be a fixed local NTFS/ReFS volume with a Recycle Bin and the item no larger than that drive's Recycle Bin capacity, else it is kept and reported ("NOT TRASHED: larger than the Recycle Bin on this drive", "NOT TRASHED: this drive has no Recycle Bin", "NOT TRASHED: the Recycle Bin is turned off on this drive"). Corrected 2026-10-05: `SHQueryRecycleBinW` gives only the bin's current size, not its capacity (learn.microsoft.com shellapi `SHQUERYRBINFO`). The capacity and the "don't move files to the Recycle Bin" switch exist only as the per-volume registry values `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\{GUID}\MaxCapacity` (MB) and `NukeOnDelete`, which Microsoft does not document; disk-clean reads them read-only (volume GUID from `GetVolumeNameForVolumeMountPointW`); when `MaxCapacity` is absent it uses Windows' default (research section 9, Raymond Chen); `NukeOnDelete = 1` keeps every item on that drive. One `IFileOperation` per item, so the sink's callbacks belong to that item without matching paths. When the reported `$R…` path is not inside the user's own `<drive>/$Recycle.Bin/<SID>` (seen on Windows arm64: `Z:/$RECYCLE.BIN/$R…` with no SID folder), disk-clean looks in that folder for the `$R…` entry whose (volume serial, file id) equals the identity read before the move and records that path; if none matches, the record stays failed and its reason says whether the reported path holds the item and whether a matching `$R…` sits in the SID folder or directly under `<drive>/$Recycle.Bin`. |
 | In use | `ERROR_SHARING_VIOLATION` and friends from the per-item HRESULT: kept and reported "in use: close <the program> and retry" when the holder is known (Restart Manager `RmGetList`), else "in use by another program" |
 | Restore (Undo) | `MoveFileExW` of the recorded `$R…` back to the original, no overwrite, then delete the matching `$I…` |
 | Empty | delete only recorded `$R…` items whose identity still matches, with their `$I…`; read-only attributes cleared first; never `SHEmptyRecycleBin` |
 | Sync | same rules as macOS: at the `$R…` path with the same identity is "in the Recycle Bin"; at the original with the same identity is "put back"; neither is "emptied"; anything else is failed |
 | Protected | section 7 Never list of the research, case-insensitive: profile root and ancestors; Known Folders Documents, Desktop, Pictures, Music, Videos at their resolved target and their default path; OneDrive and every registered cloud sync root; `.ssh .gnupg .aws .kube .azure .claude .docker`; `%APPDATA%\gnupg`; DPAPI, Credentials, Vault, Crypto, SystemCertificates; browser profiles minus their named caches; Outlook and `*.pst`; Thunderbird; password managers and `*.kdbx`; packaged-app state (W11); WSL and Docker disks; toolchain roots X1 to X8; `~/.cache/disk-clean`'s Windows twin (the plugin data folder); `%LOCALAPPDATA%\Programs` (per-user installed apps; added at integration) |
-| Allowed roots | inside the profile; the per-user temp base from above; the user's own `$Recycle.Bin\<SID>` folders on fixed drives (for Empty) |
+| Allowed roots | inside the profile; the per-user temp base from above; the user's own `$Recycle.Bin\<SID>` folders on fixed drives (for Empty); outside the profile, the rule in "All fixed drives" |
 | `SYSTEM` backstop | `FOLDERID_Windows`, `ProgramFiles`, `ProgramFilesX86`, `ProgramData`, other users' profiles, `System Volume Information`, other SIDs' Recycle Bin folders |
 | `uid` | unused for ownership on Windows; owner checks compare the entry's owner SID with the token user's SID |
 | Fixed commands | `docker-prune` only, Review first, with the Windows note (owner answer 5). No Homebrew, no simulators, no Scoop commands |
@@ -125,6 +125,57 @@ Unity cache, D10 Unity `Library` (both siblings present), D11 Unreal DDC, `packa
 
 Report only: R1 big files, R2 old Downloads (`FOLDERID_Downloads`), D12, D13 WSL disks and D14 Docker
 disk (with how to compact), P6 per-drive pnpm stores.
+
+## All fixed drives (added 2026-10-05: the user, "I want to scan all drives")
+
+Developers on Windows keep code on `D:`, a Dev Drive (ReFS) or `C:\code`, outside the profile. The scan covers
+every fixed local drive, not only the profile.
+
+- **Which drives:** every drive `GetDriveTypeW` reports as fixed with an NTFS or ReFS file system (Dev Drives
+  included). Never removable, network, optical or RAM drives, and never a `subst` letter (its `QueryDosDeviceW`
+  target starts with `\??\`), which reports as fixed but is a folder of another drive under a second name. The profile's drive is walked as today; the rest of
+  every fixed drive (the rest of `C:` included) is walked from its root.
+- **Never walked:** the Windows folder, `Program Files`, `Program Files (x86)`, `ProgramData`, other users'
+  profiles, `System Volume Information`, `$Recycle.Bin` (the user's own bin is read for the Trash row as today),
+  `$WinREAgent`, `Recovery`, `PerfLogs`, the page file, hibernation and swap files, and every toolchain root and
+  reparse point, as in the profile.
+- **What is offered outside the profile:** only what the scan already finds by rule: `node_modules`, stale build
+  output (the `DEV_NAMES` rules, the .NET `bin`/`obj` rule and the project-folder rows), git worktrees with no
+  leftover work, and the per-drive pnpm stores (`<drive>:\.pnpm-store`, now Review first instead of Report only).
+  No cache, temp or app-data row comes from outside the profile. Big files there are Report only, as in the
+  profile.
+- **Ownership:** outside the profile an item is offered only when its owner SID is the user's (the same check temp
+  entries use), so another account's projects on a shared drive are never offered.
+- **Allowed roots** (validation, right before the move) widen to match: an item outside the profile is allowed when
+  it is on a fixed local NTFS/ReFS drive, is not a drive root, is not inside any never-walked folder above, is not
+  protected, and is owned by the user. "Only paths the scan showed" still applies, so nothing beyond those rows can
+  be deleted.
+- **Trash:** each drive's own Recycle Bin, with the existing checks (bin present and on, item not larger than it).
+- **Totals and Storage:** the "free space" header and the Storage map stay on the profile's drive in this step;
+  rows from other drives show their full path (`D:\...`) and count toward "Selected to free". A per-drive Storage
+  map is a later step.
+- **Choosing drives** (added 2026-10-05; the user: "/disk-clean regex | 'all' maybe?"): `/disk-clean` scans
+  every fixed drive. `/disk-clean C D` (drive letters, any case, separated by spaces or commas) scans the profile
+  plus only those drives; `/disk-clean all` is the same as no argument. SKILL.md passes the argument to the binary as
+  `--drives <letters|all>` on `scan` and `review`; an unknown or non-fixed letter is an error naming it, never
+  silently skipped. The profile is always scanned. The `DISK_CLEAN_DRIVES` environment variable added during the
+  build is replaced by this flag (tests pass `--drives` instead). A regex was considered and not used: drive letters
+  are a closed set of 26, and a letter list is easier to type and to read back. macOS and Linux reject `--drives`
+  other than `all` with a message saying it is Windows-only.
+- **macOS and Linux** are unchanged in this step.
+
+## Recycle Bin without a per-user folder (added 2026-10-06 from Windows arm64 CI)
+
+On the Windows arm64 runner the shell recycles into `<drive>/$RECYCLE.BIN/$R…` directly: the per-user
+`<drive>/$RECYCLE.BIN/<SID>` folder does not exist on that volume (CI log: "the item is at the reported path;
+…/<SID> could not be listed: The system cannot find the path specified"). x86_64 always uses the `<SID>` folder.
+The user asked for this to work on ARM Windows too.
+
+Rule: an item disk-clean recycled counts as in the Recycle Bin when it sits in the user's own `<SID>` folder, or
+directly in `<drive>/$RECYCLE.BIN/` when that is where the shell put it. Every action on it (sync, Undo, Empty)
+still requires the identity recorded at move time to match, exactly as today; nothing found only by name is ever
+acted on. The scan's "items already in the Recycle Bin" row still lists only the user's own `<SID>` folder, so
+other accounts' items are never offered.
 
 ## Launcher
 

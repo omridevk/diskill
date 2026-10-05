@@ -220,6 +220,8 @@ jobs:
       - name: fetch crates through Socket Firewall
         working-directory: plugins/disk-clean/cli
         run: sfw cargo fetch --locked
+        env:
+          CARGO_HTTP_CHECK_REVOKE: "false"
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
         working-directory: plugins/disk-clean/cli
@@ -297,6 +299,8 @@ jobs:
       - name: fetch crates through Socket Firewall
         working-directory: plugins/disk-clean/cli
         run: sfw cargo fetch --locked
+        env:
+          CARGO_HTTP_CHECK_REVOKE: "false"
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
         working-directory: plugins/disk-clean/cli

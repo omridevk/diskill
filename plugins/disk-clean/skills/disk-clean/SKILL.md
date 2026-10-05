@@ -19,12 +19,18 @@ Run this **in the background** (`run_in_background: true`) and tell the user to 
 browser tab that opens: the page is the progress UI, so the terminal will look idle.
 
 ```bash
-bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" review
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" review --drives "<drives>"
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" review
+powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" review --drives "<drives>"
 ```
+
+`<drives>` is the argument `/disk-clean` was given, or `all` when it was given none. Windows only:
+`/disk-clean C D` scans the profile plus drives C and D, `all` every fixed drive; macOS and Linux
+accept only `all`. Use the argument only when it is the word `all` or drive letters (A-Z, any case)
+separated by spaces or commas; for anything else do not run the command: say it is not a drive
+list and show the accepted forms (`C D`, `C,D`, `all`).
 
 It creates a run directory under `~/.cache/disk-clean/`, opens a local page in the default browser
 right away, and scans in the background while the page fills in: a live counter during the walk

@@ -43,6 +43,8 @@ pub struct Plan {
     pub big_bytes: u64,
     pub exact: HashSet<PathBuf>,
     pub parents: HashSet<PathBuf>,
+    pub roots: Vec<PathBuf>,
+    pub never: HashSet<PathBuf>,
     pub held: PathBuf,
     pub repo_tx: Option<std::sync::mpsc::Sender<PathBuf>>,
     pub days: Vec<i64>,
@@ -249,6 +251,17 @@ fn classify(plan: &Plan, parent: Option<&Frame>, name: Option<&str>, meta: &Meta
     found
 }
 
+fn start(plan: &Plan) -> Home {
+    Home {
+        depth: 0,
+        nm: plan.nm_depth >= 1,
+        dev: plan.dev_depth >= 1,
+        big: plan.big_depth >= 1,
+        repo: true,
+        is_go: false,
+    }
+}
+
 fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     let Some(f) = stack.pop() else { return 0 };
     if let Some(p) = stack.last_mut() {
@@ -358,6 +371,7 @@ fn claim(job: &Job) -> Option<PathBuf> {
 
 struct Reader {
     dev: u64,
+    pruned: HashSet<PathBuf>,
     ahead: Option<Ahead>,
     cancel: Arc<AtomicBool>,
     home_first: Option<Arc<Path>>,
@@ -406,7 +420,9 @@ fn list(dir: &Path, from: Option<&Job>, reader: &Reader) -> Vec<Entry> {
         .enumerate()
         .map(|(i, (name, meta))| {
             let next = (meta.kind == Kind::Dir && meta.dev == reader.dev)
-                .then(|| descend(dir.join(&name), from, i, reader, &mut queued));
+                .then(|| dir.join(&name))
+                .filter(|path| !reader.pruned.contains(path))
+                .map(|path| descend(path, from, i, reader, &mut queued));
             Entry { name, meta, next }
         })
         .collect();
@@ -528,6 +544,11 @@ pub fn walk(
     let threads = platform::efficiency_cores();
     let reader = Reader {
         dev: root_meta.dev,
+        pruned: if plan.map_depth.is_none() {
+            plan.never.clone()
+        } else {
+            HashSet::new()
+        },
         ahead: parallel.then(Ahead::default),
         cancel: Arc::clone(&plan.cancel),
         home_first: plan
@@ -643,21 +664,18 @@ fn consume(
 
         if meta.kind == Kind::Dir {
             let path = path_of(parent);
-            let mut home = found.home.filter(|_| path != plan.held);
+            let mut home = found
+                .home
+                .filter(|_| path != plan.held && !plan.never.contains(&path));
             let mut ins = parent.and_then(|p| {
                 p.ins
                     .map(|i| insights::enter(&mut out.insights, i, &p.path, &file_name))
             });
-            if home.is_none() && path == plan.home {
+            if path == plan.home {
                 ins = insights::start(&mut out.insights);
-                home = Some(Home {
-                    depth: 0,
-                    nm: plan.nm_depth >= 1,
-                    dev: plan.dev_depth >= 1,
-                    big: plan.big_depth >= 1,
-                    repo: true,
-                    is_go: false,
-                });
+                home = Some(start(plan));
+            } else if depth == 0 && plan.roots.contains(&path) {
+                home = Some(start(plan));
             }
             let collect_children = plan.parents.contains(&path);
             if collect_children {
@@ -711,7 +729,7 @@ fn consume(
                     .or_default()
                     .push(path.clone());
             }
-            if found.big_file {
+            if found.big_file && !plan.never.contains(&path) {
                 out.big_files.push((path, meta.size, meta.blocks));
             }
         }
