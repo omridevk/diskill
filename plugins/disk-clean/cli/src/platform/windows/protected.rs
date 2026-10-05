@@ -1,12 +1,14 @@
-use super::disk::is_fixed_drive;
+use super::disk::{is_fixed_drive, local_disks};
 use super::path::{
     at_or_within, at_or_within16, known_folder, same_text, same16, text16, user_folder, wide,
     within, within16,
 };
 use super::walk::{CLOUD_ATTRS, find_one, is_cloud_tag};
 use crate::platform::split_root;
+use std::collections::HashSet;
 use std::ffi::c_void;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{
@@ -120,6 +122,18 @@ const SYSTEM: &[&GUID] = &[
 ];
 pub(super) const RECYCLE_BIN: &str = "$Recycle.Bin";
 const SYSTEM_VOLUME_INFORMATION: &str = "System Volume Information";
+const NEVER_AT_ROOT: &[&str] = &[
+    "Windows",
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "$WinREAgent",
+    "Recovery",
+    "PerfLogs",
+    "pagefile.sys",
+    "hiberfil.sys",
+    "swapfile.sys",
+];
 
 fn app_data(home: &str, var: &str, id: &GUID, default: &str) -> Vec<String> {
     let mut bases = vec![format!("{home}/{default}")];
@@ -330,6 +344,65 @@ fn in_system(p: &str, p16: &[u16], rules: &Rules) -> bool {
         || at_or_within(rest, SYSTEM_VOLUME_INFORMATION)
         || (at_or_within(rest, RECYCLE_BIN) && !in_own_recycle_bin(p))
         || rules.system.iter().any(|s| at_or_within16(p16, s))
+}
+
+fn real_text(p: &str) -> Option<String> {
+    crate::platform::path_text(&fs::canonicalize(p).ok()?)
+}
+
+fn named_at_root(root: &str) -> Vec<String> {
+    fs::read_dir(root)
+        .map(|list| {
+            list.flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| {
+                    NEVER_AT_ROOT
+                        .iter()
+                        .chain(&[SYSTEM_VOLUME_INFORMATION, RECYCLE_BIN])
+                        .any(|never| same_text(name, never))
+                })
+                .map(|name| format!("{root}{name}"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn other_profiles(home: &str) -> Vec<String> {
+    let Some(users) = known_folder(&FOLDERID_UserProfiles) else {
+        return Vec::new();
+    };
+    fs::read_dir(&users)
+        .map(|list| {
+            list.flatten()
+                .filter_map(|e| crate::platform::path_text(&e.path()))
+                .filter(|profile| !at_or_within(home, profile))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn drives_to_walk(home: &str) -> (Vec<PathBuf>, HashSet<PathBuf>) {
+    let drives = local_disks();
+    let mut never: Vec<String> = drives.iter().flat_map(|root| named_at_root(root)).collect();
+    never.extend(other_profiles(home));
+    never.extend(
+        SYSTEM
+            .iter()
+            .filter_map(|id| known_folder(id))
+            .chain(never_roots(home))
+            .filter(|root| !at_or_within(root, home))
+            .filter_map(|root| real_text(&root)),
+    );
+    let never = never
+        .into_iter()
+        .filter(|root| !at_or_within(home, root))
+        .map(PathBuf::from)
+        .collect();
+    (drives.into_iter().map(PathBuf::from).collect(), never)
+}
+
+pub fn belongs_to_user(path: &Path, home: &str) -> bool {
+    crate::platform::path_text(path).is_some_and(|p| within(&p, home)) || owned_by_user(path)
 }
 
 pub fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {

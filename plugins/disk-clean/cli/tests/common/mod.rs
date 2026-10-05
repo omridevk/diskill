@@ -373,7 +373,8 @@ pub fn bin(home: &Path) -> Command {
         .env("TEMP", home)
         .env("TMP", home)
         .env("LOCALAPPDATA", home.join("AppData\\Local"))
-        .env("APPDATA", home.join("AppData\\Roaming"));
+        .env("APPDATA", home.join("AppData\\Roaming"))
+        .env("DISK_CLEAN_DRIVES", "");
     cmd
 }
 
