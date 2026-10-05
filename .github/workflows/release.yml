@@ -162,9 +162,89 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-windows:
+    name: build ${{ matrix.asset }} binary
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      matrix:
+        include:
+          - asset: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            runner: windows-latest
+          - asset: windows-arm64
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: "1.93"
+          targets: ${{ matrix.target }}
+      - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
+        with:
+          mode: firewall-free
+          use-cache: "false"
+      - name: fetch crates through Socket Firewall
+        working-directory: plugins/disk-clean/cli
+        run: sfw cargo fetch --locked
+      - name: Socket Firewall report
+        if: ${{ !cancelled() }}
+        working-directory: plugins/disk-clean/cli
+        run: |
+          crates=$(grep -c '^name = ' Cargo.lock)
+          blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
+          unparsed=$(jq '.parseFail // [] | length' "$SFW_JSON_REPORT_PATH")
+          {
+            echo "### Socket Firewall"
+            echo "$crates crates in Cargo.lock fetched through sfw: $blocked blocked, $unparsed unparsed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          jq . "$SFW_JSON_REPORT_PATH"
+          [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
+      - name: build binary with the static C runtime
+        working-directory: plugins/disk-clean/cli
+        env:
+          TARGET: ${{ matrix.target }}
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --frozen --target "$TARGET"
+      - name: binary does not import the C runtime DLLs
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if grep -aqiE 'vcruntime140|api-ms-win-crt-' "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe"; then
+            echo "::error::disk-clean for $TARGET imports the dynamic C runtime"
+            exit 1
+          fi
+      - name: package binary
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: disk-clean-${{ matrix.asset }}.zip
+        run: |
+          mkdir -p dist
+          cp "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe" dist/disk-clean.exe
+          powershell -NoProfile -Command "Compress-Archive -LiteralPath dist/disk-clean.exe -DestinationPath dist/$ASSET"
+          cd dist
+          printf '%s  %s\n' "$(sha256sum "$ASSET" | cut -c1-64)" "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: disk-clean-${{ matrix.asset }}
+          path: |
+            dist/disk-clean-${{ matrix.asset }}.zip
+            dist/disk-clean-${{ matrix.asset }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: attest and publish release
-    needs: [build, build-linux]
+    needs: [build, build-linux, build-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -183,13 +263,17 @@ jobs:
           shasum -a 256 -c \
             disk-clean-macos-universal.tar.gz.sha256 \
             disk-clean-linux-x86_64.tar.gz.sha256 \
-            disk-clean-linux-arm64.tar.gz.sha256
+            disk-clean-linux-arm64.tar.gz.sha256 \
+            disk-clean-windows-x86_64.zip.sha256 \
+            disk-clean-windows-arm64.zip.sha256
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/disk-clean-macos-universal.tar.gz
             dist/disk-clean-linux-x86_64.tar.gz
             dist/disk-clean-linux-arm64.tar.gz
+            dist/disk-clean-windows-x86_64.zip
+            dist/disk-clean-windows-arm64.zip
       - name: create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -202,5 +286,9 @@ jobs:
             dist/disk-clean-linux-x86_64.tar.gz.sha256 \
             dist/disk-clean-linux-arm64.tar.gz \
             dist/disk-clean-linux-arm64.tar.gz.sha256 \
+            dist/disk-clean-windows-x86_64.zip \
+            dist/disk-clean-windows-x86_64.zip.sha256 \
+            dist/disk-clean-windows-arm64.zip \
+            dist/disk-clean-windows-arm64.zip.sha256 \
             --title "disk-clean v${GITHUB_REF_NAME#disk-clean--v}" \
             --generate-notes
