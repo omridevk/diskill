@@ -1,19 +1,17 @@
 mod common;
 
+use common::{ino, text};
 use disk_clean::trash;
 use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::Duration;
 
 const TOKEN: &str = "tok-trash";
-
-fn text(p: &Path) -> String {
-    p.to_string_lossy().into_owned()
-}
 
 fn scan_row(cat: &str, action: &str, path: &str, bytes: i64) -> String {
     format!("{cat}\tTitle\tDesc\tsafe\t1\t{action}\t-\t{path}\t{path}\t{bytes}\tnote\t1\texact\n")
@@ -110,10 +108,6 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn ino(path: &Path) -> u64 {
-    fs::symlink_metadata(path).unwrap().ino()
-}
-
 #[test]
 fn approved_paths_go_to_the_trash_and_undo_restores_them_exactly() {
     let s = sandbox("trash-undo");
@@ -176,6 +170,7 @@ fn approved_paths_go_to_the_trash_and_undo_restores_them_exactly() {
     assert_eq!(again.status.code(), Some(3), "nothing left to undo");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_name_clash_in_the_trash_gets_its_own_name() {
     let s = sandbox("trash-clash");
@@ -274,6 +269,7 @@ fn sync_notices_put_back_emptied_and_replaced_items_and_never_acts() {
     fs::remove_dir_all(decoy).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn empty_removes_only_recorded_items_still_in_the_trash() {
     let s = sandbox("trash-empty");
@@ -344,6 +340,7 @@ fn items_already_in_the_trash_are_removed_for_good_not_trashed_again() {
     assert!(!old.exists() && record(&s).is_empty());
 }
 
+#[cfg(unix)]
 fn legacy_run(s: &Sandbox, originals: &[&Path]) -> PathBuf {
     let dir = s.home.join(".cache/disk-clean/held/run-1-0badf00d");
     fs::create_dir_all(&dir).unwrap();
@@ -362,6 +359,7 @@ fn legacy_run(s: &Sandbox, originals: &[&Path]) -> PathBuf {
     dir
 }
 
+#[cfg(unix)]
 #[test]
 fn migration_moves_held_runs_into_the_trash_and_drops_the_holding_folder() {
     let s = sandbox("trash-migrate");
@@ -402,6 +400,7 @@ fn migration_moves_held_runs_into_the_trash_and_drops_the_holding_folder() {
     assert_eq!(fs::read(b.join("data")).unwrap().len(), 51);
 }
 
+#[cfg(unix)]
 fn trashed_entries(s: &Sandbox) -> Vec<trash::Entry> {
     record(s)
         .into_iter()
@@ -409,6 +408,7 @@ fn trashed_entries(s: &Sandbox) -> Vec<trash::Entry> {
         .collect()
 }
 
+#[cfg(unix)]
 #[test]
 fn a_held_item_the_trash_refuses_stays_held_and_moves_on_a_later_run() {
     let s = sandbox("trash-migrate-refused");
@@ -445,6 +445,7 @@ fn a_held_item_the_trash_refuses_stays_held_and_moves_on_a_later_run() {
     assert_eq!(fs::read(b.join("data")).unwrap().len(), 51);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_held_item_left_under_its_readable_name_is_still_found_and_moved() {
     let s = sandbox("trash-migrate-renamed");
@@ -464,6 +465,7 @@ fn a_held_item_left_under_its_readable_name_is_still_found_and_moved() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_tampered_record_or_swapped_folder_is_never_followed() {
     let s = sandbox("trash-tamper");
@@ -1118,4 +1120,436 @@ fn a_trashinfo_without_its_item_still_reserves_the_name() {
     assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(0));
     assert!(a.join("data").exists());
     assert_eq!(fs::read_to_string(&reserved).unwrap(), theirs);
+}
+
+#[cfg(windows)]
+fn info_of_recycled(trashed: &Path) -> PathBuf {
+    let name = trashed.file_name().unwrap().to_string_lossy();
+    let rest = name
+        .strip_prefix("$R")
+        .unwrap_or_else(|| panic!("{name} is not a $R name"));
+    trashed.with_file_name(format!("$I{rest}"))
+}
+
+#[cfg(windows)]
+fn recycled_by_hand(bin: &Path, before: &[PathBuf]) -> PathBuf {
+    let mut added: Vec<PathBuf> = fs::read_dir(bin)
+        .unwrap()
+        .flatten()
+        .map(|e| PathBuf::from(text(&e.path())))
+        .filter(|p| {
+            p.file_name().unwrap().to_string_lossy().starts_with("$R") && !before.contains(p)
+        })
+        .collect();
+    assert_eq!(added.len(), 1, "{added:?}");
+    added.remove(0)
+}
+
+#[cfg(windows)]
+fn bin_entries(bin: &Path) -> Vec<PathBuf> {
+    fs::read_dir(bin)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| PathBuf::from(text(&e.path())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn clean_and_wait(s: &Sandbox) -> String {
+    let _ = fs::remove_file(s.run.join("status"));
+    let out = cli(s, &["clean", &text(&s.run)]);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    common::wait_for("the worker", Duration::from_secs(60), || {
+        fs::read_to_string(s.run.join("status")).unwrap_or_default() == "done\n"
+    });
+    common::assert_record_inside_ram_disk(&s.home);
+    fs::read_to_string(s.run.join("clean.log")).unwrap_or_default()
+}
+
+#[cfg(windows)]
+#[test]
+fn the_recycle_bin_gets_an_r_and_i_pair_and_undo_removes_both() {
+    let s = sandbox("trash-windows-pair");
+    let a = s.home.join("AppData/Local/odd name 100%.cache");
+    make(&a.join("nested"), 300);
+    let a_ino = ino(&a);
+    approve(&s, &[("rm", &a, 4096)]);
+    clean(&s);
+
+    assert!(!a.exists());
+    let entry = record(&s).remove(0);
+    let trashed = PathBuf::from(&entry.trashed);
+    assert_eq!(
+        trashed.parent(),
+        Some(common::trash_dir(&s.home).as_path()),
+        "{entry:?}"
+    );
+    assert_eq!((entry.ino, entry.state.as_str()), (a_ino, "trashed"));
+    assert!(trashed.join("nested/data").exists());
+    assert!(info_of_recycled(&trashed).is_file(), "the $I is written");
+
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("restored: 1 items, 4096 bytes"));
+    assert_eq!(ino(&a), a_ino, "the same item came back");
+    assert!(!trashed.exists());
+    assert!(!info_of_recycled(&trashed).exists(), "the $I goes with it");
+    assert_eq!(record(&s)[0].state, "restored");
+}
+
+#[cfg(windows)]
+#[test]
+fn items_already_in_the_recycle_bin_are_removed_for_good_not_trashed_again() {
+    let s = sandbox("trash-old-windows");
+    let bin = common::trash_dir(&s.home);
+    let doomed = s.home.join("old.txt");
+    fs::write(&doomed, b"old").unwrap();
+    let before = bin_entries(&bin);
+    common::recycle_by_hand(&doomed);
+    let old = recycled_by_hand(&bin, &before);
+    let info = info_of_recycled(&old);
+    assert!(info.is_file());
+    approve(&s, &[("rm", &old, 4096)]);
+    let dry = stdout(&cli(&s, &["clean", "--dry-run", &text(&s.run)]));
+    assert!(
+        dry.contains(&format!("rm -rf -- {}\n", text(&old))),
+        "{dry}"
+    );
+    clean(&s);
+    assert!(!old.exists() && record(&s).is_empty());
+    assert!(!info.exists(), "its $I goes with it");
+}
+
+#[cfg(windows)]
+#[test]
+fn the_confirm_plan_lists_trash_moves_apart_from_steps_that_cannot_be_undone_on_windows() {
+    let s = sandbox("trash-preview-windows");
+    let bin = common::trash_dir(&s.home);
+    let a = s.home.join("AppData/Local/a");
+    make(&a, 100);
+    let doomed = s.home.join("old");
+    make(&doomed, 100);
+    let before = bin_entries(&bin);
+    common::recycle_by_hand(&doomed);
+    let old = recycled_by_hand(&bin, &before);
+    let scan = scan_row("caches", "rm", &text(&a), 4096)
+        + &scan_row("trash", "rm", &text(&old), 10)
+        + "docker\tDocker\tD\treview\t0\tcmd\tdocker-prune\tdocker system prune -f\tcmd:docker-prune\t7\tn\t-\tvm\n";
+    fs::write(s.run.join("scan.tsv"), scan).unwrap();
+    let cats = disk_clean::review::load_scan(&s.run);
+    let index =
+        disk_clean::clean::index_scan(&disk_clean::util::read_lines(&s.run.join("scan.tsv")));
+    let items = [
+        serde_json::json!({"path": text(&a)}),
+        serde_json::json!({"path": text(&old)}),
+        serde_json::json!({"path": "cmd:docker-prune"}),
+        serde_json::json!({"path": common::SYSTEM_FILE}),
+    ];
+    let plan = disk_clean::review::preview(&cats, &index, &items, &text(&s.home));
+    let paths = plan["paths"].as_array().unwrap();
+    let of = |p: &Path| paths.iter().find(|r| r["path"] == text(p)).unwrap();
+    assert_eq!(of(&a)["bytes"], 4096);
+    assert_eq!(of(&a)["trashed"], false);
+    assert_eq!(of(&old)["trashed"], true, "already in a Recycle Bin");
+    assert_eq!(plan["paths_bytes"], 4106);
+    assert_eq!(plan["final"], serde_json::json!(["docker system prune -f"]));
+    assert_eq!((&plan["count"], &plan["bytes"]), (&3.into(), &4113.into()));
+    assert!(a.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn empty_removes_only_recorded_items_still_in_the_recycle_bin() {
+    let s = sandbox("trash-empty-windows");
+    let (a, b) = (
+        s.home.join("AppData/Local/a"),
+        s.home.join("AppData/Local/b"),
+    );
+    make(&a, 3000);
+    make(&b, 100);
+    approve(&s, &[("rm", &a, 4096)]);
+    clean(&s);
+    let bin = common::trash_dir(&s.home);
+    let theirs_original = s.home.join("theirs.txt");
+    fs::write(&theirs_original, b"the user's").unwrap();
+    let before = bin_entries(&bin);
+    common::recycle_by_hand(&theirs_original);
+    let theirs = recycled_by_hand(&bin, &before);
+    let trashed = PathBuf::from(&record(&s)[0].trashed);
+
+    let out = cli(&s, &["empty", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("emptied: 1 items, 4096 bytes"));
+    assert!(!trashed.exists() && !info_of_recycled(&trashed).exists() && !a.exists());
+    assert!(
+        theirs.exists() && info_of_recycled(&theirs).exists() && b.exists(),
+        "only our record is touched"
+    );
+    assert_eq!(record(&s)[0].state, "emptied");
+    assert_eq!(cli(&s, &["empty", &text(&s.run)]).status.code(), Some(3));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_tampered_record_or_swapped_junction_is_never_followed() {
+    let s = sandbox("trash-tamper-windows");
+    let caches = s.home.join("AppData/Local");
+    let (a, b) = (caches.join("a/inner"), caches.join("b"));
+    make(&a, 10);
+    make(&b, 10);
+    approve(&s, &[("rm", &a, 1), ("rm", &b, 2)]);
+    clean(&s);
+    let decoy = common::temp_dir("trash-tamper-decoy-windows");
+    fs::rename(caches.join("a"), caches.join("a-moved")).unwrap();
+    common::junction(&caches.join("a"), &decoy.0);
+    let path = trash::record_path(&text(&s.home));
+    let b_trashed = record(&s)[1].trashed.clone();
+    let precious = caches.join("precious");
+    make(&precious, 5);
+    let tampered = fs::read_to_string(&path)
+        .unwrap()
+        .replace(&b_trashed, &text(&precious));
+    fs::write(&path, tampered).unwrap();
+
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(
+        !decoy.0.join("inner").exists(),
+        "never restored through a junction"
+    );
+    assert!(precious.join("data").exists());
+    let entries = record(&s);
+    assert!(
+        entries[0].reason.contains("resolves elsewhere"),
+        "{entries:?}"
+    );
+    assert_eq!(entries[0].state, "trashed");
+    assert_eq!(entries[1].state, "failed", "{entries:?}");
+    let out = cli(&s, &["empty", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(precious.join("data").exists());
+    assert!(
+        Path::new(&b_trashed).exists(),
+        "the real b is never touched by a tampered entry"
+    );
+    assert!(!Path::new(&entries[0].trashed).exists());
+    fs::remove_dir_all(b_trashed).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn an_item_on_another_drive_goes_to_that_drives_recycle_bin() {
+    let s = sandbox("trash-windows-other");
+    let other = common::other_drive();
+    let (a, b) = (other.0.join("a"), other.0.join("b"));
+    make(&a, 100);
+    make(&b, 200);
+    let other_bin = common::recycle_bin(&other.0);
+
+    approve(&s, &[("rm", &a, 4096)]);
+    clean(&s);
+    let entry = record(&s).remove(0);
+    let trashed = PathBuf::from(&entry.trashed);
+    assert_eq!(trashed.parent(), Some(other_bin.as_path()), "{entry:?}");
+    assert!(info_of_recycled(&trashed).is_file());
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(a.join("data").exists() && !trashed.exists());
+    assert!(!info_of_recycled(&trashed).exists());
+
+    approve(&s, &[("rm", &b, 4096)]);
+    clean(&s);
+    let entry = record(&s).pop().unwrap();
+    let trashed = PathBuf::from(&entry.trashed);
+    assert_eq!(trashed.parent(), Some(other_bin.as_path()));
+    let out = cli(&s, &["empty", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("emptied: 1 items, 4096 bytes"));
+    assert!(!trashed.exists() && !info_of_recycled(&trashed).exists() && !b.exists());
+    assert_eq!(record(&s).pop().unwrap().state, "emptied");
+}
+
+#[cfg(windows)]
+#[test]
+fn an_item_on_a_drive_mounted_in_a_folder_is_never_deleted_for_good() {
+    let s = sandbox("trash-windows-folder-mount");
+    let mounted = common::folder_volume(&s.home.join("mnt"));
+    let a = mounted.0.join("a");
+    make(&a, 100);
+    approve(&s, &[("rm", &a, 4096)]);
+    let log = clean_and_wait(&s);
+    let trashed: Vec<trash::Entry> = record(&s)
+        .into_iter()
+        .filter(|e| e.state == "trashed")
+        .collect();
+    assert!(
+        a.join("data").exists()
+            || trashed
+                .iter()
+                .any(|e| Path::new(&e.trashed).join("data").exists()),
+        "kept or in a Recycle Bin, never gone\n{log}"
+    );
+    if !trashed.is_empty() {
+        assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(0));
+        assert!(a.join("data").exists(), "{log}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn undo_onto_a_path_that_came_back_keeps_the_item_and_its_i_file() {
+    let s = sandbox("trash-windows-conflict");
+    let a = s.home.join("AppData/Local/a");
+    make(&a, 100);
+    approve(&s, &[("rm", &a, 4096)]);
+    clean(&s);
+    let trashed = PathBuf::from(&record(&s)[0].trashed);
+    make(&a, 9);
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        stdout(&out).contains("still in the Trash: 1"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        fs::read(a.join("data")).unwrap().len(),
+        9,
+        "never overwritten"
+    );
+    assert_eq!(fs::read(trashed.join("data")).unwrap().len(), 100);
+    assert!(info_of_recycled(&trashed).is_file(), "the $I stays");
+    let entry = &record(&s)[0];
+    assert_eq!(
+        (entry.state.as_str(), entry.reason.as_str()),
+        ("trashed", trash::STILL_THERE)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn an_explorer_restore_or_empty_is_picked_up_by_sync() {
+    let s = sandbox("trash-windows-sync");
+    let (put, gone, kept) = (
+        s.home.join("AppData/Local/put"),
+        s.home.join("AppData/Local/gone"),
+        s.home.join("AppData/Local/kept"),
+    );
+    for p in [&put, &gone, &kept] {
+        make(p, 10);
+    }
+    approve(&s, &[("rm", &put, 1), ("rm", &gone, 2), ("rm", &kept, 3)]);
+    clean(&s);
+    let at = |name: &str| {
+        record(&s)
+            .into_iter()
+            .find(|e| e.original.ends_with(name))
+            .unwrap()
+    };
+    let put_trashed = PathBuf::from(at("/put").trashed);
+    fs::rename(&put_trashed, &put).unwrap();
+    fs::remove_file(info_of_recycled(&put_trashed)).unwrap();
+    let gone_trashed = PathBuf::from(at("/gone").trashed);
+    fs::remove_dir_all(&gone_trashed).unwrap();
+    fs::remove_file(info_of_recycled(&gone_trashed)).unwrap();
+
+    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    assert!(out.status.code().is_some());
+    assert_eq!(at("/put").state, "put-back");
+    assert_eq!(at("/gone").state, "emptied");
+    assert_eq!(at("/kept").state, "trashed");
+    let out = cli(&s, &["empty", &text(&s.run)]);
+    assert!(
+        stdout(&out).contains("emptied: 1 items"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(put.join("data").exists(), "never acted on twice");
+    assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(3));
+}
+
+#[cfg(windows)]
+#[test]
+fn an_item_held_open_by_another_program_is_kept_and_reported_in_use() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let s = sandbox("trash-windows-in-use");
+    let caches = s.home.join("AppData/Local");
+    fs::create_dir_all(&caches).unwrap();
+    let (held, free) = (caches.join("held.log"), caches.join("free"));
+    fs::write(&held, b"open").unwrap();
+    make(&free, 10);
+    let handle = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&held)
+        .unwrap();
+    approve(&s, &[("rm", &held, 4096), ("rm", &free, 4096)]);
+    let log = clean_and_wait(&s);
+    drop(handle);
+    assert_eq!(fs::read(&held).unwrap(), b"open", "kept\n{log}");
+    assert!(!free.exists(), "the rest still moves\n{log}");
+    let failed = named(&s.run, "failed");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["path"], text(&held));
+    assert!(
+        failed[0]["reason"].as_str().unwrap().contains("in use"),
+        "{}",
+        failed[0]
+    );
+    assert!(log.contains("in use"), "{log}");
+}
+
+#[cfg(windows)]
+#[test]
+fn an_item_larger_than_the_recycle_bin_is_kept() {
+    let s = sandbox("trash-windows-too-big");
+    let caches = s.home.join("AppData/Local");
+    fs::create_dir_all(&caches).unwrap();
+    let big = caches.join("big.bin");
+    fs::File::create(&big)
+        .unwrap()
+        .set_len(600 * 1024 * 1024)
+        .unwrap();
+    approve(&s, &[("rm", &big, 600 * 1024 * 1024)]);
+    let log = clean_and_wait(&s);
+    assert!(big.is_file(), "never deleted for good\n{log}");
+    assert!(
+        log.contains("NOT TRASHED") && log.contains("larger than the Recycle Bin on this drive"),
+        "{log}"
+    );
+    assert!(record(&s).iter().all(|e| e.state != "trashed"));
+    fs::remove_file(big).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn a_path_longer_than_260_characters_is_trashed_and_restored() {
+    let s = sandbox("trash-windows-long");
+    let segment = "d".repeat(100);
+    let deep = s
+        .home
+        .join("AppData/Local")
+        .join(&segment)
+        .join(&segment)
+        .join(&segment);
+    assert!(text(&deep).len() > 260);
+    make(&deep, 100);
+    approve(&s, &[("rm", &deep, 4096)]);
+    clean(&s);
+    assert!(!deep.exists());
+    let entry = record(&s).remove(0);
+    assert_eq!(
+        (entry.original.as_str(), entry.state.as_str()),
+        (text(&deep).as_str(), "trashed")
+    );
+    let out = cli(&s, &["undo", &text(&s.run)]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert_eq!(fs::read(deep.join("data")).unwrap().len(), 100);
 }

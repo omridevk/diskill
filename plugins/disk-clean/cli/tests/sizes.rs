@@ -3,20 +3,25 @@ mod common;
 use disk_clean::walk;
 use std::collections::HashSet;
 use std::fs;
+#[cfg(unix)]
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
+#[cfg(unix)]
 use std::process::Command;
 
+#[cfg(unix)]
 fn du_kb(path: &Path) -> u64 {
     let out = common::output(Command::new("du").arg("-sk").arg(path));
     let text = String::from_utf8(out.stdout).unwrap();
     text.split_whitespace().next().unwrap().parse().unwrap()
 }
 
+#[cfg(unix)]
 fn walk_kb(path: &Path) -> u64 {
     walk::size_of(path).unwrap().div_ceil(2)
 }
 
+#[cfg(unix)]
 #[test]
 fn walk_totals_match_du() {
     let t = common::temp_dir("sizes");
@@ -52,6 +57,7 @@ fn walk_totals_match_du() {
     assert!(walk_kb(&sparse) < 1024, "sparse file counted by allocation");
 }
 
+#[cfg(unix)]
 #[test]
 fn map_dirs_carry_file_count_and_newest_mtime() {
     let t = common::temp_dir("map-stats");

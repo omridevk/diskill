@@ -51,7 +51,7 @@ fn scan_writes_insights() {
 
     let out = common::output(
         common::bin(&home)
-            .args(["scan", &run.to_string_lossy()])
+            .args(["scan", &common::text(&run)])
             .env("DISK_CLEAN_SKIP_MAP", "1"),
     );
     assert!(

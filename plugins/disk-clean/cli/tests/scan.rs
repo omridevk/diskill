@@ -27,7 +27,7 @@ fn docker_reclaimable_parsing() {
 
 fn scan(home: &Path, run: &Path) -> String {
     let out = common::cli(
-        &["scan", &run.to_string_lossy()],
+        &["scan", &common::text(run)],
         home,
         &[
             ("DISK_CLEAN_SKIP_MAP", "1"),
@@ -40,6 +40,7 @@ fn scan(home: &Path, run: &Path) -> String {
     err
 }
 
+#[cfg(unix)]
 #[test]
 fn a_symlinked_home_is_scanned_through_its_real_path() {
     let t = common::temp_dir("scan-homelink");
@@ -60,6 +61,7 @@ fn a_symlinked_home_is_scanned_through_its_real_path() {
     assert!(rows.contains(&wanted), "{rows}");
 }
 
+#[cfg(unix)]
 #[test]
 fn folders_nested_too_deep_to_read_are_reported() {
     let t = common::temp_dir("scan-deep");
@@ -128,4 +130,25 @@ fn a_future_mtime_never_becomes_the_newest_change_of_its_parents() {
         newest(&root) > 1_600_000_000,
         "the normal file still counts"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_home_reached_through_a_junction_is_scanned_through_its_real_path() {
+    let t = common::temp_dir("scan-homelink-windows");
+    let real = t.0.join("real-home");
+    let nm = real.join("code/app/node_modules/pkg");
+    fs::create_dir_all(&nm).unwrap();
+    fs::write(nm.join("index.js"), vec![1u8; 8192]).unwrap();
+    let link = t.0.join("home-link");
+    common::junction(&link, &real);
+    let run = t.0.join("run");
+    let err = scan(&link, &run);
+    assert!(
+        err.contains(&format!("resolves to {}", common::text(&real))),
+        "{err}"
+    );
+    let rows = fs::read_to_string(run.join("scan.tsv")).unwrap();
+    let wanted = format!("\t{}\t", common::text(&real.join("code/app/node_modules")));
+    assert!(rows.contains(&wanted), "{rows}");
 }
