@@ -1,4 +1,6 @@
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(unix)]
+mod unix;
 #[cfg(target_os = "macos")]
 pub use macos::*;

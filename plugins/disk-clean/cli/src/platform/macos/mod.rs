@@ -17,3 +17,5 @@ pub use protected::*;
 pub use time::*;
 pub use trash::*;
 pub use walk::*;
+
+pub use crate::platform::unix::*;
