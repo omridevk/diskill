@@ -128,7 +128,7 @@ pub(super) fn is_cloud_tag(attrs: u32, tag: u32) -> bool {
     attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 && tag & CLOUD_TAG_MASK == IO_REPARSE_TAG_CLOUD
 }
 
-fn kind_of(attrs: u32, tag: u32) -> Kind {
+pub(super) fn kind_of(attrs: u32, tag: u32) -> Kind {
     let reparse = attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0;
     if reparse && tag & NAME_SURROGATE != 0 {
         Kind::Symlink

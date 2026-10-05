@@ -215,7 +215,7 @@ fn rm_rejection(
     if !is_allowed(value, home, tmp_base) {
         return Some("protected path");
     }
-    if fs::symlink_metadata(value).is_err() {
+    if platform::is_link(Path::new(value)).is_none() {
         return Some("already gone");
     }
     safe_to_remove(action, value, home, tmp_base).err()
@@ -260,8 +260,7 @@ pub fn safe_to_remove(
     if platform::path_text(&real_parent.join(name)).as_deref() != Some(target) {
         return Err(PATH_CHANGED);
     }
-    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
-    if action == "worktree" && is_link {
+    if action == "worktree" && platform::is_link(path) == Some(true) {
         return Err("the worktree folder is now a symlink");
     }
     Ok(())

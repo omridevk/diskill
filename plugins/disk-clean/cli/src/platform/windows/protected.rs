@@ -3,8 +3,9 @@ use super::path::{
     at_or_within, at_or_within16, known_folder, same_text, same16, text16, user_folder, wide,
     within, within16,
 };
-use super::walk::{CLOUD_ATTRS, find_each, find_one, is_cloud_tag};
+use super::walk::{CLOUD_ATTRS, find_each, find_one, is_cloud_tag, kind_of};
 use crate::platform::split_root;
+use crate::walk::Kind;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
@@ -295,10 +296,13 @@ fn is_cloud(attrs: u32, tag: u32) -> bool {
     attrs & CLOUD_ATTRS != 0 || is_cloud_tag(attrs, tag)
 }
 
-type CloudNames = HashMap<PathBuf, Option<Vec<String>>>;
+struct Listing {
+    cloud: Vec<String>,
+    links: HashMap<String, bool>,
+}
 
 thread_local! {
-    static FOLDERS: RefCell<Option<CloudNames>> = const { RefCell::new(None) };
+    static FOLDERS: RefCell<Option<HashMap<PathBuf, Option<Listing>>>> = const { RefCell::new(None) };
 }
 
 pub fn planning<T>(plan: impl FnOnce() -> T) -> T {
@@ -308,26 +312,57 @@ pub fn planning<T>(plan: impl FnOnce() -> T) -> T {
     planned
 }
 
-fn cloud_names(dir: &Path) -> Option<Vec<String>> {
-    Some(
-        find_each(dir)?
-            .into_iter()
-            .filter(|(_, attrs, tag)| is_cloud(*attrs, *tag))
-            .filter_map(|(name, _, _)| name.into_string().ok())
-            .collect(),
-    )
+fn listing(dir: &Path) -> Option<Listing> {
+    let mut listed = Listing {
+        cloud: Vec::new(),
+        links: HashMap::new(),
+    };
+    for (name, attrs, tag) in find_each(dir)? {
+        let Ok(name) = name.into_string() else {
+            continue;
+        };
+        if is_cloud(attrs, tag) {
+            listed.cloud.push(name.clone());
+        }
+        listed
+            .links
+            .insert(name, kind_of(attrs, tag) == Kind::Symlink);
+    }
+    Some(listed)
+}
+
+fn listed<T>(at: &Path, answer: impl FnOnce(&Listing, &str) -> T) -> Option<T> {
+    let (dir, name) = (at.parent()?, at.file_name()?.to_str()?);
+    FOLDERS.with_borrow_mut(|folders| {
+        let listing = folders
+            .as_mut()?
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| listing(dir));
+        listing.as_ref().map(|listing| answer(listing, name))
+    })
 }
 
 fn listed_cloud(at: &Path) -> Option<bool> {
-    let (dir, name) = (at.parent()?, at.file_name()?.to_str()?);
-    FOLDERS.with_borrow_mut(|folders| {
-        let names = folders
-            .as_mut()?
-            .entry(dir.to_path_buf())
-            .or_insert_with(|| cloud_names(dir));
-        names
-            .as_ref()
-            .map(|names| names.iter().any(|n| same_text(n, name)))
+    listed(at, |listing, name| {
+        listing.cloud.iter().any(|n| same_text(n, name))
+    })
+}
+
+pub fn is_link(p: &Path) -> Option<bool> {
+    let from_listing = listed(p, |listing, name| {
+        // ponytail: a name missing exactly is matched by a scan of the folder; only gone items pay it.
+        listing.links.get(name).copied().or_else(|| {
+            listing
+                .links
+                .iter()
+                .find(|(listed, _)| same_text(listed, name))
+                .map(|(_, link)| *link)
+        })
+    });
+    from_listing.unwrap_or_else(|| {
+        fs::symlink_metadata(p)
+            .ok()
+            .map(|m| m.file_type().is_symlink())
     })
 }
 
@@ -448,7 +483,7 @@ pub fn belongs_to_user(path: &Path, home: &str) -> bool {
 }
 
 fn owned_or_restored_into_owned(p: &Path) -> bool {
-    if fs::symlink_metadata(p).is_ok() {
+    if is_link(p).is_some() {
         return owned_by_user(p);
     }
     p.parent().is_some_and(owned_by_user)

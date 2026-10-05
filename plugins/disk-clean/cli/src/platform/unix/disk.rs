@@ -11,6 +11,12 @@ pub fn planning<T>(plan: impl FnOnce() -> T) -> T {
     plan()
 }
 
+pub fn is_link(path: &Path) -> Option<bool> {
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|m| m.file_type().is_symlink())
+}
+
 pub fn belongs_to_user(_path: &Path, _home: &str) -> bool {
     true
 }
