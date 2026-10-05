@@ -70,8 +70,6 @@ fn plausible(mtime: i64, now: i64) -> i64 {
 }
 
 const NM_TOP: &[&str] = &[
-    "Library",
-    ".Trash",
     "Applications",
     ".claude",
     ".nvm",
@@ -89,8 +87,6 @@ const NM_TOP: &[&str] = &[
     "Desktop",
 ];
 const DEV_TOP: &[&str] = &[
-    "Library",
-    ".Trash",
     "Applications",
     ".cargo",
     ".gradle",
@@ -121,8 +117,6 @@ const DEV_NAMES: &[&str] = &[
     ".ruff_cache",
 ];
 const REPO_SKIP: &[&str] = &[
-    "Library",
-    ".Trash",
     "node_modules",
     ".cache",
     ".npm",
@@ -171,8 +165,9 @@ struct Found {
 fn repo_step(repo_depth: usize, parent_depth: usize, name: Option<&str>) -> bool {
     let hidden_top =
         parent_depth == 0 && name.is_some_and(|n| n.starts_with('.') && n != ".claude");
-    name.is_none_or(|n| n != ".git" && !REPO_SKIP.contains(&n))
-        && parent_depth < repo_depth
+    name.is_none_or(|n| {
+        n != ".git" && !platform::HOME_SYSTEM_DIRS.contains(&n) && !REPO_SKIP.contains(&n)
+    }) && parent_depth < repo_depth
         && !hidden_top
 }
 
@@ -242,19 +237,21 @@ fn classify(plan: &Plan, parent: Option<&Frame>, name: Option<&str>, meta: &Meta
     }
     if meta.kind != Kind::Dir {
         let pruned =
-            (d == 1 && (is("Library") || is(".Trash"))) || is(".git") || is("node_modules");
+            (d == 1 && any(platform::HOME_SYSTEM_DIRS)) || is(".git") || is("node_modules");
         found.big_file = ph.big && !pruned && meta.kind == Kind::File && meta.size > plan.big_bytes;
         return found;
     }
-    let nm_pruned = (d == 1 && any(NM_TOP)) || is(".git");
+    let nm_pruned = (d == 1 && (any(platform::HOME_SYSTEM_DIRS) || any(NM_TOP))) || is(".git");
     let is_nm = is("node_modules");
     found.node_modules = ph.nm && !nm_pruned && is_nm;
-    let dev_pruned = (d == 1 && any(DEV_TOP)) || (d == 2 && ph.is_go && is("pkg")) || is(".git");
+    let dev_pruned = (d == 1 && (any(platform::HOME_SYSTEM_DIRS) || any(DEV_TOP)))
+        || (d == 2 && ph.is_go && is("pkg"))
+        || is(".git");
     let dev_match = any(DEV_NAMES);
     found.artifact =
         ph.dev && !dev_pruned && dev_match && (plan.now - meta.mtime) / 86400 > plan.stale_days;
     let big_pruned =
-        (d == 1 && (is("Library") || is(".Trash"))) || is(".git") || is("node_modules");
+        (d == 1 && any(platform::HOME_SYSTEM_DIRS)) || is(".git") || is("node_modules");
     found.home = Some(Home {
         depth: d,
         nm: ph.nm && !nm_pruned && !is_nm && d < plan.nm_depth,
