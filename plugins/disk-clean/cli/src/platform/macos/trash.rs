@@ -40,7 +40,7 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
         .create(dir)
 }
 
-fn uid() -> u32 {
+pub fn uid() -> u32 {
     // SAFETY: getuid has no preconditions and cannot fail.
     unsafe { libc::getuid() }
 }
@@ -62,7 +62,7 @@ pub fn dev_and_ino(meta: &fs::Metadata) -> (u64, u64) {
 pub fn same_item(path: &str, dev: u64, ino: u64) -> Option<bool> {
     fs::symlink_metadata(path)
         .ok()
-        .map(|m| m.dev() == dev && m.ino() == ino)
+        .map(|m| dev_and_ino(&m) == (dev, ino))
 }
 
 #[derive(Deserialize)]
