@@ -252,7 +252,7 @@ fn in_own_recycle_bin(p: &str) -> bool {
 }
 
 fn in_system(p: &str, home: &str) -> bool {
-    let Some((root, rest)) = split_root(p) else {
+    let Some((_, rest)) = split_root(p) else {
         return true;
     };
     let other_profile = known_folder(&FOLDERID_UserProfiles)
@@ -264,7 +264,6 @@ fn in_system(p: &str, home: &str) -> bool {
             .iter()
             .filter_map(|id| known_folder(id))
             .any(|s| at_or_within(p, &s) && !at_or_within(home, &s))
-        || root.is_empty()
 }
 
 pub fn in_allowed_root(p: &str, home: &str, tmp_base: Option<&str>) -> bool {
