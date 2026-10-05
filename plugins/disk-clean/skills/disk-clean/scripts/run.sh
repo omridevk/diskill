@@ -3,7 +3,12 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 plugin_root=$(cd "$here/../../.." && pwd)
-asset=disk-clean-macos-universal.tar.gz
+case "$(uname -s)/$(uname -m)" in
+  Darwin/*) asset=disk-clean-macos-universal.tar.gz ;;
+  Linux/x86_64) asset=disk-clean-linux-x86_64.tar.gz ;;
+  Linux/aarch64 | Linux/arm64) asset=disk-clean-linux-arm64.tar.gz ;;
+  *) asset= ;;
+esac
 
 data=${1:-}
 [ "$#" -gt 0 ] && shift
@@ -30,14 +35,17 @@ tmp=$(mktemp -d "$data/bin/.install.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 download() {
-  [ "$(uname -s)" = Darwin ] || return 1
+  [ -n "$asset" ] || return 1
   local url="https://github.com/omridevk/mopper/releases/download/disk-clean--v$version/$asset"
   command -v curl >/dev/null 2>&1 || return 1
+  local sum=(shasum -a 256)
+  command -v sha256sum >/dev/null 2>&1 && sum=(sha256sum)
+  command -v "${sum[0]}" >/dev/null 2>&1 || return 1
   echo "disk-clean: downloading release v$version..." >&2
   curl -fsL --retry 2 -o "$tmp/$asset" "$url" || return 1
   curl -fsL --retry 2 -o "$tmp/$asset.sha256" "$url.sha256" || return 1
   if [ "$(awk '{print $2}' "$tmp/$asset.sha256")" != "$asset" ] ||
-    ! (cd "$tmp" && shasum -a 256 -c "$asset.sha256" >/dev/null 2>&1); then
+    ! (cd "$tmp" && "${sum[@]}" -c "$asset.sha256" >/dev/null 2>&1); then
     echo "disk-clean: checksum mismatch on the downloaded v$version release, refusing to run it" >&2
     exit 1
   fi

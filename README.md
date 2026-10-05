@@ -31,7 +31,7 @@ Safety:
   - no ignored files except known build output
 - The branch and all its commits always stay.
 
-Requirements: macOS and `git`. Rust only if building from source.
+Requirements: macOS or Linux, and `git`. Rust only if building from source.
 
 The skill runs a single `disk-clean` binary through `scripts/run.sh`. On first use it downloads
 the release built for the installed plugin version from
@@ -99,13 +99,17 @@ Set `DISK_CLEAN_REVIEW_URL` to a running `disk-clean review` server to proxy `/p
    Installed copies only update when that string changes, and `run.sh` fetches the binary for it.
 2. Tag with `claude plugin tag ./plugins/disk-clean` (creates `disk-clean--v<version>`) and push the tag.
 3. The `release` workflow checks the tag matches `plugin.json`, builds an arm64 + x86_64 universal
-   binary, and publishes `disk-clean-macos-universal.tar.gz` with its `.sha256` and a signed
-   build provenance attestation. Crates are fetched through Socket Firewall Free, then built offline.
+   macOS binary and static musl Linux binaries for x86_64 and arm64, and publishes
+   `disk-clean-macos-universal.tar.gz`, `disk-clean-linux-x86_64.tar.gz` and
+   `disk-clean-linux-arm64.tar.gz`, each with its `.sha256` and a signed build provenance
+   attestation. Crates are fetched through Socket Firewall Free, then built offline.
 
 To verify a downloaded release came from this repo's workflow:
 
 ```bash
 gh attestation verify disk-clean-macos-universal.tar.gz --repo omridevk/mopper
+gh attestation verify disk-clean-linux-x86_64.tar.gz --repo omridevk/mopper
+gh attestation verify disk-clean-linux-arm64.tar.gz --repo omridevk/mopper
 ```
 
 ## License

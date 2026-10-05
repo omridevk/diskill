@@ -9,8 +9,8 @@ Scan and review (stages 1 and 2) run as one command, then stage 3 deletes. Never
 
 Every stage goes through one launcher. It runs the `disk-clean` binary for this plugin version,
 fetching it on first use (the published release, checksum-verified, or a `cargo build` from the
-bundled source when no release exists). On Linux it is built from source with cargo for now. The
-first run may print a download or build line on stderr.
+bundled source when no release exists). The first run may print a download or build line on
+stderr.
 
 ## Stages 1 and 2 — Scan and review
 
