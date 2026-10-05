@@ -11,18 +11,26 @@ fn resolve_home(raw: &str) -> Result<String, String> {
     if raw.is_empty() {
         return Err("HOME is empty".to_string());
     }
-    if !raw.starts_with('/') {
+    if !Path::new(raw).is_absolute() {
         return Err(format!("HOME is not an absolute path: {raw}"));
     }
     let real = fs::canonicalize(raw).map_err(|e| format!("HOME {raw} cannot be resolved: {e}"))?;
-    match real.to_str() {
-        Some(s) if real.is_dir() && s != "/" => Ok(s.to_string()),
+    match crate::platform::path_text(&real) {
+        Some(s) if real.is_dir() && !is_root(&s) => Ok(s),
         _ => Err(format!("HOME {raw} is not a usable home folder")),
     }
 }
 
+pub fn shown(p: &Path) -> String {
+    crate::platform::path_text(p).unwrap_or_else(|| p.display().to_string())
+}
+
+pub fn is_root(p: &str) -> bool {
+    crate::platform::split_root(p).is_some_and(|(_, rest)| rest.is_empty())
+}
+
 pub fn checked_home() -> Result<String, String> {
-    HOME.get_or_init(|| resolve_home(&std::env::var("HOME").unwrap_or_default()))
+    HOME.get_or_init(|| resolve_home(&crate::platform::raw_home()))
         .clone()
 }
 

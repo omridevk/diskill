@@ -135,6 +135,104 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
 
+  disk-clean-windows:
+    name: disk-clean cli (Windows, x86_64)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: plugins/disk-clean/cli
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: "1.93"
+          components: rustfmt, clippy
+      - name: install Socket Firewall
+        env:
+          SFW_ASSET: sfw-free-windows-x86_64.exe
+          SFW_SHA256: f8c94fc5e41d49c51d2fd013c2c169274df9c483fc763d8c82ff71c5579d3bb0
+        run: |
+          dir="$RUNNER_TEMP/sfw"
+          mkdir -p "$dir"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$dir/sfw.exe" \
+            "https://github.com/SocketDev/sfw-free/releases/download/v1.15.4/$SFW_ASSET"
+          echo "$SFW_SHA256  $dir/sfw.exe" | sha256sum -c
+          chmod 755 "$dir/sfw.exe"
+          echo "$dir" >> "$GITHUB_PATH"
+          echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
+      - name: fetch crates through Socket Firewall
+        run: sfw cargo fetch --locked
+      - name: Socket Firewall report
+        if: ${{ !cancelled() }}
+        run: |
+          crates=$(grep -c '^name = ' Cargo.lock)
+          blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
+          unparsed=$(jq '.parseFail // [] | length' "$SFW_JSON_REPORT_PATH")
+          {
+            echo "### Socket Firewall"
+            echo "$crates crates in Cargo.lock fetched through sfw: $blocked blocked, $unparsed unparsed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          jq . "$SFW_JSON_REPORT_PATH"
+          [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
+      - run: cargo fmt --check
+      - run: cargo clippy --frozen --all-targets -- -D warnings
+      - run: cargo test --frozen
+
+  disk-clean-windows-arm:
+    name: disk-clean cli (Windows, arm64)
+    runs-on: windows-11-arm
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: plugins/disk-clean/cli
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: "1.93"
+          components: rustfmt, clippy
+      - name: install Socket Firewall
+        env:
+          SFW_ASSET: sfw-free-windows-arm64.exe
+          SFW_SHA256: 16607f9c64055b8e0af918dc93a72a342ca8352f46e6e3f810d1a378a380a82a
+        run: |
+          dir="$RUNNER_TEMP/sfw"
+          mkdir -p "$dir"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$dir/sfw.exe" \
+            "https://github.com/SocketDev/sfw-free/releases/download/v1.15.4/$SFW_ASSET"
+          echo "$SFW_SHA256  $dir/sfw.exe" | sha256sum -c
+          chmod 755 "$dir/sfw.exe"
+          echo "$dir" >> "$GITHUB_PATH"
+          echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
+      - name: fetch crates through Socket Firewall
+        run: sfw cargo fetch --locked
+      - name: Socket Firewall report
+        if: ${{ !cancelled() }}
+        run: |
+          crates=$(grep -c '^name = ' Cargo.lock)
+          blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
+          unparsed=$(jq '.parseFail // [] | length' "$SFW_JSON_REPORT_PATH")
+          {
+            echo "### Socket Firewall"
+            echo "$crates crates in Cargo.lock fetched through sfw: $blocked blocked, $unparsed unparsed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          jq . "$SFW_JSON_REPORT_PATH"
+          [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
+      - run: cargo fmt --check
+      - run: cargo clippy --frozen --all-targets -- -D warnings
+      - run: cargo test --frozen
+
   zizmor:
     name: zizmor
     runs-on: ubuntu-latest

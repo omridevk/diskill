@@ -1,6 +1,6 @@
 use super::trash::home_trash;
 use crate::platform;
-use crate::scan::{Cat, Config, Ctx, Row, children_of, existing, h, row, sized};
+use crate::scan::{Cat, Config, Ctx, Row, SIMS_KEY, children_of, existing, h, row, sized};
 use std::collections::HashSet;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -65,7 +65,6 @@ pub const HOME_SYSTEM_DIRS: &[&str] = &[".cache", ".config", ".local", ".var", "
 pub const SYSTEM_TMP: &str = "/tmp";
 pub const PNPM_STORE_NOTE: &str = " Size is apparent: pnpm hard-links package files from ~/.local/share/pnpm/store, so deleting frees only files no other project or the store still links.";
 pub const SIMS_COMMAND: &str = "";
-pub const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
 pub const THIS_COMPUTER: &str = "this computer";
 pub const DOCKER_NOTE: &str = "With Docker Desktop the space stays inside its VM disk until that disk is reset in Docker Desktop. Named volumes are never touched.";
 

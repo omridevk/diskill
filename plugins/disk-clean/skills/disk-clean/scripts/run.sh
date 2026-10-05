@@ -3,6 +3,11 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 plugin_root=$(cd "$here/../../.." && pwd)
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$here/run.ps1")" "$@"
+    ;;
+esac
 case "$(uname -s)/$(uname -m)" in
   Darwin/*) asset=disk-clean-macos-universal.tar.gz ;;
   Linux/x86_64) asset=disk-clean-linux-x86_64.tar.gz ;;

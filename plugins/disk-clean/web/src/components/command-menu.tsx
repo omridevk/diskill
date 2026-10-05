@@ -28,9 +28,9 @@ function pagesAt(commands: readonly Action[], path: readonly string[]): Action[]
 }
 
 function PaletteItem({command, path = [], onRun}: {command: Action; path?: readonly string[]; onRun: (command: Action) => void}) {
-  const {label} = usePlatform()
+  const {label, bin} = usePlatform()
   const [hotkey] = hotkeysOf(command)
-  const text = [...path, command.label ?? command.name].join(' › ')
+  const text = bin([...path, command.label ?? command.name].join(' › '))
   return (
     <CommandItem value={command.id} keywords={[text, command.name, ...(command.keywords ?? [])]} data-checked={command.checked} onSelect={() => onRun(command)}>
       {text}
@@ -40,6 +40,7 @@ function PaletteItem({command, path = [], onRun}: {command: Action; path?: reado
 }
 
 function TopPage({commands, onRun}: {commands: Commands; onRun: (command: Action) => void}) {
+  const {bin} = usePlatform()
   const top = shown(commands.commands)
   const selected = shown(commands.selected?.commands ?? [])
   const item = (command: Action) => <PaletteItem key={command.id} command={command} onRun={onRun} />
@@ -50,7 +51,7 @@ function TopPage({commands, onRun}: {commands: Commands; onRun: (command: Action
         const inGroup = top.filter(command => command.group === group)
         return (
           inGroup.length > 0 && (
-            <CommandGroup key={group} heading={group}>
+            <CommandGroup key={group} heading={bin(group)}>
               {inGroup.map(item)}
             </CommandGroup>
           )
@@ -98,7 +99,7 @@ function Palette({commands, path, onPath, onRun}: {commands: Commands; path: rea
 }
 
 function ShortcutList({commands}: {commands: Commands}) {
-  const {label} = usePlatform()
+  const {label, bin} = usePlatform()
   const keyed = [PALETTE, ...everyCommand(commands)].filter(command => command.hotkey !== undefined)
   return (
     <div className="flex flex-col gap-4">
@@ -107,11 +108,11 @@ function ShortcutList({commands}: {commands: Commands}) {
         if (rows.length === 0) return null
         return (
           <section key={group} className="flex flex-col gap-1.5">
-            <h3 className="text-[11px] font-medium tracking-wider text-muted-foreground/70 uppercase">{group}</h3>
+            <h3 className="text-[11px] font-medium tracking-wider text-muted-foreground/70 uppercase">{bin(group)}</h3>
             <ul className="flex flex-col gap-1">
               {rows.map(row => (
                 <li key={row.id} className="flex items-center gap-2">
-                  <span className="grow">{row.name}</span>
+                  <span className="grow">{bin(row.name)}</span>
                   {hotkeysOf(row).map(hotkey => (
                     <Kbd key={hotkey}>{label(hotkey)}</Kbd>
                   ))}

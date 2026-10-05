@@ -17,7 +17,7 @@ import {useDb} from '@/lib/db'
 import {zoomLink, type Folder} from '@/lib/folders'
 import {SHAPES, type Shape} from '@/lib/search'
 import {useHome, useSelection} from '@/lib/page-data'
-import {usePlatform} from '@/lib/platform'
+import {isDiskRoot, usePlatform} from '@/lib/platform'
 import type {Disk} from '@/lib/scan-feed'
 import {useCleanable, useDisk, useFolders, useInside, useScanState} from '@/lib/views'
 import {squarifyInBounds} from '@/lib/treemap-tile'
@@ -72,7 +72,7 @@ function nodeOf(point: ChartPoint | null) {
 }
 
 function titleOf(node: TreeNode) {
-  if (node.path === '/') return 'Whole disk'
+  if (isDiskRoot(node.path)) return 'Whole disk'
   return node.name === '~' ? 'Home folder' : node.name
 }
 
@@ -92,6 +92,7 @@ interface FolderCardProps {
 }
 
 function FolderCard({node, zoomTo, folders, parents, total, home, pinned, dismiss}: FolderCardProps) {
+  const {path} = usePlatform()
   if (!node) return null
   const parent = parents.get(node.path)
   const top = node.children.filter(c => !c.rest).slice(0, 3)
@@ -106,7 +107,7 @@ function FolderCard({node, zoomTo, folders, parents, total, home, pinned, dismis
     </>
   )
   return (
-    <ChartCard title={titleOf(node)} subtitle={tilde(node.path, home)} hint={zoomTo ? 'Click to pin, then zoom in' : undefined} pinned={pinned} actions={actions}>
+    <ChartCard title={titleOf(node)} subtitle={path(tilde(node.path, home))} hint={zoomTo ? 'Click to pin, then zoom in' : undefined} pinned={pinned} actions={actions}>
       <BigBytes bytes={node.bytes} />
       <div className="flex flex-col gap-2">
         {parent && <Meter label={`of ${titleOf(parent)}`} share={shareOf(node.bytes, parent.bytes)} />}
@@ -297,11 +298,12 @@ function drillTarget(point: ChartPoint | null, flat: ReturnType<typeof flatten>,
 }
 
 function Crumbs({chain, folders}: {chain: readonly TreeNode[]; folders: ReadonlyMap<string, Folder>}) {
+  const {separator} = usePlatform()
   return (
     <nav aria-label="Folder path" className="flex grow flex-wrap items-center gap-1 text-sm">
       {chain.map((n, i) => (
         <Fragment key={n.path}>
-          {i > 0 && <span className="text-muted-foreground">/</span>}
+          {i > 0 && <span className="text-muted-foreground">{separator}</span>}
           <Link
             {...zoomLink(folders.get(n.path))}
             activeOptions={{exact: true}}
@@ -316,9 +318,10 @@ function Crumbs({chain, folders}: {chain: readonly TreeNode[]; folders: Readonly
 }
 
 function Details({shown, focusNode, total, cleanable, shape}: {shown: TreeNode; focusNode: TreeNode; total: number; cleanable: ReadonlySet<string>; shape: Shape}) {
+  const {path} = usePlatform()
   return (
   <aside className="flex flex-col gap-2 border-l pl-5">
-    <div className="font-mono text-xs break-all text-muted-foreground">{shown.path}</div>
+    <div className="font-mono text-xs break-all text-muted-foreground">{path(shown.path)}</div>
     <div className="text-3xl font-bold tracking-tight tabular-nums">{formatBytes(shown.bytes)}</div>
     <div className="text-xs text-muted-foreground">
       {((shown.bytes / total) * 100).toFixed(1)}% of the disk
@@ -349,6 +352,7 @@ function chainOf(parents: Map<string, TreeNode>, focus: TreeNode) {
 export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const {data, tree, cleanable} = useStorageData()
   const home = useHome()
+  const {path} = usePlatform()
   const folders = useFolders(useDb())
   const flat = useMemo(() => (tree ? flatten(tree) : null), [tree])
   const root = tree?.path ?? ''
@@ -385,7 +389,7 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
               definition={definition}
               renderer={renderer}
               height={shape === 'sunburst' ? 520 : 480}
-              ariaLabel={`Storage ${shape} of ${focusNode.path}`}
+              ariaLabel={`Storage ${shape} of ${path(focusNode.path)}`}
               onFocusChange={point => setHover(nodeOf(point))}
               onRender={onRender}
               renderTooltipBody={({primaryPoint, pinned, dismiss}) => (

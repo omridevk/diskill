@@ -6,7 +6,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
-use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::process::Command;
+use std::process::Stdio;
 
 fn request(port: u16, raw: String) -> (u16, String) {
     let mut s = common::connect(port);
@@ -41,7 +43,7 @@ fn review_serves_page_and_writes_selection() {
     fs::create_dir_all(&run).unwrap();
     let home = t.0.join("h");
     fs::create_dir_all(&home).unwrap();
-    let h = home.to_string_lossy().into_owned();
+    let h = common::text(&home);
     let rows = [
         format!(
             "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/a\t{h}/Library/Caches/a\t2048\tnote\t3\texact"
@@ -75,7 +77,7 @@ fn review_serves_page_and_writes_selection() {
 
     let mut child = common::reaped(
         common::bin(&home)
-            .args(["review", &run.to_string_lossy()])
+            .args(["review", &common::text(&run)])
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .env("DISK_CLEAN_WATCH_START", "3")
             .stdout(Stdio::piped())
@@ -202,7 +204,7 @@ fn review_serves_page_and_writes_selection() {
         .unwrap()
         .read_to_string(&mut stdout)
         .unwrap();
-    assert_eq!(stdout.trim(), run.join("selection.json").to_string_lossy());
+    assert_eq!(stdout.trim(), common::text(&run.join("selection.json")));
 
     let sel: Value =
         serde_json::from_str(&fs::read_to_string(run.join("selection.json")).unwrap()).unwrap();
@@ -246,7 +248,7 @@ fn review_exits_3_when_nothing_found() {
     fs::write(run.join("scan.tsv"), "").unwrap();
     let out = common::output(
         common::bin(&t.0)
-            .args(["review", &run.to_string_lossy()])
+            .args(["review", &common::text(&run)])
             .env("DISK_CLEAN_NO_BROWSER", "1"),
     );
     assert_eq!(out.status.code(), Some(3));
@@ -661,6 +663,7 @@ fn review_without_run_dir_streams_the_scan_on_linux() {
     assert!(sel.contains(cache.to_str().unwrap()));
 }
 
+#[cfg(unix)]
 fn spawn_live(home: &Path, bin: &Path) -> (common::Reaped, u16, String) {
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let mut child = common::reaped(
@@ -708,6 +711,7 @@ fn spawn_live(home: &Path, bin: &Path) -> (common::Reaped, u16, String) {
     (child, port, token)
 }
 
+#[cfg(unix)]
 #[test]
 fn rescan_restarts_the_scan_in_place() {
     let t = common::temp_dir("rescan");
@@ -825,13 +829,13 @@ fn finished_review(tag: &str) -> (common::TempDir, common::Reaped, u16, String) 
         run.join("scan.tsv"),
         format!(
             "caches\tApplication caches\tdesc\tsafe\t1\trm\t-\t~/Library/Caches/a\t{}\t2048\tnote\t3\texact\n",
-            cache.display()
+            common::text(&cache)
         ),
     )
     .unwrap();
     let mut child = common::reaped(
         common::bin(&home)
-            .args(["review", &run.to_string_lossy()])
+            .args(["review", &common::text(&run)])
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
@@ -1034,6 +1038,7 @@ fn post_reply(port: u16, route: &str, body: &str) -> (u16, String) {
     request(port, raw)
 }
 
+#[cfg(unix)]
 fn blocking_docker(bin: &Path, gate: &Path) {
     fs::create_dir_all(bin).unwrap();
     let docker = bin.join("docker");
@@ -1049,6 +1054,7 @@ fn blocking_docker(bin: &Path, gate: &Path) {
     common::status(Command::new("chmod").arg("+x").arg(&docker));
 }
 
+#[cfg(unix)]
 fn listed_paths(reader: &mut BufReader<TcpStream>, wanted: &[&Path]) {
     let mut missing: Vec<String> = wanted.iter().map(|p| p.display().to_string()).collect();
     while !missing.is_empty() {
@@ -1097,6 +1103,7 @@ fn picks_body(
     .to_string()
 }
 
+#[cfg(unix)]
 fn live_run(home: &Path) -> std::path::PathBuf {
     let runs: Vec<_> = fs::read_dir(home.join(".cache/disk-clean"))
         .unwrap()
@@ -1111,10 +1118,12 @@ fn live_run(home: &Path) -> std::path::PathBuf {
     runs[0].clone()
 }
 
+#[cfg(unix)]
 fn lines_in(run: &Path) -> usize {
     disk_clean::util::complete_lines(&run.join("scan.tsv")).len()
 }
 
+#[cfg(unix)]
 #[test]
 fn approving_while_the_scan_runs_uses_what_was_listed() {
     let t = common::temp_dir("midscan");
@@ -1250,7 +1259,7 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
     let (home, run) = (t.0.join("h"), t.0.join("run"));
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&run).unwrap();
-    let h = home.to_string_lossy().into_owned();
+    let h = common::text(&home);
     let paths: Vec<String> = (0..10_000)
         .map(|i| format!("{h}/tmp/item-{i:05}"))
         .collect();
@@ -1263,7 +1272,7 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
     fs::write(run.join("scan.tsv"), rows).unwrap();
     let mut child = common::reaped(
         common::bin(&home)
-            .args(["review", &run.to_string_lossy()])
+            .args(["review", &common::text(&run)])
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .env("DISK_CLEAN_WATCH_START", "1")
             .stdout(Stdio::piped())

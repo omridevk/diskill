@@ -17,6 +17,7 @@ export interface Page {
   scanning: boolean
   deleteReady: boolean
   deleteNow: readonly Hotkey[]
+  path: (path: string) => string
   reduced: boolean
   cleanupTrash: boolean
   cleanup: {listing: Listing; section: string | undefined; onList: ChangeList} | null
@@ -50,7 +51,7 @@ function inSection(group: Group, choose: Listing['choose']): Command {
   ])
 }
 
-function cleanupCommands({cleanup, selection, progress, deleteReady, on}: Page, ticked: boolean): {top: Command[]; selected: Command[]} {
+function cleanupCommands({cleanup, selection, progress, deleteReady, path, on}: Page, ticked: boolean): {top: Command[]; selected: Command[]} {
   if (!cleanup) return {top: [], selected: []}
   const {listing, section, onList} = cleanup
   const {list, groups, choose, search} = listing
@@ -83,7 +84,7 @@ function cleanupCommands({cleanup, selection, progress, deleteReady, on}: Page, 
       ? [
           {id: 'show-selected', name: 'Show only selected', group: 'Filter and view', checked: list.only, enabled: true, run: () => onList({only: !list.only})},
           clear,
-          {id: 'copy-paths', name: `Copy ${plural(count, 'path', 'paths')}`, group: 'Select', enabled: true, run: () => void navigator.clipboard.writeText(selection.selected.map(entry => entry.path).join('\n'))},
+          {id: 'copy-paths', name: `Copy ${plural(count, 'path', 'paths')}`, group: 'Select', enabled: true, run: () => void navigator.clipboard.writeText(selection.selected.map(entry => path(entry.path)).join('\n'))},
         ]
       : [],
   }

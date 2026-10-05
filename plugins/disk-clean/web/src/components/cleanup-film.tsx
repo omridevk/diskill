@@ -6,6 +6,7 @@ import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
 import {counted, formatBytes, plural} from '@/lib/data'
 import type {Db} from '@/lib/db'
+import {textIn} from '@/lib/platform'
 import {finaleOf, formatDuration, logFeed, useLatest, useStaged, type Cleanup, type FilmPlan, type LogFeed, type MovieFeed, type Outcome, type Totals} from '@/lib/progress'
 import {createFilm, gaugeOf, pump, type Film as FilmState, type ParticlePhase} from '@/lib/film'
 import {cssMs, useReducedMotion} from '@/lib/motion'
@@ -93,7 +94,7 @@ function Tile({label, children}: {label: string; children: ReactNode}) {
   )
 }
 
-function ProblemTile({label, rows}: {label: string; rows: readonly Outcome[]}) {
+function ProblemTile({label, rows, path}: {label: string; rows: readonly Outcome[]; path: (path: string) => string}) {
   if (rows.length === 0) return <Tile label={label}>0</Tile>
   return (
     <Popover>
@@ -115,7 +116,7 @@ function ProblemTile({label, rows}: {label: string; rows: readonly Outcome[]}) {
         <ul className="flex flex-col gap-2 text-xs">
           {rows.map(o => (
             <li key={o.key} className="flex min-w-0 flex-col gap-0.5">
-              <span className="truncate font-mono">{o.label}</span>
+              <span className="truncate font-mono">{path(o.label)}</span>
               <span className="text-muted-foreground">{o.reason}</span>
             </li>
           ))}
@@ -125,29 +126,29 @@ function ProblemTile({label, rows}: {label: string; rows: readonly Outcome[]}) {
   )
 }
 
-function Tiles({totals}: {totals: Totals}) {
+function Tiles({totals, path, bin}: {totals: Totals; path: (path: string) => string; bin: (text: string) => string}) {
   return (
     <div className="grid w-full grid-cols-3 gap-3">
       <Tile label="removed for good">
         <span data-ticker={totals.removed.length}>{totals.removed.length}</span> · {formatBytes(totals.reclaimed)}
       </Tile>
       {totals.trashed.length > 0 && (
-        <Tile label="in the Trash, can be undone">
+        <Tile label={bin('in the Trash, can be undone')}>
           <span data-ticker={totals.trashed.length}>{totals.trashed.length}</span> · {formatBytes(totals.trashedBytes)}
         </Tile>
       )}
       <Tile label="sections">
         <span data-ticker={totals.sections}>{totals.sections}</span>
       </Tile>
-      <Tile label="biggest item">{totals.biggest ? `${formatBytes(totals.biggest.bytes)} · ${totals.biggest.label}` : 'none'}</Tile>
+      <Tile label="biggest item">{totals.biggest ? `${formatBytes(totals.biggest.bytes)} · ${path(totals.biggest.label)}` : 'none'}</Tile>
       <Tile label="time taken">{formatDuration(totals.seconds)}</Tile>
-      <ProblemTile label="kept" rows={totals.kept} />
-      <ProblemTile label="not removed" rows={totals.failed} />
+      <ProblemTile label="kept" rows={totals.kept} path={path} />
+      <ProblemTile label="not removed" rows={totals.failed} path={path} />
     </div>
   )
 }
 
-function CreditList({plan, totals}: {plan: FilmPlan; totals: Totals}) {
+function CreditList({plan, totals, path}: {plan: FilmPlan; totals: Totals; path: (path: string) => string}) {
   return (
     <>
       {bySection(plan, [...totals.removed, ...totals.trashed]).map(({section, items}) => (
@@ -155,7 +156,7 @@ function CreditList({plan, totals}: {plan: FilmPlan; totals: Totals}) {
           <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{section.title}</span>
           {items.map(o => (
             <span key={o.key} className="truncate font-mono text-xs">
-              {o.label}
+              {path(o.label)}
             </span>
           ))}
         </li>
@@ -196,7 +197,7 @@ function Card() {
   )
 }
 
-function Tray({title, rows}: {title: string; rows: readonly Outcome[]}) {
+function Tray({title, rows, path}: {title: string; rows: readonly Outcome[]; path: (path: string) => string}) {
   if (rows.length === 0) return null
   return (
     <div className="flex flex-col gap-2">
@@ -204,7 +205,7 @@ function Tray({title, rows}: {title: string; rows: readonly Outcome[]}) {
       <ul className="flex flex-col gap-1.5">
         {rows.map(o => (
           <li key={o.key} data-film="tray-row" data-key={o.key} className="flex flex-col rounded-md border border-white/15 bg-zinc-900 px-3 py-2 text-sm opacity-0">
-            <span className="truncate font-mono">{o.label}</span>
+            <span className="truncate font-mono">{path(o.label)}</span>
             <span className={title === 'Kept' ? 'text-amber-200' : 'text-red-300'}>{o.reason}</span>
           </li>
         ))}
@@ -213,8 +214,8 @@ function Tray({title, rows}: {title: string; rows: readonly Outcome[]}) {
   )
 }
 
-function Slot({shred}: {shred: Outcome | null}) {
-  const items = useMemo(() => (shred ? [{id: shred.key, label: shred.label, size: formatBytes(shred.bytes)}] : []), [shred])
+function Slot({shred, path}: {shred: Outcome | null; path: (path: string) => string}) {
+  const items = useMemo(() => (shred ? [{id: shred.key, label: path(shred.label), size: formatBytes(shred.bytes)}] : []), [shred, path])
   return (
     <div data-film="slot" className="relative h-[88px] w-full max-w-[440px]">
       {Array.from({length: CARDS}, (_, i) => (
@@ -246,7 +247,7 @@ function Slot({shred}: {shred: Outcome | null}) {
   )
 }
 
-function Stage({plan, all, startFree, shred}: {plan: FilmPlan; all: readonly Outcome[]; startFree: number; shred: Outcome | null}) {
+function Stage({plan, all, startFree, shred, path}: {plan: FilmPlan; all: readonly Outcome[]; startFree: number; shred: Outcome | null; path: (path: string) => string}) {
   const kept = all.filter(o => o.kind === 'kept')
   const failed = all.filter(o => o.kind === 'failed')
   const commands = all.filter(o => o.key.startsWith('cmd:'))
@@ -282,14 +283,14 @@ function Stage({plan, all, startFree, shred}: {plan: FilmPlan; all: readonly Out
             </div>
           </div>
           <div data-film="leave" className="flex w-full justify-center">
-            <Slot shred={shred} />
+            <Slot shred={shred} path={path} />
           </div>
         </div>
         <div className="flex min-w-0 flex-col justify-center">
           {kept.length + failed.length > 0 && (
             <div data-film="trays" className="flex flex-col gap-6 rounded-xl border border-white/10 bg-zinc-950 p-5 opacity-0">
-              <Tray title="Kept" rows={kept} />
-              <Tray title="Not removed" rows={failed} />
+              <Tray title="Kept" rows={kept} path={path} />
+              <Tray title="Not removed" rows={failed} path={path} />
             </div>
           )}
         </div>
@@ -402,12 +403,12 @@ function figureOf(cleanup: Cleanup, totals: Totals, all: readonly Outcome[], fre
   return totals.removed.length === 0 ? emptySummary(totals, all) : formatBytes(freed)
 }
 
-function TrashNote({cleanup, totals, actions}: {cleanup: Cleanup; totals: Totals; actions: ReactNode}) {
+function TrashNote({cleanup, totals, actions, bin}: {cleanup: Cleanup; totals: Totals; actions: ReactNode; bin: (text: string) => string}) {
   if (totals.trashed.length === 0 || cleanup.abandoned) return null
   return (
     <div data-film="trash-actions" className="flex flex-col items-center gap-3">
       <p className="text-sm text-muted-foreground">
-        in the Trash · undo available · space comes back when the Trash is emptied
+        {bin('in the Trash · undo available · space comes back when the Trash is emptied')}
         {totals.reclaimed > 0 && ` · freed ${formatBytes(totals.reclaimed)}`}
       </p>
       {actions}
@@ -421,7 +422,8 @@ function Finale({plan, cleanup, all, db, elapsed, particles, actions, onLanded, 
   const totals = useMemo(() => finaleOf(latest, done, elapsed), [latest, done, elapsed])
   const freed = totals.reclaimed
   const empty = (totals.removed.length === 0 && totals.trashed.length === 0) || abandoned !== null
-  const heading = headingOf(cleanup, totals, all)
+  const {path, bin} = textIn(db.loaded.platform)
+  const heading = bin(headingOf(cleanup, totals, all))
   return (
     <div data-film="finale" className="invisible absolute inset-0 overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
@@ -440,9 +442,9 @@ function Finale({plan, cleanup, all, db, elapsed, particles, actions, onLanded, 
             )}
           </div>
         </div>
-        <TrashNote cleanup={cleanup} totals={totals} actions={actions} />
+        <TrashNote cleanup={cleanup} totals={totals} actions={actions} bin={bin} />
         {done && <FinaleGauge plan={plan} done={done} freed={freed} />}
-        <Tiles totals={totals} />
+        <Tiles totals={totals} path={path} bin={bin} />
         <div
           data-film="credits"
           tabIndex={0}
@@ -451,7 +453,7 @@ function Finale({plan, cleanup, all, db, elapsed, particles, actions, onLanded, 
           className="t-credits h-56 w-full overflow-y-auto overscroll-contain rounded-md opacity-0 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         >
           <ol className="flex flex-col gap-4 pt-20 pb-20">
-            <CreditList plan={plan} totals={totals} />
+            <CreditList plan={plan} totals={totals} path={path} />
           </ol>
         </div>
         <button data-film="replay" type="button" onClick={onReplay} className="invisible rounded-md border border-white/15 px-4 py-2 text-sm">
@@ -462,7 +464,7 @@ function Finale({plan, cleanup, all, db, elapsed, particles, actions, onLanded, 
   )
 }
 
-function useFilm(container: HTMLElement | null, plan: FilmPlan, feed: LogFeed, running: (on: boolean) => void) {
+function useFilm(container: HTMLElement | null, plan: FilmPlan, feed: LogFeed, running: (on: boolean) => void, path: (path: string) => string) {
   const film = useRef<FilmState | null>(null)
   const landing = useRef({phase: 'off' as ParticlePhase, landed: false})
   const [shred, setShred] = useState<Outcome | null>(null)
@@ -493,7 +495,7 @@ function useFilm(container: HTMLElement | null, plan: FilmPlan, feed: LogFeed, r
         current.flood = feed.rows.length > current.processed
         next()
       })
-      film.current = createFilm(container, plan, {shred: setShred, particles: particlesTo, running}, tail, ready)
+      film.current = createFilm(container, plan, {shred: setShred, particles: particlesTo, running, path}, tail, ready)
       film.current.backlog = feed.rows.length
       const unsubscribe = feed.subscribe(next)
       document.addEventListener('visibilitychange', visible)
@@ -516,7 +518,8 @@ interface TakeProps extends FilmProps {
 
 function Take({container, db, plan, cleanup, elapsed, actions, running, onReplay}: TakeProps) {
   const [feed] = useState(() => logFeed(db))
-  const {shred, particles, landed} = useFilm(container, plan, feed, running)
+  const {path} = textIn(db.loaded.platform)
+  const {shred, particles, landed} = useFilm(container, plan, feed, running, path)
   const all = useStaged(db)
   const waiting = cleanup.waiting && !cleanup.started
   return (
@@ -535,7 +538,7 @@ function Take({container, db, plan, cleanup, elapsed, actions, running, onReplay
           <span className={waiting ? 't-pulse' : undefined}>{WAITING}</span>
         </p>
       </section>
-      <Stage plan={plan} all={all} startFree={cleanup.started?.free ?? cleanup.done?.free_before ?? 0} shred={shred} />
+      <Stage plan={plan} all={all} startFree={cleanup.started?.free ?? cleanup.done?.free_before ?? 0} shred={shred} path={path} />
       {(cleanup.done || cleanup.abandoned) && <Finale plan={plan} cleanup={cleanup} all={all} db={db} elapsed={elapsed} particles={particles} actions={actions} onLanded={landed} onReplay={onReplay} />}
     </>
   )
@@ -573,16 +576,17 @@ function StillFinale({db, plan, cleanup, elapsed, actions}: FilmProps & {actions
   const latest = useLatest(db)
   const all = useStaged(db)
   const totals = useMemo(() => finaleOf(latest, cleanup.done, elapsed), [latest, cleanup.done, elapsed])
-  const heading = cleanup.done || cleanup.abandoned ? headingOf(cleanup, totals, all) : 'Cleaning up'
+  const {path, bin} = textIn(db.loaded.platform)
+  const heading = cleanup.done || cleanup.abandoned ? bin(headingOf(cleanup, totals, all)) : 'Cleaning up'
   return (
     <div className="fixed inset-0 overflow-y-auto bg-background text-foreground">
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
         <h2 className="text-2xl font-semibold tracking-tight">{heading}</h2>
         <div className="text-5xl font-bold tabular-nums">{figureOf(cleanup, totals, all, totals.reclaimed)}</div>
-        <TrashNote cleanup={cleanup} totals={totals} actions={actions} />
-        <Tiles totals={totals} />
+        <TrashNote cleanup={cleanup} totals={totals} actions={actions} bin={bin} />
+        <Tiles totals={totals} path={path} bin={bin} />
         <ol aria-label="Everything removed" className="flex w-full flex-col gap-4 text-left">
-          <CreditList plan={plan} totals={totals} />
+          <CreditList plan={plan} totals={totals} path={path} />
         </ol>
       </div>
     </div>
