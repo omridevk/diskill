@@ -12,7 +12,7 @@ export type CreateRenderer = (canvas: HTMLCanvasElement) => Renderer | null
 
 const MAX_DPR = 1.5
 
-export function densityOf(scale: number) {
+function densityOf(scale: number) {
   return Math.min(window.devicePixelRatio || 1, MAX_DPR) * scale
 }
 

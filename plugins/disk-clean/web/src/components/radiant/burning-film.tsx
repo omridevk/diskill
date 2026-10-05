@@ -13,7 +13,7 @@
   COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
-import {densityOf, useCanvasRenderer, type Renderer} from '@/lib/canvas-loop'
+import {useCanvasRenderer, type Renderer} from '@/lib/canvas-loop'
 
 const VERTEX = `attribute vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }`
@@ -179,7 +179,8 @@ const EMBER_GLOW = 1.0
 const START_SECONDS = 5
 const STILL_SECONDS = 24
 const RENDER_SCALE = 0.5
-const PROBE_BUDGET_MS = 33
+const PROBE_SIZE = 64
+const PROBE_BUDGET_MS = 20
 
 function compile(gl: WebGLRenderingContext, type: number, source: string) {
   const shader = gl.createShader(type)
@@ -241,15 +242,15 @@ function createBurningFilm(canvas: HTMLCanvasElement): Renderer | null {
     gl.getExtension('WEBGL_lose_context')?.loseContext()
   }
   const pixel = new Uint8Array(4)
-  const timedStill = (width: number, height: number, dpr: number) => {
-    resize(width, height, dpr)
+  const timedStill = (size: number) => {
+    resize(size, size, 1)
     const start = performance.now()
     draw(STILL_SECONDS)
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel)
     return performance.now() - start
   }
-  timedStill(1, 1, 1)
-  if (timedStill(canvas.clientWidth, canvas.clientHeight, densityOf(RENDER_SCALE)) > PROBE_BUDGET_MS) {
+  timedStill(1)
+  if (timedStill(PROBE_SIZE) > PROBE_BUDGET_MS) {
     dispose()
     return null
   }
