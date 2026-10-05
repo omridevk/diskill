@@ -1,11 +1,11 @@
-use disk_clean::{clean, review, scan, trash, util, watch};
+use disk_clean::{clean, platform, review, scan, trash, util, watch};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: disk-clean scan [RUN_DIR] | review [RUN_DIR] | clean [--dry-run] RUN_DIR | undo RUN_DIR|--all | empty RUN_DIR|--all";
 
 fn announce_home() -> Result<(), String> {
     let home = util::checked_home()?;
-    let raw = std::env::var("HOME").unwrap_or_default();
+    let raw = platform::raw_home();
     if raw != home {
         eprintln!("disk-clean: HOME {raw} resolves to {home}, using {home}");
     }

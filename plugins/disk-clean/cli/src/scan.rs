@@ -147,7 +147,10 @@ pub(crate) fn sized(
         if !p.exists() {
             continue;
         }
-        let Some(s) = p.to_str() else { continue };
+        let Some(s) = platform::path_text(p) else {
+            continue;
+        };
+        let s = s.as_str();
         let Some(bytes) = size_bytes(ctx, p) else {
             continue;
         };
@@ -271,7 +274,7 @@ fn run_walk(
     } else {
         walk::walk(
             mount,
-            Path::new("/"),
+            Path::new(platform::split_root(home).map_or("/", |(root, _)| root)),
             &plan,
             true,
             &mut seen,
@@ -299,7 +302,7 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
     let run_dir = new_run_dir(run_dir)?;
     scan(&run_dir, &FilesOnly, Arc::new(AtomicBool::new(false)))?;
     let mut stdout = io::stdout().lock();
-    writeln!(stdout, "{}", run_dir.display())?;
+    writeln!(stdout, "{}", util::shown(&run_dir))?;
     Ok(0)
 }
 
@@ -590,8 +593,10 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             let min_kb = cfg.map_min_bytes / 1024;
             for (p, blocks, files, mtime) in &ctx.walk.map {
                 let kb = blocks.div_ceil(2);
-                let Some(s) = p.to_str() else { continue };
-                if kb >= min_kb || s == "/" {
+                let Some(s) = platform::path_text(p) else {
+                    continue;
+                };
+                if kb >= min_kb || util::is_root(&s) {
                     map.push_str(&format!("{}\t{files}\t{mtime}\t{s}\n", kb * 1024));
                 }
             }
@@ -680,9 +685,7 @@ fn scan_dev_artifacts(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
         .walk
         .artifacts
         .iter()
-        .filter(|d| {
-            d.file_name().is_none_or(|n| n != "target") || d.with_file_name("Cargo.toml").is_file()
-        })
+        .filter(|d| platform::is_build_output(d))
         .cloned()
         .collect();
     let desc = format!(
@@ -738,9 +741,10 @@ fn scan_node_modules(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
             measurement = "estimate";
             note.push_str(platform::PNPM_STORE_NOTE);
         }
-        let (Some(s), Some(ps)) = (p.to_str(), parent.to_str()) else {
+        let (Some(s), Some(ps)) = (platform::path_text(p), platform::path_text(parent)) else {
             continue;
         };
+        let (s, ps) = (s.as_str(), ps.as_str());
         let cat = Cat {
             id: "node-modules",
             title: "node_modules",
@@ -816,7 +820,10 @@ fn scan_big_files(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
         } else {
             "Review manually.".to_string()
         };
-        let Some(s) = f.to_str() else { continue };
+        let Some(s) = platform::path_text(f) else {
+            continue;
+        };
+        let s = s.as_str();
         rows.push(row(
             &cat,
             "rm",
