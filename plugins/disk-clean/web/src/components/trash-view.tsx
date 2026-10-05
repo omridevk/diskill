@@ -7,9 +7,11 @@ import {Button} from '@/components/ui/button'
 import {Checkbox} from '@/components/ui/checkbox'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
+import {useCommands} from '@/lib/commands'
 import {counted, formatBytes, plural, tilde, type TrashEntry, type TrashState} from '@/lib/data'
 import {useDb, type Action} from '@/lib/db'
 import {useHome} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import type {TrashSearch} from '@/lib/search'
 import {usePending} from '@/lib/views'
 import {RequestError} from './request-error'
@@ -28,13 +30,13 @@ export interface Run {
 
 type Line = {kind: 'run'; run: Run} | {kind: 'item'; entry: TrashEntry}
 
-const STATE: Record<TrashState, [string, 'secondary' | 'outline' | 'destructive']> = {
+const stateOf = (putBack: string): Record<TrashState, [string, 'secondary' | 'outline' | 'destructive']> => ({
   trashed: ['In the Trash', 'secondary'],
   restored: ['Put back', 'outline'],
-  'put-back': ['Put back in Finder', 'outline'],
+  'put-back': [putBack, 'outline'],
   emptied: ['Emptied', 'outline'],
   failed: ['Failed', 'destructive'],
-}
+})
 
 const isTrashed = (entry: TrashEntry) => entry.state === 'trashed'
 const sumOf = (entries: readonly TrashEntry[]) => entries.reduce((sum, e) => sum + e.bytes, 0)
@@ -82,7 +84,7 @@ function Icon({label, disabled, onClick, children}: {label: string; disabled: bo
 }
 
 function StateBadge({entry}: {entry: TrashEntry}) {
-  const [text, variant] = STATE[entry.state]
+  const [text, variant] = stateOf(usePlatform().putBack)[entry.state]
   const badge = <Badge variant={variant}>{text}</Badge>
   if (!entry.reason) return badge
   return (
@@ -236,6 +238,13 @@ export function TrashView({search, actions}: {search: TrashSearch; actions: Tras
   const inTrash = shown.flatMap(run => run.inTrash)
   const chosen = inTrash.filter(entry => picked.has(entry.id))
   const chosenIds = chosen.map(entry => entry.id)
+  const picking = !busy && chosen.length > 0
+  useCommands([
+    {id: 'trash-undo', name: 'Undo selected', group: 'Trash', enabled: picking, run: () => actions.onUndo(chosenIds)},
+    {id: 'trash-empty', name: 'Empty selected…', group: 'Trash', enabled: picking, run: () => actions.onEmpty('')},
+    {id: 'trash-all', name: 'Show all cleanups', group: 'Trash', enabled: search.run !== '', run: () => actions.onRun('')},
+    ...runs.map(run => ({id: `trash-run:${run.id}`, name: `Show cleanup of ${whenOf(run.at)}`, group: 'Trash' as const, enabled: run.id !== search.run, run: () => actions.onRun(run.id)})),
+  ])
   return (
     <div className="flex min-h-0 grow flex-col">
       <div className="flex h-12 shrink-0 items-center gap-3 border-b px-7">
@@ -248,10 +257,10 @@ export function TrashView({search, actions}: {search: TrashSearch; actions: Tras
           <RequestError db={db} action="undo" onRetry={() => actions.onRetry('undo')} />
           <RequestError db={db} action="empty" onRetry={() => actions.onRetry('empty')} />
         </div>
-        <Button variant="outline" size="sm" disabled={busy || chosen.length === 0} onClick={() => actions.onUndo(chosenIds)}>
+        <Button variant="outline" size="sm" disabled={!picking} onClick={() => actions.onUndo(chosenIds)}>
           <Undo2 /> Undo selected
         </Button>
-        <Button variant="destructive" size="sm" disabled={busy || chosen.length === 0} aria-haspopup="dialog" onClick={() => actions.onEmpty('')}>
+        <Button variant="destructive" size="sm" disabled={!picking} aria-haspopup="dialog" onClick={() => actions.onEmpty('')}>
           <Trash2 /> Empty selected…
         </Button>
       </div>

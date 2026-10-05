@@ -1,16 +1,18 @@
+import type {Hotkey} from '@tanstack/react-hotkeys'
 import {useNavigate} from '@tanstack/react-router'
-import {useHotkeys} from '@tanstack/react-hotkeys'
 import {Eraser, Info, RotateCcw, Trash2, X} from 'lucide-react'
 import {createContext, use, useState, type AnimationEvent, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Kbd} from '@/components/ui/kbd'
 import {Popover, PopoverContent, PopoverTitle, PopoverTrigger} from '@/components/ui/popover'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
+import {useCommands} from '@/lib/commands'
 import type {CleanupProgress, Phase} from '@/lib/progress'
 import {formatBytes, plural, sizeOf} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
 import {useDb} from '@/lib/db'
 import {firstSectionNow, type Selection} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import type {ScanState} from '@/lib/scan-feed'
 import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
@@ -76,20 +78,27 @@ function hint(scan: ScanState) {
   return !scan.done && scan.error === '' ? 'You can delete what is listed while the scan runs.' : 'Cancel gives you a few seconds to undo.'
 }
 
+const DELETE: Hotkey = 'Mod+Backspace'
+
 function HelpLine({scan}: {scan: ScanState}) {
+  const {trash, restoreByHand, deleteNow, label} = usePlatform()
+  const [open, setOpen] = useState(false)
+  useCommands([{id: 'how-delete-works', name: 'How Delete works', group: 'Help', enabled: true, run: () => setOpen(true)}])
   return (
     <div className="flex h-5 items-center gap-1 text-xs whitespace-nowrap text-muted-foreground">
       Delete moves files to the Trash, so you can undo
-      <Popover>
+      <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger render={<Button variant="ghost" size="icon-xs" aria-label="About deleting" />}>
           <Info />
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 text-xs">
           <PopoverTitle className="text-sm">How Delete works</PopoverTitle>
-          <p className="text-muted-foreground">Delete moves files to the macOS Trash. Undo puts them back; Finder's Put Back works too. Space comes back when the Trash is emptied.</p>
+          <p className="text-muted-foreground">
+            Delete moves files to {trash}. Undo puts them back; {restoreByHand} works too. Space comes back when the Trash is emptied.
+          </p>
           <p className="text-muted-foreground">Delete immediately skips the Trash and can't be undone. Worktrees and commands can't be undone either.</p>
           <p className="flex flex-wrap items-center gap-1 text-muted-foreground">
-            Delete <Kbd>⌘⌫</Kbd> · Delete immediately <Kbd>⌥⌘⌫</Kbd> or <Kbd>⇧⌫</Kbd>
+            Delete <Kbd>{label(DELETE)}</Kbd> · Delete immediately <Kbd>{label(deleteNow[0])}</Kbd> or <Kbd>{label(deleteNow[1])}</Kbd>
           </p>
           <p className="text-muted-foreground">{hint(scan)}</p>
         </PopoverContent>
@@ -107,7 +116,8 @@ export function deleteState(selection: Selection, scan: ScanState) {
   return {label: 'Nothing found to delete', ready: false}
 }
 
-function SelectionButton({label, icon, shortcut, reason, onClick}: {label: string; icon: ReactNode; shortcut: string; reason: string; onClick: () => void}) {
+function SelectionButton({label, icon, hotkey, reason, onClick}: {label: string; icon: ReactNode; hotkey: Hotkey; reason: string; onClick: () => void}) {
+  const keys = usePlatform()
   const described = reason ? `${label}: ${reason}` : label
   return (
     <Tooltip>
@@ -118,26 +128,10 @@ function SelectionButton({label, icon, shortcut, reason, onClick}: {label: strin
       </TooltipTrigger>
       <TooltipContent>
         {described}
-        <Kbd>{shortcut}</Kbd>
+        <Kbd>{keys.label(hotkey)}</Kbd>
       </TooltipContent>
     </Tooltip>
   )
-}
-
-const DIALOG = '[role="dialog"], [role="alertdialog"]'
-
-const dialogOpen = () => [...document.querySelectorAll(DIALOG)].some(layer => layer.checkVisibility())
-
-function useDeleteShortcuts(enabled: boolean, onDelete: (now: boolean) => void) {
-  const press = (now: boolean) => () => {
-    if (!dialogOpen()) onDelete(now)
-  }
-  const options = {enabled, ignoreInputs: true}
-  useHotkeys([
-    {hotkey: 'Mod+Backspace', callback: press(false), options},
-    {hotkey: 'Mod+Alt+Backspace', callback: press(true), options},
-    {hotkey: 'Shift+Backspace', callback: press(true), options},
-  ])
 }
 
 export function useOpenConfirm() {
@@ -151,16 +145,7 @@ export const DeleteReady = createContext(false)
 export function useTableDeleteKeys(table: RefObject<HTMLElement | null>) {
   const ready = use(DeleteReady)
   const open = useOpenConfirm()
-  const press = () => {
-    if (!dialogOpen()) open(false)
-  }
-  useHotkeys(
-    [
-      {hotkey: 'Backspace', callback: press},
-      {hotkey: 'Delete', callback: press},
-    ],
-    {enabled: ready, ignoreInputs: true, target: table},
-  )
+  useCommands([{id: 'delete-in-table', name: 'Delete… (in the item list)', group: 'Clean up', hotkey: ['Backspace', 'Delete'], enabled: ready, run: () => open(false)}], table)
 }
 
 export function ActionBar({
@@ -184,7 +169,12 @@ export function ActionBar({
 }) {
   const warnings = useSelectionWarnings(selection)
   const action = deleteState(selection, scan)
-  useDeleteShortcuts(action.ready && !progress, onDelete)
+  const {deleteNow, label} = usePlatform()
+  const enabled = action.ready && !progress
+  useCommands([
+    {id: 'delete', name: 'Delete…', group: 'Clean up', hotkey: DELETE, enabled, run: () => onDelete(false)},
+    {id: 'delete-now', name: 'Delete immediately…', group: 'Clean up', keywords: ['skip the Trash'], hotkey: deleteNow, enabled, run: () => onDelete(true)},
+  ])
   if (progress) return <ProgressFooter progress={progress} phase={phase} actions={actions} />
   const count = selection.selected.length
 
@@ -195,8 +185,8 @@ export function ActionBar({
           <div className="w-64 shrink-0 truncate text-sm font-semibold tabular-nums">
             {plural(count, 'item', 'items')} selected · {selection.exactBytes === 0 && selection.apparentBytes > 0 ? `≈${formatBytes(selection.apparentBytes)}` : <PopBytes bytes={selection.exactBytes} />}
           </div>
-          <SelectionButton label="Clear selection" icon={<Eraser />} shortcut="D" reason={count === 0 ? 'nothing is selected' : ''} onClick={selection.clear} />
-          <SelectionButton label="Reset to recommended" icon={<RotateCcw />} shortcut="R" reason={selection.recommended ? 'already the recommended selection' : ''} onClick={selection.reset} />
+          <SelectionButton label="Clear selection" icon={<Eraser />} hotkey="D" reason={count === 0 ? 'nothing is selected' : ''} onClick={selection.clear} />
+          <SelectionButton label="Reset to recommended" icon={<RotateCcw />} hotkey="R" reason={selection.recommended ? 'already the recommended selection' : ''} onClick={selection.reset} />
           <div className="flex min-w-0 grow pl-2">
             <WarningChip warnings={warnings} />
           </div>
@@ -213,7 +203,7 @@ export function ActionBar({
         </TooltipTrigger>
         <TooltipContent>
           Skips the Trash, can't be undone
-          <Kbd>⌥⌘⌫</Kbd>
+          <Kbd>{label(deleteNow[0])}</Kbd>
         </TooltipContent>
       </Tooltip>
       <Button size="lg" className="w-80 shrink-0 justify-start" disabled={!action.ready} aria-haspopup="dialog" onClick={() => onDelete(false)}>

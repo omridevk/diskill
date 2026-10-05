@@ -31,6 +31,7 @@ const SCANNING = ['src/scanning.test.tsx']
 const WORDS = ['src/words.test.tsx', 'src/selection.test.tsx', 'src/empty.test.tsx', 'src/stability.test.tsx']
 const URLS = ['src/url-privacy.test.tsx']
 const TOOLTIPS = ['src/chart-tooltips.test.tsx']
+const COMMANDS = ['src/commands.test.tsx']
 
 interface Instance {
   browser: 'chromium' | 'firefox'
@@ -71,6 +72,7 @@ export default defineConfig({
       '@tanstack/react-router',
       '@tanstack/react-table',
       '@tanstack/react-virtual',
+      'cmdk',
     ],
   },
   build: {outDir: '../cli/assets', emptyOutDir: false},
@@ -87,7 +89,7 @@ export default defineConfig({
           provide: {cpuSlowdown: slow ? 4 : 1},
           browser: inBrowsers('app', [
             {...CHROMIUM, exclude: ['src/perf.test.tsx', 'src/frames.test.tsx', ...REALTIME, ...SOFTWARE_GL_TESTS]},
-            {...FIREFOX, include: [...FILM, ...ROUTER, ...TRASH, ...SCANNING, ...WORDS, ...URLS, ...TOOLTIPS], provider: retina},
+            {...FIREFOX, include: [...FILM, ...ROUTER, ...TRASH, ...SCANNING, ...WORDS, ...URLS, ...TOOLTIPS, ...COMMANDS], provider: retina},
             {...CHROMIUM, name: 'chromium reduced', include: TOOLTIPS, provider: reduced},
             {...FIREFOX, name: 'firefox reduced', include: TOOLTIPS, provider: reduced},
             {browser: 'chromium', name: 'chromium-retina', viewport: {width: 1280, height: 900}, include: FILM, provider: retina},

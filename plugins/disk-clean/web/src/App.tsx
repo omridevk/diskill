@@ -1,8 +1,11 @@
+import {HotkeysProvider} from '@tanstack/react-hotkeys'
 import {createRouter, RouterProvider, type RouterHistory} from '@tanstack/react-router'
 import {useState} from 'react'
+import {createCommandList} from './lib/commands'
 import type {Loaded} from './lib/data'
 import {createDb, type Db} from './lib/db'
 import {knownPicks} from './lib/page-data'
+import {hotkeyPlatform} from './lib/platform'
 import {parseSearch, stringifySearch} from './lib/search'
 import {createTabMemory} from './lib/tab-memory'
 import {routeTree} from './routeTree.gen'
@@ -10,7 +13,7 @@ import {routeTree} from './routeTree.gen'
 function createAppRouter(loaded: Loaded, history: RouterHistory) {
   const tabs = createTabMemory()
   const db = createDb(loaded)
-  const router = createRouter({routeTree, history, caseSensitive: true, search: {strict: true}, parseSearch, stringifySearch, context: {db, tabs}})
+  const router = createRouter({routeTree, history, caseSensitive: true, search: {strict: true}, parseSearch, stringifySearch, context: {db, tabs, commands: createCommandList()}})
   db.scan.turns.add(() => void router.invalidate())
   const tried = {href: ''}
   router.subscribe('onResolved', () => {
@@ -50,5 +53,9 @@ declare module '@tanstack/react-router' {
 
 export function App({loaded, history}: {loaded: Loaded; history: RouterHistory}) {
   const [router] = useState(() => createAppRouter(loaded, history))
-  return <RouterProvider router={router} />
+  return (
+    <HotkeysProvider defaultOptions={{hotkey: {platform: hotkeyPlatform(loaded)}}}>
+      <RouterProvider router={router} />
+    </HotkeysProvider>
+  )
 }

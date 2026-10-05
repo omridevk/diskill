@@ -2,6 +2,7 @@ import {getRouteApi, Link, linkOptions, Outlet, useLinkProps, useNavigate} from 
 import {HardDrive} from 'lucide-react'
 import {useRef, useSyncExternalStore, type ReactNode, type RefObject} from 'react'
 import {TAB_LINK, TabLinks} from '@/components/ui/tabs'
+import {useCommands} from '@/lib/commands'
 import {plural} from '@/lib/data'
 import {useDb, type Action, type Db, type Link as StreamLink} from '@/lib/db'
 import {useShownOnMount} from '@/lib/motion'
@@ -9,7 +10,8 @@ import {firstSectionNow, useDecisions, useProgress, useScan, useSelection, type 
 import {heroBytes, type CleanupProgress, type Phase} from '@/lib/progress'
 import {useDisk, usePending, useSession} from '@/lib/views'
 import {ActionBar, DeleteReady, deleteState, useOpenConfirm} from './action-bar'
-import {BarText, CleanupCounter, CleanupStatus, CleanupTracker, DetailsButton, ProgressTrack, TrashActions} from './cleanup-progress'
+import {BarText, CleanupCounter, CleanupStatus, CleanupTracker, DetailsButton, ProgressTrack, TrashActions, trashOffer} from './cleanup-progress'
+import {CommandMenu} from './command-menu'
 import {RequestError} from './request-error'
 import {ScanCounter, useScanHero} from './scan-hero'
 import {RescanButton, ScanStatus} from './scan-status'
@@ -77,6 +79,9 @@ function TabLink({tab}: {tab: (typeof TABS)[number]}) {
 }
 
 function Tabs() {
+  const tabs = root.useRouteContext({select: context => context.tabs})
+  const navigate = useNavigate()
+  useCommands(TABS.map(tab => ({id: tab.id, name: `Go to ${tab.label}`, group: 'Go to', enabled: true, run: () => navigate(tabs.placeOf(tab.id) ?? tab.link)})))
   return (
     <TabLinks label="Views">
       {TABS.map(tab => (
@@ -151,8 +156,15 @@ const TRASH_ACTIONS: readonly Action[] = ['undo', 'empty']
 function useTrashActions(db: Db, progress: CleanupProgress | null, phase: Phase, trash: (action: 'undo' | 'empty', ids: readonly string[]) => void, sectionOf: (params: {section?: string}) => string) {
   const navigate = useNavigate()
   const busy = usePending(db, TRASH_ACTIONS)
+  const offer = progress && trashOffer(progress, phase, busy)
+  const ready = offer !== null && offer.offered && !offer.waiting
+  const undo = () => trash('undo', progress?.inTrash.ids ?? [])
+  const empty = () => navigate({to: '/cleanup/$section/empty', params: prev => ({section: sectionOf(prev)}), search: true})
+  useCommands([
+    {id: 'undo-cleanup', name: 'Undo this cleanup', group: 'Clean up', enabled: ready, run: undo},
+    {id: 'empty-cleanup', name: 'Empty these from Trash…', group: 'Clean up', enabled: ready, run: empty},
+  ])
   if (!progress) return null
-  const undo = () => trash('undo', progress.inTrash.ids)
   return (
     <TrashActions
       progress={progress}
@@ -165,7 +177,7 @@ function useTrashActions(db: Db, progress: CleanupProgress | null, phase: Phase,
         </>
       }
       onUndo={undo}
-      onEmpty={() => navigate({to: '/cleanup/$section/empty', params: prev => ({section: sectionOf(prev)}), search: true})}
+      onEmpty={empty}
     />
   )
 }
@@ -195,13 +207,15 @@ export function Shell() {
   const sectionOf = (params: {section?: string}) => params.section ?? firstSectionNow(db) ?? ''
   const actions = useTrashActions(db, progress, phase, decisions.trash, sectionOf)
   const openConfirm = useOpenConfirm()
+  const onDetails = () => navigate({to: '.', search: prev => ({...prev, overlay: 'progress'})})
+  useCommands([{id: 'details', name: 'Show cleanup details', group: 'Clean up', enabled: progress !== null, run: onDetails}])
 
   if (decisions.done) return <Finished {...decisions.done} />
 
   return (
     <div className="flex h-svh flex-col">
       <Tracker db={db} progress={progress} phase={phase} returnFocus={detailsRef} actions={actions} />
-      <Header items={selection.count} progress={progress} phase={phase} link={session.scanLink} onDetails={() => navigate({to: '.', search: prev => ({...prev, overlay: 'progress'})})} detailsRef={detailsRef} />
+      <Header items={selection.count} progress={progress} phase={phase} link={session.scanLink} onDetails={onDetails} detailsRef={detailsRef} />
       <ScanSummary db={db} scan={scan} selection={selection} progress={progress} phase={phase} approved={decisions.approved} />
       <div className="relative flex min-h-0 flex-1 flex-col text-sm">
         <DeleteReady value={deleteState(selection, scan.scan).ready && !progress}>
@@ -220,6 +234,7 @@ export function Shell() {
         onCancel={decisions.cancel}
         onDelete={openConfirm}
       />
+      <CommandMenu />
     </div>
   )
 }

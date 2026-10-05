@@ -1,4 +1,3 @@
-import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
 import {useDebouncer} from '@tanstack/react-pacer/debouncer'
 import {Link, useNavigate, useParams} from '@tanstack/react-router'
 import type {RowSelectionState, Updater} from '@tanstack/react-table'
@@ -11,6 +10,7 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
+import {useCommands, type Command} from '@/lib/commands'
 import {counted, formatBytes, isPickable, RISK_LABEL, type Risk} from '@/lib/data'
 import {useDb, type Db} from '@/lib/db'
 import type {CleanupProgress, Removal} from '@/lib/progress'
@@ -18,6 +18,7 @@ import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import {isFiltering, predicateOf, useShaped, type SectionTotal} from '@/lib/shaping'
 import {useScanState, useSections} from '@/lib/views'
 import {DataTable} from './data-table'
@@ -40,7 +41,10 @@ const SORT_LABEL: Record<Sort, string> = {
   'age-desc': 'Oldest first',
   'age-asc': 'Newest first',
 }
+const SIZE_LABEL = (n: number) => (n === 0 ? 'Any size' : `≥ ${formatBytes(n)}`)
+const AGE_LABEL = (n: number) => (n === -1 ? 'Any age' : `Idle ${n}+ days`)
 const QUICK_SELECT_MIN = 4
+const toggled = (risks: readonly Risk[], risk: Risk) => (risks.includes(risk) ? risks.filter(r => r !== risk) : [...risks, risk])
 
 const SEARCH_WAIT = 150
 
@@ -146,6 +150,13 @@ function QuickSelect({group, choose}: {group: Group; choose: Choose}) {
   const {category, shown} = group
   const few = shown.selectable < QUICK_SELECT_MIN
   const idle = (days: number) => () => choose(category.id, entry => (entry.age ?? -1) >= days)
+  const aged = !few && shown.aged > 0
+  useCommands([
+    {id: 'section-all', name: 'Select all in this section', group: 'Select', enabled: !few, run: () => choose(category.id, () => true)},
+    {id: 'section-idle-90', name: 'Select items idle 90+ days in this section', group: 'Select', enabled: aged, run: idle(90)},
+    {id: 'section-idle-365', name: 'Select items idle 1+ year in this section', group: 'Select', enabled: aged, run: idle(365)},
+    {id: 'section-none', name: 'Select none in this section', group: 'Select', enabled: !few, run: () => choose(category.id, () => false)},
+  ])
   return (
     <div className={`flex items-center gap-1 text-xs text-muted-foreground ${few ? 'invisible' : ''}`} inert={few}>
       <span className="pr-1">Select:</span>
@@ -337,6 +348,7 @@ function useTyped(value: string) {
 
 function SearchBox({value, onChange, inputRef}: {value: string; onChange: (q: string) => void; inputRef: RefObject<HTMLInputElement | null>}) {
   const {typed, setTyped, setSent} = useTyped(value)
+  const {label} = usePlatform()
   const send = (q: string) => {
     setSent(q)
     onChange(q)
@@ -364,7 +376,7 @@ function SearchBox({value, onChange, inputRef}: {value: string; onChange: (q: st
         aria-label="Filter paths"
         className="pr-8 pl-8"
       />
-      <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">/</Kbd>
+      <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">{label('/')}</Kbd>
     </div>
   )
 }
@@ -378,15 +390,14 @@ function Toggle({on, label, onClick}: {on: boolean; label: string; onClick: () =
 }
 
 function Toolbar({list, onList, onSearch, searchRef}: {list: CleanupSearch; onList: ChangeList; onSearch: (q: string) => void; searchRef: RefObject<HTMLInputElement | null>}) {
-  const toggleRisk = (risk: Risk) => onList({risk: list.risk.includes(risk) ? list.risk.filter(r => r !== risk) : [...list.risk, risk]})
   return (
     <div className="flex items-center gap-2 border-b px-7 py-3">
       <SearchBox value={list.q} onChange={onSearch} inputRef={searchRef} />
       {RISKS.map(risk => (
-        <Toggle key={risk} on={list.risk.includes(risk)} label={RISK_LABEL[risk]} onClick={() => toggleRisk(risk)} />
+        <Toggle key={risk} on={list.risk.includes(risk)} label={RISK_LABEL[risk]} onClick={() => onList({risk: toggled(list.risk, risk)})} />
       ))}
-      <FilterSelect label="Minimum size" value={list.minSize} options={MIN_SIZES} render={n => (n === 0 ? 'Any size' : `≥ ${formatBytes(n)}`)} onChange={minSize => onList({minSize})} />
-      <FilterSelect label="Minimum idle time" value={list.minAge} options={MIN_AGES} render={n => (n === -1 ? 'Any age' : `Idle ${n}+ days`)} onChange={minAge => onList({minAge})} />
+      <FilterSelect label="Minimum size" value={list.minSize} options={MIN_SIZES} render={SIZE_LABEL} onChange={minSize => onList({minSize})} />
+      <FilterSelect label="Minimum idle time" value={list.minAge} options={MIN_AGES} render={AGE_LABEL} onChange={minAge => onList({minAge})} />
       <FilterSelect label="Sort" value={list.sort} options={SORTS} render={s => SORT_LABEL[s]} onChange={sort => onList({sort})} />
       <Toggle on={list.only} label="Only selected" onClick={() => onList({only: !list.only})} />
       <span className="grow" />
@@ -492,25 +503,27 @@ function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep
   return {groups: groupsOf(sections, {totals, shadow, picked: filtering ? null : selection.picked}), listed, rows}
 }
 
-const LAYER = '[role="dialog"], [role="listbox"], [role="menu"]'
+interface Listing {
+  list: CleanupSearch
+  onList: ChangeList
+  search: RefObject<HTMLInputElement | null>
+  groups: readonly Group[]
+  goTo: (section: string) => void
+}
 
-const layerOpen = () => document.querySelector('[aria-expanded="true"]') !== null || [...document.querySelectorAll(LAYER)].some(layer => layer.checkVisibility())
-
-const inOverlay = (event: KeyboardEvent) => layerOpen() || (event.target instanceof Element && event.target.closest(LAYER) !== null)
-
-function useShortcuts(actions: [Hotkey, () => void, boolean][]) {
-  useHotkeys(
-    actions.map(([hotkey, action, enabled]) => ({
-      hotkey,
-      callback: (event: KeyboardEvent) => {
-        if (inOverlay(event)) return
-        event.preventDefault()
-        action()
-      },
-      options: {enabled},
-    })),
-    {preventDefault: false, stopPropagation: false, ignoreInputs: true},
-  )
+function listCommands({list, onList, search, groups, goTo}: Listing): Command[] {
+  const view = list.view === 'list' ? 'cards' : 'list'
+  return [
+    ...groups.map(({category}) => ({id: `section:${category.id}`, name: `Go to section: ${category.title}`, group: 'Go to' as const, enabled: true, run: () => goTo(category.id)})),
+    {id: 'filter-paths', name: 'Filter paths', group: 'Filter and view', hotkey: '/', enabled: true, run: () => search.current?.focus()},
+    ...RISKS.map(risk => ({id: `risk:${risk}`, name: `Show ${RISK_LABEL[risk]}`, group: 'Filter and view' as const, checked: list.risk.includes(risk), enabled: true, run: () => onList({risk: toggled(list.risk, risk)})})),
+    ...MIN_SIZES.map(minSize => ({id: `min-size:${minSize}`, name: `Minimum size: ${SIZE_LABEL(minSize)}`, group: 'Filter and view' as const, checked: list.minSize === minSize, enabled: true, run: () => onList({minSize})})),
+    ...MIN_AGES.map(minAge => ({id: `min-age:${minAge}`, name: `Minimum idle: ${AGE_LABEL(minAge)}`, group: 'Filter and view' as const, checked: list.minAge === minAge, enabled: true, run: () => onList({minAge})})),
+    ...SORTS.map(sort => ({id: `sort:${sort}`, name: `Sort: ${SORT_LABEL[sort]}`, group: 'Filter and view' as const, checked: list.sort === sort, enabled: true, run: () => onList({sort})})),
+    {id: 'only-selected', name: 'Only selected', group: 'Filter and view', checked: list.only, enabled: true, run: () => onList({only: !list.only})},
+    {id: 'switch-view', name: `Switch to ${view} view`, group: 'Filter and view', hotkey: 'V', enabled: true, run: () => onList({view})},
+    {id: 'clear-filters', name: 'Clear filters', group: 'Filter and view', enabled: isFiltering(list), run: () => onList(NO_FILTERS)},
+  ]
 }
 
 function Body({groups, list, progressed, choose, children}: {groups: Group[]; list: CleanupSearch; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
@@ -534,6 +547,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   const selection = useSelection()
   const {progress} = useProgress()
   const onList = useListChange()
+  const navigate = useNavigate()
   const search = useRef<HTMLInputElement>(null)
   const replay = useReveal(list.view)
   const on = selection.rowSelection
@@ -543,12 +557,11 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
   const open = !progress
 
-  useShortcuts([
-    ['/', () => search.current?.focus(), true],
-    ['A', () => choose(null, () => true), open],
-    ['D', () => selection.setRowSelection({}), open],
-    ['R', () => selection.reset(), open],
-    ['V', () => onList({view: list.view === 'list' ? 'cards' : 'list'}), true],
+  useCommands([
+    ...listCommands({list, onList, search, groups, goTo: section => navigate({to: '/cleanup/$section', params: {section}, search: true})}),
+    {id: 'select-all', name: 'Select all shown', group: 'Select', hotkey: 'A', enabled: open, run: () => choose(null, () => true)},
+    {id: 'clear-selection', name: 'Clear selection', group: 'Select', hotkey: 'D', enabled: open, run: () => selection.setRowSelection({})},
+    {id: 'reset-selection', name: 'Reset to recommended', group: 'Select', hotkey: 'R', enabled: open, run: () => selection.reset()},
   ])
 
   return (
