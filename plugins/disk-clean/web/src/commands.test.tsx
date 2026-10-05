@@ -5,7 +5,7 @@ import {page, userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {formatBytes, type Loaded, type Platform, type ScanData, type TrashEntry} from './lib/data'
-import {at, entry, fixture, onDrive, trashedEvents, windowsFixture} from './test/fixture'
+import {at, category, entry, fixture, item, onDrive, trashedEvents, windowsFixture} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN, query, ringPoints, sendAll} from './test/page'
 import {foldersOf} from './lib/folders'
 import './index.css'
@@ -246,6 +246,30 @@ describe('the page on Windows', () => {
     const confirm = screen.getByRole('dialog', {name: 'Move to the Recycle Bin'})
     await expect.element(confirm.getByRole('list', {name: "Can't be undone"}).getByRole('listitem').first()).toHaveTextContent("Remove-Item -LiteralPath 'C:\\Users\\you\\Library\\Caches\\app-a' -Recurse -Force")
     await expect.element(confirm.getByText(/rm -rf/)).not.toBeInTheDocument()
+  })
+
+  test('old temp entries are a ticked Safe section; newer ones are Review first', async () => {
+    const temp = 'C:/Users/you/AppData/Local/Temp'
+    const data = {
+      ...windowsFixture.data,
+      categories: [
+        ...windowsFixture.data.categories,
+        category('tmp-old', 'Old temp files', 'safe', [item(`${temp}/old`, GB, {label: '~/AppData/Local/Temp/old', age: 30})]),
+        category('tmp', 'Temp files', 'review', [item(`${temp}/new`, GB, {label: '~/AppData/Local/Temp/new', age: 1, preselect: false})]),
+      ],
+    }
+    mockServer(onDrive(PLAN))
+    const {source} = fakeEventSource()
+    const screen = await render(<App loaded={{...windowsFixture, data, trash: [], openEvents: () => source}} history={at('/cleanup')} />)
+    await expect.element(screen.getByText(`5 items selected · ${formatBytes(3.75 * GB + GB)}`)).toBeVisible()
+    const sections = screen.getByRole('navigation', {name: 'Sections'})
+    const groupOf = async (title: RegExp) => {
+      const link = sections.getByRole('link', {name: title})
+      await expect.element(link).toBeVisible()
+      return link.element().closest('nav > div')?.firstElementChild?.textContent
+    }
+    expect(await groupOf(/^Old temp files/)).toBe('Safe to delete')
+    expect(await groupOf(/^Temp files/)).toBe('Review first')
   })
 
   test('Insights lists the largest files in Windows form', async () => {

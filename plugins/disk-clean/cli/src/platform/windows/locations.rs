@@ -377,15 +377,21 @@ pub(crate) fn scan_temp(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config, tmp_base: 
         .into_iter()
         .filter(|entry| owned_by_user(entry))
         .partition(|entry| idle_days(ctx, entry) >= TEMP_TICKED_DAYS);
-    let desc = "Entries in your temp folder that belong to you. Those untouched for a week are ticked; a running program may still be using a newer one.";
-    for (list, pre) in [(old, "1"), (new, "0")] {
-        let cat = Cat {
-            id: "tmp",
-            title: "Temp files",
-            desc,
-            risk: "review",
-            pre,
-        };
+    let old_cat = Cat {
+        id: "tmp-old",
+        title: "Old temp files",
+        desc: "Entries in your temp folder that belong to you and are untouched for a week.",
+        risk: "safe",
+        pre: "1",
+    };
+    let new_cat = Cat {
+        id: "tmp",
+        title: "Temp files",
+        desc: "Newer entries in your temp folder that belong to you; a running program may still be using one.",
+        risk: "review",
+        pre: "0",
+    };
+    for (cat, list) in [(old_cat, old), (new_cat, new)] {
         sized(
             ctx,
             rows,
