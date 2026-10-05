@@ -168,6 +168,8 @@ jobs:
           echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
         run: sfw cargo fetch --locked
+        env:
+          CARGO_HTTP_CHECK_REVOKE: "false"
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
         run: |
@@ -217,6 +219,8 @@ jobs:
           echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
         run: sfw cargo fetch --locked
+        env:
+          CARGO_HTTP_CHECK_REVOKE: "false"
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
         run: |
