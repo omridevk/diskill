@@ -92,6 +92,16 @@ Inventory of today's actions, routes and hotkeys: research done 2026-10-05 again
 | Cleanup… (after approval) | Show details, Watch the movie, Undo this cleanup, Empty these from Trash… |
 | Chart… (Storage tab) | Sunburst, Treemap |
 
+- Selection first. When items are ticked, the top page opens with a first group headed with the
+  count and size ("Selected: 12 items · 4.2 GB"), above every other group:
+  - Cleanup tab: Delete 12 items… (opens the confirm), Delete 12 items immediately… (opens the
+    "can't be undone" confirm), Show only selected, Clear selection, Copy 12 paths (writes the selected
+    paths, one per line, to the clipboard; the one new action, client-only).
+  - Trash tab, items picked: Undo 12 items, Empty 12 items… (opens the confirm).
+  The names carry the count and size so the user sees what will be acted on; the same actions keep
+  their hotkeys. With nothing ticked the group is absent. While typing, these rank like any other
+  match.
+
   At the top level with no page: Go to Cleanup / Storage / Insights / Trash, Filter paths, Switch to
   list / cards, Delete…, Delete immediately…, Rescan, Undo selected / Empty selected… (Trash tab),
   Keyboard shortcuts, How Delete works. Actions with a hotkey keep it wherever they sit; the
