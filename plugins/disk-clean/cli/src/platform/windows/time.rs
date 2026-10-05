@@ -19,8 +19,9 @@ pub fn local_time(fmt: &CStr) -> String {
 }
 
 pub fn local_midnights(now: i64, days: usize) -> Vec<i64> {
-    // SAFETY: localtime_s/mktime read and write only the local tm.
+    // SAFETY: libc::tm is plain integers, so all zeroes is a valid value.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: localtime_s reads now and writes only the local tm.
     unsafe { libc::localtime_s(&mut tm, &now) };
     let today = tm.tm_mday;
     (0..days as i32)
@@ -28,7 +29,7 @@ pub fn local_midnights(now: i64, days: usize) -> Vec<i64> {
             let mut t = tm;
             (t.tm_hour, t.tm_min, t.tm_sec, t.tm_isdst) = (0, 0, 0, -1);
             t.tm_mday = today - d;
-            // SAFETY: as above.
+            // SAFETY: mktime reads and normalises only the local copy t.
             unsafe { mktime(&mut t) }
         })
         .collect()
