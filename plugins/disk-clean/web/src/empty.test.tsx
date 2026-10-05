@@ -150,7 +150,7 @@ describe('selection warnings never move the page', () => {
     expect(await settledBoxes(screen)).toEqual(before)
 
     await screen.getByRole('contentinfo').getByRole('button', {name: /Delete 5 items/}).click()
-    const dialog = screen.getByRole('dialog', {name: 'Confirm the cleanup'})
+    const dialog = screen.getByRole('dialog', {name: 'Move to the Trash'})
     await expect.element(dialog.getByText(/4 selected items are hidden by the filters/)).toBeVisible()
     await expect.element(dialog.getByText('1 item marked review selected: slow or costly to rebuild.')).toBeVisible()
     await dialog.getByRole('button', {name: 'Cancel'}).click()
@@ -261,7 +261,7 @@ describe('the action bar and toolbar fit on one line at every width', () => {
       expect(Math.abs(cards.top + cards.height / 2 - (search.top + search.height / 2))).toBeLessThan(2)
       expect(toolbar.scrollWidth).toBeLessThanOrEqual(toolbar.clientWidth)
 
-      const help = screen.getByText('Delete moves files to a holding folder first, so you can undo').element()
+      const help = screen.getByText('Delete moves files to the Trash, so you can undo').element()
       if (!(help instanceof HTMLElement)) throw new Error('no help line')
       expect(help.scrollWidth).toBeLessThanOrEqual(help.clientWidth)
       expect(help.getBoundingClientRect().right).toBeLessThanOrEqual(screen.getByRole('button', {name: 'Cancel'}).element().getBoundingClientRect().left)
@@ -276,7 +276,7 @@ describe('the action bar and toolbar fit on one line at every width', () => {
       await expect.poll(tooltipText).toBe('Review items are slow or costly to rebuild · click for details')
 
       await screen.getByRole('button', {name: 'About deleting'}).click()
-      await expect.element(screen.getByText("Worktrees and commands can't be undone.")).toBeVisible()
+      await expect.element(screen.getByText("Delete immediately skips the Trash and can't be undone. Worktrees and commands can't be undone either.")).toBeVisible()
     })
   }
 })

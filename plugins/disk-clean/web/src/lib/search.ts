@@ -39,10 +39,26 @@ export interface StorageSearch {
   shape: Shape
 }
 
+export interface ConfirmSearch {
+  now: boolean
+}
+
+export interface TrashSearch {
+  run: string
+  pick: string
+}
+
+export interface EmptySearch {
+  target: string
+}
+
 export const ROOT_DEFAULTS = {log: 'all', take: 0, add: '', drop: ''} satisfies Omit<RootSearch, 'overlay'>
 export const NO_FILTERS = {q: '', risk: [], minSize: 0, minAge: -1, only: false} satisfies Partial<CleanupSearch>
 export const CLEANUP_DEFAULTS: CleanupSearch = {...NO_FILTERS, view: 'list', sort: 'size-desc'}
 export const STORAGE_DEFAULTS: StorageSearch = {shape: 'sunburst'}
+export const CONFIRM_DEFAULTS: ConfirmSearch = {now: false}
+export const TRASH_DEFAULTS: TrashSearch = {run: '', pick: ''}
+export const EMPTY_DEFAULTS: EmptySearch = {target: ''}
 
 type Raw<T> = {[K in keyof T]?: T[K]} & SearchSchemaInput
 
@@ -85,6 +101,27 @@ export function cleanupSearch(raw: Raw<CleanupSearch>): CleanupSearch {
 
 export function storageSearch(raw: Raw<StorageSearch>): StorageSearch {
   return {shape: oneOf(SHAPES, raw.shape, STORAGE_DEFAULTS.shape)}
+}
+
+export function confirmSearch(raw: Raw<ConfirmSearch>): ConfirmSearch {
+  return {now: raw.now === true}
+}
+
+const ID = /^[0-9a-f]{16}$/
+const RUN = /^[A-Za-z0-9._-]{1,120}$/
+
+const cleanIds = (text: string) => [...new Set(text.split('.').filter(id => ID.test(id)))].join('.')
+
+export function trashSearch(raw: Raw<TrashSearch>): TrashSearch {
+  const run = textOf(raw.run)
+  return {run: RUN.test(run) ? run : '', pick: cleanIds(textOf(raw.pick))}
+}
+
+export function emptySearch(raw: Raw<EmptySearch>): EmptySearch {
+  const target = textOf(raw.target)
+  const [kind, value = ''] = target.split(':')
+  const valid = (kind === 'run' && RUN.test(value)) || (kind === 'item' && ID.test(value))
+  return {target: valid ? target : ''}
 }
 
 const utf8 = new TextEncoder()

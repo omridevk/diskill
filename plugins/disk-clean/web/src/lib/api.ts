@@ -1,7 +1,10 @@
+import type {TrashEntry} from './data'
+
+export type Mode = 'trash' | 'now'
+
 export interface Plan {
-  hold: {path: string; bytes: number; held: string}[]
-  hold_bytes: number
-  hold_until: number
+  paths: {path: string; bytes: number; trashed: boolean}[]
+  paths_bytes: number
   final: string[]
   final_bytes: number
   final_count: number
@@ -57,10 +60,11 @@ export function rescan(token: string) {
   return post('/rescan', JSON.stringify({token}))
 }
 
-export function decide(token: string, decision: 'approve' | 'cancel', selected?: Selected) {
-  return post('/decide', JSON.stringify({token, decision, ...selected}))
+export function decide(token: string, decision: 'approve' | 'cancel', selected?: Selected, mode?: Mode) {
+  return post('/decide', JSON.stringify({token, decision, ...selected, mode}))
 }
 
-export function heldAction(token: string, action: 'undo' | 'free') {
-  return post(`/${action}`, JSON.stringify({token}))
+export async function trashAction(token: string, action: 'undo' | 'empty', ids: readonly string[]): Promise<TrashEntry[]> {
+  const answer: {entries?: TrashEntry[]} = await post(`/${action}`, JSON.stringify({token, ids}))
+  return answer.entries ?? []
 }

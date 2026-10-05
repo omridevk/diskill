@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 fn du_kb(path: &Path) -> u64 {
-    let out = Command::new("du").arg("-sk").arg(path).output().unwrap();
+    let out = common::output(Command::new("du").arg("-sk").arg(path));
     let text = String::from_utf8(out.stdout).unwrap();
     text.split_whitespace().next().unwrap().parse().unwrap()
 }

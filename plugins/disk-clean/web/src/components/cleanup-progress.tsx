@@ -8,11 +8,12 @@ import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {counted, formatBytes, plural, tilde} from '@/lib/data'
 import {useHome} from '@/lib/page-data'
 import type {Db} from '@/lib/db'
-import {formatDuration, formatUntil, jobRunning, resultBytes, resultOf, useMovie, type CleanupProgress, type Outcome} from '@/lib/progress'
+import {formatDuration, heroBytes, isPutBack, jobRunning, useMovie, type CleanupProgress, type Outcome, type Phase} from '@/lib/progress'
 import {useBack} from '@/lib/navigation'
 import {LOG_FILTERS, type LogFilter, type Overlay} from '@/lib/search'
 import {useReducedMotion} from '@/lib/motion'
 import {CleanupFilm} from './cleanup-film'
+import LatticeLoader from './react-bits/lattice-loader'
 import {SpinningBytes} from './numbers'
 
 const LOG_ROW_HEIGHT = 52
@@ -21,7 +22,7 @@ const WAITING = 'Approved · Claude is showing the commands in your terminal'
 
 const FILTERS: Record<LogFilter, (o: Outcome) => boolean> = {
   all: () => true,
-  removed: o => o.kind === 'removed' || o.kind === 'held' || o.kind === 'freed' || o.kind === 'restored',
+  removed: o => o.kind === 'removed' || o.kind === 'trashed' || o.kind === 'emptied' || o.kind === 'restored',
   problems: o => o.kind === 'failed' || o.kind === 'kept',
   commands: o => o.key.startsWith('cmd:'),
 }
@@ -59,29 +60,28 @@ function Problems({progress}: {progress: CleanupProgress}) {
   )
 }
 
-function HeldText({progress}: {progress: CleanupProgress}) {
+function TrashedText({progress}: {progress: CleanupProgress}) {
   return (
     <>
-      Held {formatBytes(progress.held)} · not freed yet · undo until {formatUntil(progress.holdUntil)}
+      Moved to Trash {formatBytes(progress.inTrash.bytes)} · undo available
       {progress.freed > 0 && ` · freed ${formatBytes(progress.freed)}`}
       <Problems progress={progress} />
     </>
   )
 }
 
-function DoneText({progress}: {progress: CleanupProgress}) {
-  if (progress.held > 0) return <HeldText progress={progress} />
+function FinishedText({progress}: {progress: CleanupProgress}) {
   const latest = [...progress.byKey.values()]
   if (progress.restored > 0) {
     return (
       <>
-        Restored {formatBytes(progress.restored)} · nothing is held
+        Put back {formatBytes(progress.restored)} · nothing left in the Trash
         {progress.freed > 0 && ` · freed ${formatBytes(progress.freed)}`}
         <Problems progress={progress} />
       </>
     )
   }
-  const removed = latest.filter(o => o.kind === 'removed' || o.kind === 'freed').length
+  const removed = latest.filter(o => o.kind === 'removed' || o.kind === 'emptied').length
   return (
     <>
       Freed {formatBytes(progress.freed)} · {counted(removed)} removed
@@ -90,13 +90,14 @@ function DoneText({progress}: {progress: CleanupProgress}) {
   )
 }
 
+const JOB_VERB = {empty: 'Emptying from the Trash', undo: 'Putting back'}
+
 function JobText({progress}: {progress: CleanupProgress}) {
   const job = progress.cleanup.job
   if (!job) return null
-  const verb = job.kind === 'free' ? 'Freeing' : 'Undoing'
   return (
     <>
-      {verb} · {formatBytes(progress.handled)} of {formatBytes(job.bytes)} · {plural(job.count, 'held item', 'held items')}
+      {JOB_VERB[job.kind]} · {formatBytes(progress.handled)} of {formatBytes(job.bytes)} · {plural(job.count, 'item', 'items')}
     </>
   )
 }
@@ -114,25 +115,30 @@ const LOST = 'Lost contact with disk-clean: the cleanup keeps running; reload to
 
 const LINK_TEXT = {reconnecting: 'Reconnecting to disk-clean…', lost: LOST}
 
-export function BarText({progress}: {progress: CleanupProgress}) {
-  const {cleanup, plan} = progress
-  if (progress.link !== 'live') return <span className="text-red-300">{LINK_TEXT[progress.link]}</span>
-  if (jobRunning(progress)) return <JobText progress={progress} />
-  if (cleanup.done) return <DoneText progress={progress} />
-  if (cleanup.abandoned) return <AbandonedText progress={progress} reason={cleanup.abandoned.reason} />
-  if (!cleanup.started) return <span className="t-pulse">{WAITING}</span>
+const WORKING = {trashing: 'Moving to the Trash', deleting: 'Deleting'}
+
+function WorkingText({progress, verb}: {progress: CleanupProgress; verb: string}) {
   const last = progress.outcomes.at(-1)
   return (
     <>
-      Cleaning up · {formatBytes(progress.handled)} of {formatBytes(plan.approved)} · {counted(progress.count)} of {counted(progress.total)}
+      {verb} · {formatBytes(progress.handled)} of {formatBytes(progress.plan.approved)} · {counted(progress.count)} of {counted(progress.total)}
       {last && <span className="text-muted-foreground"> · {last.label}</span>}
     </>
   )
 }
 
-export function ProgressTrack({progress}: {progress: CleanupProgress}) {
-  const {started, done, abandoned} = progress.cleanup
-  const waiting = !started && !done && !abandoned && !jobRunning(progress)
+export function BarText({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
+  if (progress.link !== 'live') return <span className="text-red-300">{LINK_TEXT[progress.link]}</span>
+  if (phase === 'undoing' || phase === 'emptying') return <JobText progress={progress} />
+  if (phase === 'trashed') return <TrashedText progress={progress} />
+  if (phase === 'finished') return <FinishedText progress={progress} />
+  if (phase === 'stopped') return <AbandonedText progress={progress} reason={progress.cleanup.abandoned?.reason ?? ''} />
+  if (phase === 'trashing' || phase === 'deleting') return <WorkingText progress={progress} verb={WORKING[phase]} />
+  return <span className="t-pulse">{WAITING}</span>
+}
+
+export function ProgressTrack({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
+  const waiting = phase === 'waiting'
   return (
     <span aria-hidden className="absolute inset-x-0 -bottom-px h-[3px] overflow-hidden bg-zinc-800">
       <span
@@ -140,6 +146,60 @@ export function ProgressTrack({progress}: {progress: CleanupProgress}) {
         style={{transform: `scaleX(${waiting ? 1 : share(progress)})`}}
       />
     </span>
+  )
+}
+
+const STATUS_LABEL: Record<Phase, string> = {
+  scanning: '',
+  reviewing: '',
+  waiting: 'Waiting to start',
+  trashing: 'Moving to the Trash',
+  deleting: 'Deleting',
+  trashed: 'In the Trash · undo available',
+  undoing: 'Putting back',
+  emptying: 'Emptying the Trash',
+  finished: 'Cleanup finished',
+  stopped: 'Cleanup stopped',
+}
+
+const WORKING_PHASES = new Set<Phase>(['waiting', 'trashing', 'deleting', 'undoing', 'emptying'])
+
+function cleanupStatusOf(phase: Phase) {
+  if (phase === 'stopped') return 'error'
+  return WORKING_PHASES.has(phase) ? 'working' : 'done'
+}
+
+export function CleanupStatus({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
+  const label = STATUS_LABEL[phase]
+  if (phase === 'waiting') return <span className="t-pulse text-[13px] text-muted-foreground">{label}</span>
+  return (
+    <LatticeLoader
+      key={label}
+      label={label}
+      doneLabel={label}
+      errorLabel={label}
+      status={cleanupStatusOf(phase)}
+      elapsed={progress.elapsed / 1000}
+      fontSize={13}
+      cellSize={4}
+      className="text-muted-foreground"
+    />
+  )
+}
+
+export function CleanupCounter({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
+  const job = progress.cleanup.job
+  const working = phase === 'trashing' || phase === 'deleting'
+  const last = working ? progress.outcomes.at(-1)?.label : ''
+  const figures =
+    job && (phase === 'undoing' || phase === 'emptying')
+      ? `${plural(job.count, 'item', 'items')} · ${formatBytes(progress.handled)} of ${formatBytes(job.bytes)}`
+      : `${counted(progress.count)} of ${plural(progress.total, 'item', 'items')} done · ${formatBytes(progress.handled)} of ${formatBytes(progress.plan.approved)}`
+  return (
+    <div className="flex h-5 min-w-0 items-baseline gap-3 text-[13px] text-muted-foreground tabular-nums">
+      <span className="w-64 shrink-0 truncate">{figures}</span>
+      <span className="truncate font-mono text-xs text-muted-foreground/70">{last}</span>
+    </div>
   )
 }
 
@@ -170,21 +230,33 @@ function FreeSpace({progress}: {progress: CleanupProgress}) {
   return <Stat label="Free space">{before === undefined || progress.free === null ? 'not started' : `${formatBytes(before)} → ${formatBytes(progress.free)}`}</Stat>
 }
 
-function headlineOf(progress: CleanupProgress) {
-  const result = resultOf(progress)
-  if (result === 'held') return {label: 'Held, not freed yet', note: `Freed ${formatBytes(progress.freed)} · undo until ${formatUntil(progress.holdUntil)}`}
-  if (result === 'restored') return {label: 'Restored', note: `Nothing is held · freed ${formatBytes(progress.freed)}`}
-  return {label: progress.cleanup.done ? 'Freed' : 'Freed so far', note: ''}
+export const HERO_LABEL: Record<Phase, string> = {
+  scanning: 'Selected to free',
+  reviewing: 'Selected to free',
+  waiting: 'Approved · waiting to start',
+  trashing: 'Moving to the Trash',
+  deleting: 'Deleting for good',
+  trashed: 'In the Trash · undo available',
+  undoing: 'Putting back',
+  emptying: 'Emptying from the Trash',
+  finished: 'Freed',
+  stopped: 'Stopped',
 }
 
-function Stats({progress}: {progress: CleanupProgress}) {
-  const {label, note} = headlineOf(progress)
+function headlineOf(phase: Phase, progress: CleanupProgress) {
+  if (phase === 'trashed') return {label: HERO_LABEL.trashed, note: progress.freed > 0 ? `Freed ${formatBytes(progress.freed)} · space comes back when the Trash is emptied` : 'Space comes back when the Trash is emptied'}
+  if (isPutBack(phase, progress)) return {label: 'Put back', note: progress.freed > 0 ? `Nothing left in the Trash · freed ${formatBytes(progress.freed)}` : 'Nothing left in the Trash'}
+  return {label: HERO_LABEL[phase], note: ''}
+}
+
+function Stats({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
+  const {label, note} = headlineOf(phase, progress)
   return (
     <div className="flex flex-col gap-4 px-4">
       <div className="flex flex-col gap-1">
         <span className="text-xs text-muted-foreground">{label}</span>
         <span className="text-4xl leading-none font-bold tracking-tighter tabular-nums">
-          <SpinningBytes bytes={resultBytes(progress)} />
+          <SpinningBytes bytes={heroBytes(phase, progress)} />
         </span>
         {note && <span className="text-xs text-muted-foreground">{note}</span>}
       </div>
@@ -204,20 +276,20 @@ const KIND_TEXT: Record<Outcome['kind'], string> = {
   failed: 'Not removed',
   kept: 'Kept',
   ran: 'Ran',
-  held: 'Held',
-  freed: 'Freed',
-  restored: 'Restored',
+  trashed: 'Moved to the Trash',
+  emptied: 'Emptied from the Trash',
+  restored: 'Put back',
 }
 const KIND_TONE: Record<Outcome['kind'], string> = {
   removed: 'text-foreground',
   failed: 'text-red-300',
   kept: 'text-amber-300',
   ran: 'text-foreground',
-  held: 'text-sky-300',
-  freed: 'text-foreground',
+  trashed: 'text-sky-300',
+  emptied: 'text-foreground',
   restored: 'text-foreground',
 }
-const QUIET = new Set<Outcome['kind']>(['removed', 'ran', 'held', 'freed', 'restored'])
+const QUIET = new Set<Outcome['kind']>(['removed', 'ran', 'trashed', 'emptied', 'restored'])
 
 function detailOf(outcome: Outcome) {
   if (outcome.key.startsWith('cmd:')) return outcome.kind === 'ran' ? 'ok' : 'failed'
@@ -280,40 +352,37 @@ function Rows({outcomes}: {outcomes: readonly Outcome[]}) {
   )
 }
 
-const PANEL_JOB = {free: 'Freeing the held items for good', undo: 'Putting the held items back'}
-const FOOTER_JOB = {free: 'Freeing the held items…', undo: 'Putting the held items back…'}
-
-function runningJob(progress: CleanupProgress) {
-  return jobRunning(progress) ? progress.cleanup.job : null
-}
-
-function panelState(progress: CleanupProgress) {
-  const {cleanup} = progress
-  const job = runningJob(progress)
-  if (job) return PANEL_JOB[job.kind]
-  if (progress.held > 0) return 'Held, not freed yet: Undo puts everything back, Free the space now deletes it for good'
-  if (cleanup.done && progress.restored > 0) return 'Restored: everything held was put back'
-  if (cleanup.done) return 'Finished'
-  if (cleanup.abandoned) return cleanup.started ? 'Stopped before it finished' : 'The cleanup did not start'
-  return cleanup.started ? 'Deleting in the background' : 'Waiting for the deletion to start'
+const PANEL_STATE: Record<Phase, string> = {
+  scanning: '',
+  reviewing: '',
+  waiting: 'Waiting for the cleanup to start',
+  trashing: 'Moving to the Trash in the background',
+  deleting: 'Deleting in the background',
+  trashed: "In the Trash: Undo puts everything back, Empty these from Trash deletes them for good",
+  undoing: 'Putting the items back from the Trash',
+  emptying: 'Emptying these items from the Trash for good',
+  finished: 'Finished',
+  stopped: 'Stopped before it finished',
 }
 
 function ProgressPanel({
   progress,
+  phase,
   open,
   onOpenChange,
   onMovie,
   log,
   setLog,
-  held,
+  actions,
 }: {
   progress: CleanupProgress
+  phase: Phase
   open: boolean
   onOpenChange: (open: boolean) => void
   onMovie: () => void
   log: LogFilter
   setLog: (log: LogFilter) => void
-  held: ReactNode
+  actions: ReactNode
 }) {
   const reduced = useReducedMotion()
   const shown = useMemo(() => progress.outcomes.filter(FILTERS[log]), [progress.outcomes, log])
@@ -322,10 +391,10 @@ function ProgressPanel({
       <SheetContent side="right" className="gap-4 data-[side=right]:sm:max-w-md">
         <SheetHeader className="pb-0">
           <SheetTitle>Cleanup progress</SheetTitle>
-          <SheetDescription>{panelState(progress)}</SheetDescription>
+          <SheetDescription>{progress.cleanup.abandoned && !progress.cleanup.started ? 'The cleanup did not start' : PANEL_STATE[phase]}</SheetDescription>
         </SheetHeader>
-        <Stats progress={progress} />
-        {held && <div className="px-4">{held}</div>}
+        <Stats progress={progress} phase={phase} />
+        {actions && <div className="px-4">{actions}</div>}
         <div className="flex items-center gap-2 px-4">
           <ToggleGroup value={[log]} onValueChange={v => v[0] && setLog(v[0] as LogFilter)} variant="outline" size="sm" aria-label="Show">
             {LOG_FILTERS.map(f => (
@@ -348,19 +417,28 @@ function ProgressPanel({
   )
 }
 
-function footerTitle(progress: CleanupProgress) {
-  const {cleanup} = progress
-  const job = runningJob(progress)
-  if (job) return FOOTER_JOB[job.kind]
-  if (progress.held > 0) return `Held ${formatBytes(progress.held)} · not freed yet`
-  if (cleanup.done && progress.restored > 0) return `Restored ${formatBytes(progress.restored)} · nothing is held`
-  if (cleanup.done) return 'Cleanup finished'
-  if (cleanup.abandoned) return cleanup.started ? 'The cleanup stopped before it finished' : 'The cleanup did not start'
-  return 'Approved: the deletion runs in the background'
+const FOOTER_TITLE: Record<Phase, string> = {
+  scanning: '',
+  reviewing: '',
+  waiting: 'Approved: the cleanup runs in the background',
+  trashing: 'Moving to the Trash…',
+  deleting: 'Deleting for good…',
+  trashed: '',
+  undoing: 'Putting the items back…',
+  emptying: 'Emptying these from the Trash…',
+  finished: 'Cleanup finished',
+  stopped: 'The cleanup stopped before it finished',
+}
+
+function footerTitle(phase: Phase, progress: CleanupProgress) {
+  if (phase === 'trashed') return `Moved to Trash ${formatBytes(progress.inTrash.bytes)} · undo available`
+  if (isPutBack(phase, progress)) return `Put back ${formatBytes(progress.restored)} · nothing left in the Trash`
+  if (phase === 'stopped' && !progress.cleanup.started) return 'The cleanup did not start'
+  return FOOTER_TITLE[phase]
 }
 
 function FooterFigures({progress}: {progress: CleanupProgress}) {
-  if (progress.freeChange === null) return null
+  if (progress.freeChange === null || progress.freed === 0) return null
   return <>Freed {formatBytes(progress.freed)} · </>
 }
 
@@ -384,56 +462,58 @@ function NotDone({progress}: {progress: CleanupProgress}) {
   )
 }
 
-function HoldNote({progress}: {progress: CleanupProgress}) {
-  if (progress.held === 0) return null
-  return <>undo available until {formatUntil(progress.holdUntil)}, then freed by the next disk-clean run · </>
+function TrashNote({phase}: {phase: Phase}) {
+  if (phase !== 'trashed') return null
+  return <>in your Trash until you empty it; space comes back then · </>
 }
 
-export function ProgressFooter({progress, held}: {progress: CleanupProgress; held?: ReactNode}) {
+export function ProgressFooter({progress, phase, actions}: {progress: CleanupProgress; phase: Phase; actions?: ReactNode}) {
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex grow flex-col gap-0.5">
-        <div className="text-sm font-semibold tabular-nums">{footerTitle(progress)}</div>
-        <div className="text-xs text-muted-foreground tabular-nums">
+        <div className="flex h-6 items-center text-sm font-semibold tabular-nums">{footerTitle(phase, progress)}</div>
+        <div className="flex h-5 items-center text-xs whitespace-nowrap text-muted-foreground tabular-nums">
           <FooterFigures progress={progress} />
-          <HoldNote progress={progress} />
+          <TrashNote phase={phase} />
           {plural(progress.plan.items.size, 'item', 'items')} · {formatBytes(progress.plan.approved)} approved · a new cleanup starts with /disk-clean
         </div>
         <NotDone progress={progress} />
       </div>
-      {held}
+      {actions}
     </footer>
   )
 }
 
-export function HeldActions({
+export function TrashActions({
   progress,
+  phase,
   busy,
   error,
   onUndo,
-  onFree,
+  onEmpty,
 }: {
   progress: CleanupProgress
+  phase: Phase
   busy: boolean
   error: ReactNode
   onUndo: () => void
-  onFree: () => void
+  onEmpty: () => void
 }) {
-  const offered = progress.held > 0 && progress.cleanup.done !== null
+  const offered = phase === 'trashed'
   if (!offered && !error) return null
   const away = progress.link !== 'live'
   const waiting = busy || jobRunning(progress) || away
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
       {error}
-      {offered && away && <span className="text-xs text-red-300">Undo and Free wait until disk-clean is reachable again</span>}
+      {offered && away && <span className="text-xs text-red-300">Undo and Empty wait until disk-clean is reachable again</span>}
       {offered && (
         <>
           <Button variant="outline" disabled={waiting} onClick={onUndo}>
             <Undo2 /> Undo
           </Button>
-          <Button disabled={waiting} aria-haspopup="dialog" onClick={onFree}>
-            <Trash2 /> Free the space now
+          <Button variant="destructive" disabled={waiting} aria-haspopup="dialog" onClick={onEmpty}>
+            <Trash2 /> Empty these from Trash
           </Button>
         </>
       )}
@@ -441,7 +521,7 @@ export function HeldActions({
   )
 }
 
-export function CleanupTracker({db, progress, returnFocus, held}: {db: Db; progress: CleanupProgress; returnFocus: RefObject<HTMLButtonElement | null>; held: ReactNode}) {
+export function CleanupTracker({db, progress, phase, returnFocus, actions}: {db: Db; progress: CleanupProgress; phase: Phase; returnFocus: RefObject<HTMLButtonElement | null>; actions: ReactNode}) {
   const movie = useMovie(db)
   const overlay = useSearch({strict: false, select: search => search.overlay})
   const log = useSearch({strict: false, select: search => search.log}) ?? 'all'
@@ -454,16 +534,17 @@ export function CleanupTracker({db, progress, returnFocus, held}: {db: Db; progr
     <>
       <ProgressPanel
         progress={progress}
+        phase={phase}
         open={overlay === 'progress'}
         onOpenChange={open => open || close()}
         onMovie={() => layer({overlay: 'movie', take: 0})}
         log={log}
         setLog={next => layer({log: next})}
-        held={held}
+        actions={actions}
       />
       <CleanupFilm
         {...movie}
-        held={held}
+        actions={actions}
         open={overlay === 'movie'}
         take={take}
         onReplay={() => layer({take: take + 1})}

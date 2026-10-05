@@ -1,10 +1,9 @@
 import {useVirtualizer} from '@tanstack/react-virtual'
 import {Loader2} from 'lucide-react'
-import {Fragment, useRef, type ReactNode} from 'react'
+import {Fragment, useRef, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from '@/components/ui/dialog'
-import type {Plan} from '@/lib/api'
-import {formatUntil} from '@/lib/progress'
+import type {Mode, Plan} from '@/lib/api'
 import {counted, formatBytes, plural, tilde, tildeWords} from '@/lib/data'
 import {WarningLines, type SelectionWarnings} from './selection-warnings'
 
@@ -29,12 +28,12 @@ function TailPath({path}: {path: string}) {
   )
 }
 
-function HeldPaths({rows, home}: {rows: Plan['hold']; home: string}) {
+function PathRows({rows, home, label}: {rows: Plan['paths']; home: string; label: string}) {
   const scroller = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({count: rows.length, getScrollElement: () => scroller.current, estimateSize: () => ROW, overscan: 12})
   return (
     <div ref={scroller} className="max-h-[30vh] overflow-y-auto rounded-lg border bg-background">
-      <ul aria-label="Moved to hold" className="relative" style={{height: virtualizer.getTotalSize()}}>
+      <ul aria-label={label} className="relative" style={{height: virtualizer.getTotalSize()}}>
         {virtualizer.getVirtualItems().map(virtual => {
           const row = rows[virtual.index]
           return (
@@ -88,18 +87,36 @@ function Lines({label, lines}: {label: string; lines: string[]}) {
   )
 }
 
-function confirmLabel(plan: Plan) {
-  const held = plan.hold.length
-  if (held === 0) return `Delete ${plural(plan.count, 'item', 'items')}`
-  const rest = plan.final_count > 0 ? ` + ${plan.final_count} that can't be undone` : ''
-  return `Move ${plural(held, 'item', 'items')} to hold${rest}`
+interface Split {
+  trash: Plan['paths']
+  gone: Plan['paths']
+  trashBytes: number
+  goneBytes: number
 }
 
-function Totals({plan}: {plan: Plan}) {
+const bytesOf = (rows: Plan['paths']) => rows.reduce((sum, row) => sum + row.bytes, 0)
+
+function splitOf(plan: Plan, mode: Mode): Split {
+  const trash = mode === 'trash' ? plan.paths.filter(row => !row.trashed) : []
+  const gone = mode === 'trash' ? plan.paths.filter(row => row.trashed) : plan.paths
+  return {trash, gone, trashBytes: bytesOf(trash), goneBytes: bytesOf(gone)}
+}
+
+function confirmLabel(plan: Plan, mode: Mode, split: Split) {
+  if (mode === 'now') return `Delete ${plural(plan.count, 'item', 'items')} immediately · ${formatBytes(plan.bytes)}`
+  const final = plan.final_count + split.gone.length
+  if (split.trash.length === 0) return `Delete ${plural(plan.count, 'item', 'items')}`
+  const rest = final > 0 ? ` + ${final} that can't be undone` : ''
+  return `Move ${plural(split.trash.length, 'item', 'items')} to the Trash${rest}`
+}
+
+function Totals({plan, mode, split}: {plan: Plan; mode: Mode; split: Split}) {
   const figures = [
     {n: formatBytes(plan.bytes), label: `${plural(plan.count, 'item', 'items')} in total`},
-    {n: formatBytes(plan.hold_bytes), label: `${counted(plan.hold.length)} moved to hold`},
-    {n: counted(plan.final_count), label: "can't be undone"},
+    mode === 'trash'
+      ? {n: formatBytes(split.trashBytes), label: `${counted(split.trash.length)} to the Trash`}
+      : {n: formatBytes(split.goneBytes), label: `${counted(split.gone.length)} deleted for good`},
+    {n: counted(plan.final_count + (mode === 'trash' ? split.gone.length : 0)), label: mode === 'trash' ? "can't be undone" : 'worktrees and commands'},
     {n: counted(plan.rejected.length), label: 'rejected'},
   ]
   return (
@@ -123,19 +140,27 @@ function Difference({plan, selected}: {plan: Plan; selected: number}) {
   )
 }
 
-function Body({plan, home, selected}: {plan: Plan; home: string; selected: number}) {
+function Body({plan, mode, home, selected}: {plan: Plan; mode: Mode; home: string; selected: number}) {
+  const split = splitOf(plan, mode)
+  const gone = split.gone.map(row => `rm -rf -- ${tilde(row.path, home)}`)
+  const final = [...gone, ...plan.final.map(line => tildeWords(line, home))]
   return (
     <>
-      <Totals plan={plan} />
+      <Totals plan={plan} mode={mode} split={split} />
       <Difference plan={plan} selected={selected} />
-      {plan.hold.length > 0 && (
-        <Group title="Moved to hold (undo available)" note={`until ${formatUntil(plan.hold_until)}, space comes back when you free them`} tone="text-foreground">
-          <HeldPaths rows={plan.hold} home={home} />
+      {split.trash.length > 0 && (
+        <Group title="Moved to the Trash (undo available)" note="space comes back when the Trash is emptied" tone="text-foreground">
+          <PathRows rows={split.trash} home={home} label="Moved to the Trash" />
         </Group>
       )}
-      {plan.final.length > 0 && (
-        <Group title="Can't be undone" note="worktree removals, held runs and fixed commands run exactly as below" tone="text-amber-300">
-          <Lines label="Can't be undone" lines={plan.final.map(line => tildeWords(line, home))} />
+      {mode === 'now' && split.gone.length > 0 && (
+        <Group title="Deleted immediately" note="skips the Trash, can't be undone" tone="text-destructive">
+          <PathRows rows={split.gone} home={home} label="Deleted immediately" />
+        </Group>
+      )}
+      {(mode === 'trash' ? final : plan.final).length > 0 && (
+        <Group title="Can't be undone" note={mode === 'trash' ? 'items already in a Trash, worktree removals and fixed commands run exactly as below' : 'worktree removals and fixed commands run exactly as below'} tone="text-amber-300">
+          <Lines label="Can't be undone" lines={mode === 'trash' ? final : plan.final.map(line => tildeWords(line, home))} />
         </Group>
       )}
       {plan.rejected.length > 0 && (
@@ -155,19 +180,35 @@ function Checking() {
   )
 }
 
-function Decision({plan, home, selected, onCancel, onConfirm}: {plan: Plan | null; home: string; selected: number; onCancel: () => void; onConfirm: () => void}) {
+function Decision({
+  plan,
+  mode,
+  home,
+  selected,
+  cancelRef,
+  onCancel,
+  onConfirm,
+}: {
+  plan: Plan | null
+  mode: Mode
+  home: string
+  selected: number
+  cancelRef: RefObject<HTMLButtonElement | null>
+  onCancel: () => void
+  onConfirm: () => void
+}) {
   return (
     <>
-      {plan ? <Body plan={plan} home={home} selected={selected} /> : <Checking />}
+      {plan ? <Body plan={plan} mode={mode} home={home} selected={selected} /> : <Checking />}
       <DialogFooter className="items-center">
         <span className="grow text-xs text-muted-foreground">
           Same list in the terminal: <code className="font-mono text-zinc-300">disk-clean clean --dry-run</code>
         </span>
-        <Button variant="outline" onClick={onCancel}>
+        <Button ref={cancelRef} variant="outline" onClick={onCancel}>
           Cancel
         </Button>
         <Button variant="destructive" disabled={!plan || plan.count === 0} onClick={onConfirm}>
-          {plan ? confirmLabel(plan) : 'Delete'}
+          {plan ? confirmLabel(plan, mode, splitOf(plan, mode)) : mode === 'now' ? 'Delete immediately' : 'Move to the Trash'}
         </Button>
       </DialogFooter>
     </>
@@ -184,21 +225,36 @@ const SCAN_RUNNING = 'The scan is still running; confirming stops it and uses wh
 
 const NO_WARNINGS: SelectionWarnings = {hidden: [], risky: 0}
 
-export function ConfirmDialog({plan, home, selected = 0, scanning = false, warnings = NO_WARNINGS, open, onClose, onClosed, onConfirm}: Exit & {plan: Plan | null; home: string; selected?: number; scanning?: boolean; warnings?: SelectionWarnings; onConfirm: () => void}) {
+const TITLE: Record<Mode, string> = {trash: 'Move to the Trash', now: "Delete immediately? This can't be undone"}
+
+export function ConfirmDialog({
+  plan,
+  mode = 'trash',
+  home,
+  selected = 0,
+  scanning = false,
+  warnings = NO_WARNINGS,
+  open,
+  onClose,
+  onClosed,
+  onConfirm,
+}: Exit & {plan: Plan | null; mode?: Mode; home: string; selected?: number; scanning?: boolean; warnings?: SelectionWarnings; onConfirm: () => void}) {
   const warned = warnings.hidden.length > 0 || warnings.risky > 0
+  const cancel = useRef<HTMLButtonElement>(null)
   return (
     <Dialog open={open} onOpenChange={next => next || onClose()} onOpenChangeComplete={next => next || onClosed()}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="sm:max-w-3xl" initialFocus={mode === 'now' ? cancel : undefined}>
         <DialogHeader>
-          <DialogTitle>Confirm the cleanup</DialogTitle>
+          <DialogTitle>{TITLE[mode]}</DialogTitle>
           <DialogDescription>
+            {mode === 'now' && <b className="font-semibold text-destructive">These skip the Trash and are removed for good. </b>}
             Nothing has run yet. Each path is resolved again right before it moves and is kept if a parent folder now points
             elsewhere; a symlink is moved itself, never followed. Worktrees are re-checked and git refuses any that changed.
           </DialogDescription>
         </DialogHeader>
         {scanning && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{SCAN_RUNNING}</p>}
         {warned && <WarningLines warnings={warnings} className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm" />}
-        <Decision plan={plan} home={home} selected={selected} onCancel={onClose} onConfirm={onConfirm} />
+        <Decision plan={plan} mode={mode} home={home} selected={selected} cancelRef={cancel} onCancel={onClose} onConfirm={onConfirm} />
       </DialogContent>
     </Dialog>
   )

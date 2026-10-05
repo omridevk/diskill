@@ -6,10 +6,10 @@ import {plural} from '@/lib/data'
 import {useDb, type Action, type Db, type Link as StreamLink} from '@/lib/db'
 import {useShownOnMount} from '@/lib/motion'
 import {firstSectionNow, useDecisions, useProgress, useScan, useSelection, type Ending, type Selection} from '@/lib/page-data'
-import {resultBytes, type CleanupProgress} from '@/lib/progress'
+import {heroBytes, type CleanupProgress, type Phase} from '@/lib/progress'
 import {useDisk, usePending, useSession} from '@/lib/views'
-import {ActionBar} from './action-bar'
-import {BarText, CleanupTracker, DetailsButton, HeldActions, ProgressTrack} from './cleanup-progress'
+import {ActionBar, DeleteReady, deleteState, useOpenConfirm} from './action-bar'
+import {BarText, CleanupCounter, CleanupStatus, CleanupTracker, DetailsButton, ProgressTrack, TrashActions} from './cleanup-progress'
 import {RequestError} from './request-error'
 import {ScanCounter, useScanHero} from './scan-hero'
 import {RescanButton, ScanStatus} from './scan-status'
@@ -44,11 +44,11 @@ const SCAN_LINK: Record<StreamLink, string> = {
   lost: 'Lost contact with disk-clean: reload to reconnect',
 }
 
-function Status({items, progress, link}: {items: number; progress: CleanupProgress | null; link: StreamLink}) {
+function Status({items, progress, phase, link}: {items: number; progress: CleanupProgress | null; phase: Phase; link: StreamLink}) {
   if (progress) {
     return (
       <p className="truncate text-sm leading-5 font-medium text-foreground tabular-nums">
-        <BarText progress={progress} />
+        <BarText progress={progress} phase={phase} />
       </p>
     )
   }
@@ -60,6 +60,7 @@ const TABS = [
   {id: '/_tabs/cleanup', label: 'Cleanup', link: linkOptions({to: '/cleanup'})},
   {id: '/_tabs/storage', label: 'Storage', link: linkOptions({to: '/storage'})},
   {id: '/_tabs/insights', label: 'Insights', link: linkOptions({to: '/insights'})},
+  {id: '/_tabs/trash', label: 'Trash', link: linkOptions({to: '/trash'})},
 ] as const
 
 const root = getRouteApi('__root__')
@@ -85,7 +86,21 @@ function Tabs() {
   )
 }
 
-function Header({items, progress, link, onDetails, detailsRef}: {items: number; progress: CleanupProgress | null; link: StreamLink; onDetails: () => void; detailsRef: RefObject<HTMLButtonElement | null>}) {
+function Header({
+  items,
+  progress,
+  phase,
+  link,
+  onDetails,
+  detailsRef,
+}: {
+  items: number
+  progress: CleanupProgress | null
+  phase: Phase
+  link: StreamLink
+  onDetails: () => void
+  detailsRef: RefObject<HTMLButtonElement | null>
+}) {
   return (
     <header className="relative flex items-center gap-4 border-b px-7 py-4">
       <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
@@ -93,62 +108,69 @@ function Header({items, progress, link, onDetails, detailsRef}: {items: number; 
       </div>
       <div className="flex min-w-0 grow flex-col">
         <h1 className="text-[15px] font-semibold">Disk Clean</h1>
-        <Status items={items} progress={progress} link={link} />
+        <Status items={items} progress={progress} phase={phase} link={link} />
       </div>
       {progress && <DetailsButton ref={detailsRef} onClick={onDetails} />}
       <Tabs />
-      {progress && <ProgressTrack progress={progress} />}
+      {progress && <ProgressTrack progress={progress} phase={phase} />}
     </header>
   )
 }
 
-function ScanSummary({db, scan, selection, progress, approved}: {db: Db; scan: ReturnType<typeof useScan>; selection: Selection; progress: CleanupProgress | null; approved: boolean}) {
-  const hero = useScanHero(scan.live, scan.scan, selection.exactBytes)
+function StatusSlot({scan, progress, phase}: {scan: ReturnType<typeof useScan>; progress: CleanupProgress | null; phase: Phase}) {
+  if (progress) return <span className="w-56 shrink-0"><CleanupStatus progress={progress} phase={phase} /></span>
+  return scan.tracking && <span className="w-56 shrink-0"><ScanStatus scan={scan.scan} /></span>
+}
+
+function ScanSummary({db, scan, selection, progress, phase, approved}: {db: Db; scan: ReturnType<typeof useScan>; selection: Selection; progress: CleanupProgress | null; phase: Phase; approved: boolean}) {
+  const hero = useScanHero(phase === 'scanning' && scan.live, scan.scan, selection.exactBytes)
   const disk = useDisk(db)
   return (
     <Summary
       disk={disk}
       selection={selection}
-      bytes={progress ? resultBytes(progress) : hero.bytes}
+      bytes={progress ? heroBytes(phase, progress) : hero.bytes}
       overlay={hero.overlay}
-      counter={scan.tracking && <ScanCounter scan={scan.scan} />}
+      counter={scan.tracking && (progress ? <CleanupCounter progress={progress} phase={phase} /> : <ScanCounter scan={scan.scan} />)}
       status={
         <>
-          {scan.tracking && <span className="w-56 shrink-0"><ScanStatus scan={scan.scan} /></span>}
+          <StatusSlot scan={scan} progress={progress} phase={phase} />
           <RescanButton scan={scan.scan} approved={approved} onRescan={scan.rescan} />
           <RequestError db={db} action="rescan" onRetry={scan.rescan} />
         </>
       }
-      scanning={scan.live && !scan.settled}
+      scanning={phase === 'scanning' && scan.live && !scan.settled}
+      phase={phase}
       progress={progress}
     />
   )
 }
 
-const HELD: readonly Action[] = ['undo', 'free']
+const TRASH_ACTIONS: readonly Action[] = ['undo', 'empty']
 
-function useHeld(db: Db, progress: CleanupProgress | null, held: (action: 'undo' | 'free') => void, sectionOf: (params: {section?: string}) => string) {
+function useTrashActions(db: Db, progress: CleanupProgress | null, phase: Phase, trash: (action: 'undo' | 'empty', ids: readonly string[]) => void, sectionOf: (params: {section?: string}) => string) {
   const navigate = useNavigate()
-  const busy = usePending(db, HELD)
+  const busy = usePending(db, TRASH_ACTIONS)
+  if (!progress) return null
+  const undo = () => trash('undo', progress.inTrash.ids)
   return (
-    progress && (
-      <HeldActions
-        progress={progress}
-        busy={busy}
-        error={
-          <>
-            <RequestError db={db} action="undo" onRetry={() => held('undo')} />
-            <RequestError db={db} action="free" onRetry={() => held('free')} />
-          </>
-        }
-        onUndo={() => held('undo')}
-        onFree={() => navigate({to: '/cleanup/$section/free', params: prev => ({section: sectionOf(prev)}), search: true})}
-      />
-    )
+    <TrashActions
+      progress={progress}
+      phase={phase}
+      busy={busy}
+      error={
+        <>
+          <RequestError db={db} action="undo" onRetry={undo} />
+          <RequestError db={db} action="empty" onRetry={() => trash('empty', progress.inTrash.ids)} />
+        </>
+      }
+      onUndo={undo}
+      onEmpty={() => navigate({to: '/cleanup/$section/empty', params: prev => ({section: sectionOf(prev)}), search: true})}
+    />
   )
 }
 
-function Tracker({progress, ...props}: {db: Db; progress: CleanupProgress | null; returnFocus: RefObject<HTMLButtonElement | null>; held: ReactNode}) {
+function Tracker({progress, ...props}: {db: Db; progress: CleanupProgress | null; phase: Phase; returnFocus: RefObject<HTMLButtonElement | null>; actions: ReactNode}) {
   return progress && <CleanupTracker progress={progress} {...props} />
 }
 
@@ -165,23 +187,26 @@ export function Shell() {
   const db = useDb()
   const scan = useScan()
   const selection = useSelection()
-  const {progress} = useProgress()
+  const {progress, phase} = useProgress()
   const decisions = useDecisions()
   const session = useSession(db)
   const navigate = useNavigate()
   const detailsRef = useRef<HTMLButtonElement>(null)
   const sectionOf = (params: {section?: string}) => params.section ?? firstSectionNow(db) ?? ''
-  const held = useHeld(db, progress, decisions.held, sectionOf)
+  const actions = useTrashActions(db, progress, phase, decisions.trash, sectionOf)
+  const openConfirm = useOpenConfirm()
 
   if (decisions.done) return <Finished {...decisions.done} />
 
   return (
     <div className="flex h-svh flex-col">
-      <Tracker db={db} progress={progress} returnFocus={detailsRef} held={held} />
-      <Header items={selection.count} progress={progress} link={session.scanLink} onDetails={() => navigate({to: '.', search: prev => ({...prev, overlay: 'progress'})})} detailsRef={detailsRef} />
-      <ScanSummary db={db} scan={scan} selection={selection} progress={progress} approved={decisions.approved} />
+      <Tracker db={db} progress={progress} phase={phase} returnFocus={detailsRef} actions={actions} />
+      <Header items={selection.count} progress={progress} phase={phase} link={session.scanLink} onDetails={() => navigate({to: '.', search: prev => ({...prev, overlay: 'progress'})})} detailsRef={detailsRef} />
+      <ScanSummary db={db} scan={scan} selection={selection} progress={progress} phase={phase} approved={decisions.approved} />
       <div className="relative flex min-h-0 flex-1 flex-col text-sm">
-        <Outlet />
+        <DeleteReady value={deleteState(selection, scan.scan).ready && !progress}>
+          <Outlet />
+        </DeleteReady>
         <ScanProblem error={scan.scan.error} />
       </div>
       <ActionBar
@@ -189,10 +214,11 @@ export function Shell() {
         selection={selection}
         scan={scan.scan}
         progress={progress}
-        held={held}
+        phase={phase}
+        actions={actions}
         failure={<Failures db={db} onApprove={decisions.retry} onCancel={decisions.cancel} />}
         onCancel={decisions.cancel}
-        onDelete={() => navigate({to: '/cleanup/$section/confirm', params: prev => ({section: sectionOf(prev)}), search: true})}
+        onDelete={openConfirm}
       />
     </div>
   )

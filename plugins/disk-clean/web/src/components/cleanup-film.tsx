@@ -6,7 +6,7 @@ import {Button} from '@/components/ui/button'
 import {Popover, PopoverContent, PopoverTrigger} from '@/components/ui/popover'
 import {counted, formatBytes, plural} from '@/lib/data'
 import type {Db} from '@/lib/db'
-import {finaleOf, formatDuration, formatUntil, logFeed, useLatest, useStaged, type Cleanup, type FilmPlan, type LogFeed, type MovieFeed, type Outcome, type Totals} from '@/lib/progress'
+import {finaleOf, formatDuration, logFeed, useLatest, useStaged, type Cleanup, type FilmPlan, type LogFeed, type MovieFeed, type Outcome, type Totals} from '@/lib/progress'
 import {createFilm, gaugeOf, pump, type Film as FilmState, type ParticlePhase} from '@/lib/film'
 import {cssMs, useReducedMotion} from '@/lib/motion'
 import {DISK_COLORS} from './disk-donut'
@@ -131,9 +131,9 @@ function Tiles({totals}: {totals: Totals}) {
       <Tile label="removed for good">
         <span data-ticker={totals.removed.length}>{totals.removed.length}</span> · {formatBytes(totals.reclaimed)}
       </Tile>
-      {totals.held.length > 0 && (
-        <Tile label="moved to hold, can be undone">
-          <span data-ticker={totals.held.length}>{totals.held.length}</span> · {formatBytes(totals.heldBytes)}
+      {totals.trashed.length > 0 && (
+        <Tile label="in the Trash, can be undone">
+          <span data-ticker={totals.trashed.length}>{totals.trashed.length}</span> · {formatBytes(totals.trashedBytes)}
         </Tile>
       )}
       <Tile label="sections">
@@ -150,7 +150,7 @@ function Tiles({totals}: {totals: Totals}) {
 function CreditList({plan, totals}: {plan: FilmPlan; totals: Totals}) {
   return (
     <>
-      {bySection(plan, [...totals.removed, ...totals.held]).map(({section, items}) => (
+      {bySection(plan, [...totals.removed, ...totals.trashed]).map(({section, items}) => (
         <li key={section.id} className="flex flex-col gap-1">
           <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{section.title}</span>
           {items.map(o => (
@@ -374,7 +374,7 @@ interface FinaleProps {
   db: Db
   elapsed: number
   particles: ParticlePhase
-  held: ReactNode
+  actions: ReactNode
   onLanded: () => void
   onReplay: () => void
 }
@@ -392,35 +392,35 @@ function emptySummary(totals: Totals, all: readonly Outcome[]) {
 
 function headingOf(cleanup: Cleanup, totals: Totals, all: readonly Outcome[]) {
   if (cleanup.abandoned) return cleanup.started ? 'The cleanup stopped before it finished' : 'The cleanup did not start'
-  if (totals.held.length > 0) return 'Moved to hold'
+  if (totals.trashed.length > 0) return 'Moved to the Trash'
   return totals.removed.length === 0 ? emptyHeading(totals, all) : 'You freed'
 }
 
 function figureOf(cleanup: Cleanup, totals: Totals, all: readonly Outcome[], freed: number) {
   if (cleanup.abandoned) return freed > 0 ? `${cleanup.abandoned.reason} · freed ${formatBytes(freed)}` : cleanup.abandoned.reason
-  if (totals.held.length > 0) return formatBytes(totals.heldBytes)
+  if (totals.trashed.length > 0) return formatBytes(totals.trashedBytes)
   return totals.removed.length === 0 ? emptySummary(totals, all) : formatBytes(freed)
 }
 
-function HeldNote({cleanup, totals, held}: {cleanup: Cleanup; totals: Totals; held: ReactNode}) {
-  if (totals.held.length === 0 || cleanup.abandoned) return null
+function TrashNote({cleanup, totals, actions}: {cleanup: Cleanup; totals: Totals; actions: ReactNode}) {
+  if (totals.trashed.length === 0 || cleanup.abandoned) return null
   return (
-    <div data-film="held-actions" className="flex flex-col items-center gap-3">
+    <div data-film="trash-actions" className="flex flex-col items-center gap-3">
       <p className="text-sm text-muted-foreground">
-        held, not freed yet · undo until {formatUntil(cleanup.done?.hold_until ?? null)}
+        in the Trash · undo available · space comes back when the Trash is emptied
         {totals.reclaimed > 0 && ` · freed ${formatBytes(totals.reclaimed)}`}
       </p>
-      {held}
+      {actions}
     </div>
   )
 }
 
-function Finale({plan, cleanup, all, db, elapsed, particles, held, onLanded, onReplay}: FinaleProps) {
+function Finale({plan, cleanup, all, db, elapsed, particles, actions, onLanded, onReplay}: FinaleProps) {
   const {done, abandoned} = cleanup
   const latest = useLatest(db)
   const totals = useMemo(() => finaleOf(latest, done, elapsed), [latest, done, elapsed])
   const freed = totals.reclaimed
-  const empty = (totals.removed.length === 0 && totals.held.length === 0) || abandoned !== null
+  const empty = (totals.removed.length === 0 && totals.trashed.length === 0) || abandoned !== null
   const heading = headingOf(cleanup, totals, all)
   return (
     <div data-film="finale" className="invisible absolute inset-0 overflow-y-auto">
@@ -440,7 +440,7 @@ function Finale({plan, cleanup, all, db, elapsed, particles, held, onLanded, onR
             )}
           </div>
         </div>
-        <HeldNote cleanup={cleanup} totals={totals} held={held} />
+        <TrashNote cleanup={cleanup} totals={totals} actions={actions} />
         {done && <FinaleGauge plan={plan} done={done} freed={freed} />}
         <Tiles totals={totals} />
         <div
@@ -508,13 +508,13 @@ function useFilm(container: HTMLElement | null, plan: FilmPlan, feed: LogFeed, r
 }
 
 interface TakeProps extends FilmProps {
-  held: ReactNode
+  actions: ReactNode
   container: HTMLElement | null
   running: (on: boolean) => void
   onReplay: () => void
 }
 
-function Take({container, db, plan, cleanup, elapsed, held, running, onReplay}: TakeProps) {
+function Take({container, db, plan, cleanup, elapsed, actions, running, onReplay}: TakeProps) {
   const [feed] = useState(() => logFeed(db))
   const {shred, particles, landed} = useFilm(container, plan, feed, running)
   const all = useStaged(db)
@@ -536,12 +536,12 @@ function Take({container, db, plan, cleanup, elapsed, held, running, onReplay}: 
         </p>
       </section>
       <Stage plan={plan} all={all} startFree={cleanup.started?.free ?? cleanup.done?.free_before ?? 0} shred={shred} />
-      {(cleanup.done || cleanup.abandoned) && <Finale plan={plan} cleanup={cleanup} all={all} db={db} elapsed={elapsed} particles={particles} held={held} onLanded={landed} onReplay={onReplay} />}
+      {(cleanup.done || cleanup.abandoned) && <Finale plan={plan} cleanup={cleanup} all={all} db={db} elapsed={elapsed} particles={particles} actions={actions} onLanded={landed} onReplay={onReplay} />}
     </>
   )
 }
 
-function Film({take, held, onReplay, ...props}: FilmProps & {take: number; held: ReactNode; onReplay: () => void}) {
+function Film({take, actions, onReplay, ...props}: FilmProps & {take: number; actions: ReactNode; onReplay: () => void}) {
   const [running, setRunning] = useState(true)
   const [container, setContainer] = useState<HTMLDivElement | null>(null)
   const replay = () => {
@@ -555,13 +555,13 @@ function Film({take, held, onReplay, ...props}: FilmProps & {take: number; held:
           <BurningFilm running={running} className="absolute inset-0" />
         </div>
       </div>
-      <Take key={take} container={container} {...props} held={held} running={setRunning} onReplay={replay} />
+      <Take key={take} container={container} {...props} actions={actions} running={setRunning} onReplay={replay} />
     </div>
   )
 }
 
 interface CleanupFilmProps extends FilmProps {
-  held?: ReactNode
+  actions?: ReactNode
   open: boolean
   take: number
   onReplay: () => void
@@ -569,7 +569,7 @@ interface CleanupFilmProps extends FilmProps {
   returnFocus?: RefObject<HTMLButtonElement | null>
 }
 
-function StillFinale({db, plan, cleanup, elapsed, held}: FilmProps & {held: ReactNode}) {
+function StillFinale({db, plan, cleanup, elapsed, actions}: FilmProps & {actions: ReactNode}) {
   const latest = useLatest(db)
   const all = useStaged(db)
   const totals = useMemo(() => finaleOf(latest, cleanup.done, elapsed), [latest, cleanup.done, elapsed])
@@ -579,7 +579,7 @@ function StillFinale({db, plan, cleanup, elapsed, held}: FilmProps & {held: Reac
       <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-6 py-10 text-center">
         <h2 className="text-2xl font-semibold tracking-tight">{heading}</h2>
         <div className="text-5xl font-bold tabular-nums">{figureOf(cleanup, totals, all, totals.reclaimed)}</div>
-        <HeldNote cleanup={cleanup} totals={totals} held={held} />
+        <TrashNote cleanup={cleanup} totals={totals} actions={actions} />
         <Tiles totals={totals} />
         <ol aria-label="Everything removed" className="flex w-full flex-col gap-4 text-left">
           <CreditList plan={plan} totals={totals} />
@@ -589,7 +589,7 @@ function StillFinale({db, plan, cleanup, elapsed, held}: FilmProps & {held: Reac
   )
 }
 
-export function CleanupFilm({held, open, take, onReplay, onClose, returnFocus, ...props}: CleanupFilmProps) {
+export function CleanupFilm({actions, open, take, onReplay, onClose, returnFocus, ...props}: CleanupFilmProps) {
   const close = useRef<HTMLButtonElement>(null)
   const reduced = useReducedMotion()
   const replay = () => {
@@ -600,7 +600,7 @@ export function CleanupFilm({held, open, take, onReplay, onClose, returnFocus, .
     <DialogPrimitive.Root open={open} onOpenChange={next => next || onClose()}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Popup aria-label="Cleanup movie" initialFocus={close} finalFocus={returnFocus} className="fixed inset-0 z-50 outline-none">
-          {reduced ? <StillFinale {...props} held={held} /> : <Film {...props} take={take} held={held} onReplay={replay} />}
+          {reduced ? <StillFinale {...props} actions={actions} /> : <Film {...props} take={take} actions={actions} onReplay={replay} />}
           <DialogPrimitive.Close render={<Button ref={close} variant="secondary" size="sm" className="absolute top-4 right-4 z-10" />}>
             <X /> Close
           </DialogPrimitive.Close>

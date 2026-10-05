@@ -1,13 +1,16 @@
+import {useNavigate} from '@tanstack/react-router'
+import {useHotkeys} from '@tanstack/react-hotkeys'
 import {Eraser, Info, RotateCcw, Trash2, X} from 'lucide-react'
-import {useState, type AnimationEvent, type ReactNode} from 'react'
+import {createContext, use, useState, type AnimationEvent, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Kbd} from '@/components/ui/kbd'
 import {Popover, PopoverContent, PopoverTitle, PopoverTrigger} from '@/components/ui/popover'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
-import type {CleanupProgress} from '@/lib/progress'
+import type {CleanupProgress, Phase} from '@/lib/progress'
 import {formatBytes, plural, sizeOf} from '@/lib/data'
 import {cssMs, useReducedMotion} from '@/lib/motion'
-import type {Selection} from '@/lib/page-data'
+import {useDb} from '@/lib/db'
+import {firstSectionNow, type Selection} from '@/lib/page-data'
 import type {ScanState} from '@/lib/scan-feed'
 import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
@@ -76,15 +79,18 @@ function hint(scan: ScanState) {
 function HelpLine({scan}: {scan: ScanState}) {
   return (
     <div className="flex h-5 items-center gap-1 text-xs whitespace-nowrap text-muted-foreground">
-      Delete moves files to a holding folder first, so you can undo
+      Delete moves files to the Trash, so you can undo
       <Popover>
         <PopoverTrigger render={<Button variant="ghost" size="icon-xs" aria-label="About deleting" />}>
           <Info />
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 text-xs">
           <PopoverTitle className="text-sm">How Delete works</PopoverTitle>
-          <p className="text-muted-foreground">Delete moves files to a holding folder first, so you can undo or free the space afterwards.</p>
-          <p className="text-muted-foreground">Worktrees and commands can't be undone.</p>
+          <p className="text-muted-foreground">Delete moves files to the macOS Trash. Undo puts them back; Finder's Put Back works too. Space comes back when the Trash is emptied.</p>
+          <p className="text-muted-foreground">Delete immediately skips the Trash and can't be undone. Worktrees and commands can't be undone either.</p>
+          <p className="flex flex-wrap items-center gap-1 text-muted-foreground">
+            Delete <Kbd>⌘⌫</Kbd> · Delete immediately <Kbd>⌥⌘⌫</Kbd> or <Kbd>⇧⌫</Kbd>
+          </p>
           <p className="text-muted-foreground">{hint(scan)}</p>
         </PopoverContent>
       </Popover>
@@ -92,7 +98,7 @@ function HelpLine({scan}: {scan: ScanState}) {
   )
 }
 
-function deleteState(selection: Selection, scan: ScanState) {
+export function deleteState(selection: Selection, scan: ScanState) {
   const count = selection.selected.length
   if (scan.error !== '') return {label: 'The scan failed · nothing can be deleted', ready: false}
   if (count > 0) return {label: `Delete ${plural(count, 'item', 'items')} · ${sizeOf(selection.exactBytes, selection.apparentBytes)}`, ready: true}
@@ -118,11 +124,51 @@ function SelectionButton({label, icon, shortcut, reason, onClick}: {label: strin
   )
 }
 
+const DIALOG = '[role="dialog"], [role="alertdialog"]'
+
+const dialogOpen = () => [...document.querySelectorAll(DIALOG)].some(layer => layer.checkVisibility())
+
+function useDeleteShortcuts(enabled: boolean, onDelete: (now: boolean) => void) {
+  const press = (now: boolean) => () => {
+    if (!dialogOpen()) onDelete(now)
+  }
+  const options = {enabled, ignoreInputs: true}
+  useHotkeys([
+    {hotkey: 'Mod+Backspace', callback: press(false), options},
+    {hotkey: 'Mod+Alt+Backspace', callback: press(true), options},
+    {hotkey: 'Shift+Backspace', callback: press(true), options},
+  ])
+}
+
+export function useOpenConfirm() {
+  const db = useDb()
+  const navigate = useNavigate()
+  return (now: boolean) => navigate({to: '/cleanup/$section/confirm', params: prev => ({section: prev.section ?? firstSectionNow(db) ?? ''}), search: prev => ({...prev, now})})
+}
+
+export const DeleteReady = createContext(false)
+
+export function useTableDeleteKeys(table: RefObject<HTMLElement | null>) {
+  const ready = use(DeleteReady)
+  const open = useOpenConfirm()
+  const press = () => {
+    if (!dialogOpen()) open(false)
+  }
+  useHotkeys(
+    [
+      {hotkey: 'Backspace', callback: press},
+      {hotkey: 'Delete', callback: press},
+    ],
+    {enabled: ready, ignoreInputs: true, target: table},
+  )
+}
+
 export function ActionBar({
   selection,
   scan,
   progress = null,
-  held,
+  phase,
+  actions,
   failure,
   onCancel,
   onDelete,
@@ -130,15 +176,17 @@ export function ActionBar({
   selection: Selection
   scan: ScanState
   progress?: CleanupProgress | null
-  held?: ReactNode
+  phase: Phase
+  actions?: ReactNode
   failure?: ReactNode
   onCancel: () => void
-  onDelete: () => void
+  onDelete: (now: boolean) => void
 }) {
   const warnings = useSelectionWarnings(selection)
-  if (progress) return <ProgressFooter progress={progress} held={held} />
-  const count = selection.selected.length
   const action = deleteState(selection, scan)
+  useDeleteShortcuts(action.ready && !progress, onDelete)
+  if (progress) return <ProgressFooter progress={progress} phase={phase} actions={actions} />
+  const count = selection.selected.length
 
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
@@ -157,7 +205,18 @@ export function ActionBar({
         {failure}
       </div>
       <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />
-      <Button size="lg" className="w-80 shrink-0 justify-start" disabled={!action.ready} aria-haspopup="dialog" onClick={onDelete}>
+      <Tooltip>
+        <TooltipTrigger delay={80} render={<span className="inline-flex shrink-0" />}>
+          <Button variant="outline" size="lg" disabled={!action.ready} aria-haspopup="dialog" onClick={() => onDelete(true)}>
+            Delete immediately…
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          Skips the Trash, can't be undone
+          <Kbd>⌥⌘⌫</Kbd>
+        </TooltipContent>
+      </Tooltip>
+      <Button size="lg" className="w-80 shrink-0 justify-start" disabled={!action.ready} aria-haspopup="dialog" onClick={() => onDelete(false)}>
         <Trash2 /> {action.label}
       </Button>
     </footer>

@@ -1,8 +1,8 @@
 use crate::clean;
-use crate::hold;
 use crate::http::{self, constant_eq, query_token, refuse, respond};
 use crate::scan::{self, Sink};
 use crate::selection::{self, Listed};
+use crate::trash;
 use crate::util;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -20,7 +20,7 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(15);
 const PROBE_EVERY: Duration = Duration::from_secs(1);
 const NOTHING_FOUND: &str = "nothing-found";
-const REVIEW_POSTS: [&str; 3] = ["/decide", "/preview", "/rescan"];
+const REVIEW_POSTS: [&str; 5] = ["/decide", "/preview", "/rescan", "/undo", "/empty"];
 
 #[derive(Serialize, Clone)]
 pub struct Item {
@@ -454,8 +454,59 @@ fn stream_events(out: &mut TcpStream, live: &Live) {
 }
 
 struct Pages {
-    first: String,
-    live: String,
+    first: Value,
+    live: Value,
+}
+
+pub fn with_trash(mut data: Value, run_dir: &Path, emit: trash::Emit) -> Value {
+    let home = util::home();
+    data["trash"] = json!(trash::synced(&home, emit));
+    data["run"] = json!(trash::run_id(run_dir));
+    data
+}
+
+pub fn run_trash_job(
+    name: &str,
+    payload: &Value,
+    run_dir: &Path,
+    emit: trash::Emit,
+) -> Result<Value, &'static str> {
+    let ids = trash::ids_of(payload);
+    if ids.is_empty() {
+        return Err("400 Bad Request");
+    }
+    let home = util::home();
+    let Ok(Some(mut record)) = trash::Record::open(&home, 1) else {
+        return Err("409 Conflict");
+    };
+    if record.trashed(&ids).is_empty() {
+        return Err("404 Not Found");
+    }
+    let run = trash::run_id(run_dir);
+    let result = if name == "/empty" {
+        trash::empty(&mut record, &ids, &run, emit)
+    } else {
+        trash::undo(&mut record, &ids, &run, emit)
+    };
+    match result {
+        Ok(report) => Ok(trash::rows(&report.changed)),
+        Err(e) => {
+            eprintln!("disk-clean: {e}");
+            Err("500 Internal Server Error")
+        }
+    }
+}
+
+pub fn answer_trash_job(stream: &mut TcpStream, result: Result<Value, &'static str>) {
+    match result {
+        Ok(rows) => respond(
+            stream,
+            "200 OK",
+            "application/json",
+            rows.to_string().as_bytes(),
+        ),
+        Err(status) => refuse(stream, status),
+    }
 }
 
 fn post_payload(body: &[u8]) -> Option<Value> {
@@ -497,11 +548,13 @@ fn handle(
                     refuse(&mut stream, "403 Forbidden");
                 }
             } else if http::is_page_route(route) {
-                let html = if lock(&live.log).generation > 0 {
+                let data = if lock(&live.log).generation > 0 {
                     &pages.live
                 } else {
                     &pages.first
                 };
+                let emit = |event: &str, data: Value| live.emit(event, data);
+                let html = render(&with_trash(data.clone(), &live.dir, &emit), token);
                 respond(
                     &mut stream,
                     "200 OK",
@@ -529,6 +582,14 @@ fn handle(
             };
             if !constant_eq(sent.as_bytes(), token.as_bytes()) {
                 return refuse(&mut stream, "403 Forbidden");
+            }
+            if target == "/undo" || target == "/empty" {
+                if !http::is_own_origin_post(&req, port) {
+                    return refuse(&mut stream, "403 Forbidden");
+                }
+                let emit = |event: &str, data: Value| live.emit(event, data);
+                let result = run_trash_job(target, &payload, &live.dir, &emit);
+                return answer_trash_job(&mut stream, result);
             }
             if target == "/rescan" {
                 if live
@@ -559,7 +620,7 @@ fn handle(
             if target == "/preview" {
                 let listed = live.listed();
                 let body =
-                    preview(&listed.categories, &listed.index, &items, &live.dir).to_string();
+                    preview(&listed.categories, &listed.index, &items, &util::home()).to_string();
                 respond(&mut stream, "200 OK", "application/json", body.as_bytes());
                 return;
             }
@@ -577,8 +638,13 @@ fn handle(
                 live.cancel.store(true, Ordering::Relaxed);
             }
             respond(&mut stream, "200 OK", "application/json", b"{}");
+            let mode = if payload.get("mode").and_then(Value::as_str) == Some("now") {
+                "now"
+            } else {
+                "trash"
+            };
             let _ = decided.send(if approve {
-                json!({"decision": "approve", "items": items})
+                json!({"decision": "approve", "items": items, "mode": mode})
             } else {
                 json!({"decision": "cancel"})
             });
@@ -682,35 +748,26 @@ pub fn preview(
     categories: &[Category],
     index: &clean::ScanIndex,
     items: &[Value],
-    run_dir: &Path,
+    home: &str,
 ) -> Value {
     let chosen = selection(categories, items)
         .and_then(|s| s.get("items").and_then(Value::as_array).cloned())
         .unwrap_or_default();
-    let plan = clean::plan(index, &chosen);
+    let plan = clean::plan_in(index, &chosen, home);
     let rejected: Vec<Value> = plan
         .rejected
         .iter()
         .map(|(reason, path)| json!({"reason": reason, "path": path}))
         .collect();
-    let targets = hold::planned_targets(&util::home(), run_dir, plan.rm.len());
-    let hold: Vec<Value> = plan
+    let paths: Vec<Value> = plan
         .rm
         .iter()
-        .zip(&targets)
-        .map(|(path, held)| json!({"path": path, "bytes": plan.size_of(path), "held": held}))
+        .map(|path| json!({"path": path, "bytes": plan.size_of(path), "trashed": clean::already_trashed(path, home)}))
         .collect();
-    let undoable: Vec<&String> = plan
-        .worktrees
-        .iter()
-        .chain(&plan.frees)
-        .chain(&plan.cmds)
-        .collect();
-    let hold_bytes: i64 = plan.rm.iter().map(|p| plan.size_of(p)).sum();
+    let undoable: Vec<&String> = plan.worktrees.iter().chain(&plan.cmds).collect();
     json!({
-        "hold": hold,
-        "hold_bytes": hold_bytes,
-        "hold_until": util::now() + hold::hold_days() * 86_400,
+        "paths": paths,
+        "paths_bytes": plan.rm.iter().map(|p| plan.size_of(p)).sum::<i64>(),
         "final": plan.final_steps(),
         "final_bytes": undoable.iter().map(|k| plan.size_of(k)).sum::<i64>(),
         "final_count": undoable.len(),
@@ -783,7 +840,7 @@ fn finished_run(dir: &Path) -> Option<(Value, Live)> {
     Some((data, live))
 }
 
-pub(crate) fn approved_page(dir: &Path, token: &str) -> Option<String> {
+pub(crate) fn approved_page(dir: &Path, token: &str, emit: trash::Emit) -> Option<String> {
     let (mut data, _) = finished_run(dir)?;
     let selection: Value = std::fs::read(dir.join("selection.json"))
         .ok()
@@ -796,14 +853,14 @@ pub(crate) fn approved_page(dir: &Path, token: &str) -> Option<String> {
         .collect();
     data["approved"] = json!(true);
     data["selection"] = json!(paths);
-    Some(render(&data, token))
+    Some(render(&with_trash(data, dir, emit), token))
 }
 
 fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(u16, String)> {
     let token = token();
     let pages = Arc::new(Pages {
-        first: render(data, &token),
-        live: render(&json!({"live": true}), &token),
+        first: data.clone(),
+        live: json!({"live": true}),
     });
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -863,10 +920,11 @@ fn decide(rx: &mpsc::Receiver<Value>, live: &Live) -> io::Result<(i32, Option<Pa
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let Some(selection) = selection(&live.listed().categories, &items) else {
+    let Some(mut selection) = selection(&live.listed().categories, &items) else {
         eprintln!("no deletable items were selected");
         return Ok((5, None));
     };
+    selection["mode"] = payload.get("mode").cloned().unwrap_or(json!("trash"));
     clean::clear_previous_run(&live.dir)?;
     let out = live.dir.join("selection.json");
     std::fs::write(

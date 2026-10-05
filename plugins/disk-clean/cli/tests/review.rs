@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn request(port: u16, raw: String) -> (u16, String) {
-    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut s = common::connect(port);
     s.set_read_timeout(Some(std::time::Duration::from_secs(60)))
         .unwrap();
     s.write_all(raw.as_bytes()).unwrap();
@@ -74,11 +74,10 @@ fn review_serves_page_and_writes_selection() {
     fs::write(run.join("status"), "done\n").unwrap();
 
     let mut child = common::reaped(
-        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        common::bin(&home)
             .args(["review", &run.to_string_lossy()])
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .env("DISK_CLEAN_WATCH_START", "3")
-            .env("HOME", &home)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
     );
@@ -172,7 +171,7 @@ fn review_serves_page_and_writes_selection() {
     let plan: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(plan["final"], serde_json::json!(["docker system prune -f"]));
     assert_eq!(plan["final_count"], 1);
-    assert_eq!(plan["hold"], serde_json::json!([]));
+    assert_eq!(plan["paths"], serde_json::json!([]));
     assert_eq!(plan["rejected"][0]["path"], format!("{h}/Library/Caches/a"));
     assert_eq!(plan["rejected"][0]["reason"], "already gone");
     assert_eq!(plan["count"], 1);
@@ -245,12 +244,11 @@ fn review_exits_3_when_nothing_found() {
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
     fs::write(run.join("scan.tsv"), "").unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["review", &run.to_string_lossy()])
-        .env("HOME", &t.0)
-        .env("DISK_CLEAN_NO_BROWSER", "1")
-        .output()
-        .unwrap();
+    let out = common::output(
+        common::bin(&t.0)
+            .args(["review", &run.to_string_lossy()])
+            .env("DISK_CLEAN_NO_BROWSER", "1"),
+    );
     assert_eq!(out.status.code(), Some(3));
 }
 
@@ -278,16 +276,7 @@ fn events(port: u16, token: &str, until: &str) -> Vec<(String, Value)> {
 }
 
 fn open_events(port: u16, token: &str) -> BufReader<TcpStream> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut s = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(e) => {
-                assert!(std::time::Instant::now() < deadline, "{e}");
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-        }
-    };
+    let mut s = common::connect(port);
     s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .unwrap();
     write!(
@@ -362,10 +351,10 @@ fn review_without_run_dir_streams_the_scan() {
         .and_then(|(_, rest)| rest.split_once("</script>"))
         .map(|(json, _)| json)
         .expect("data script");
-    assert_eq!(
-        serde_json::from_str::<Value>(json).unwrap(),
-        serde_json::json!({"live": true})
-    );
+    let data = serde_json::from_str::<Value>(json).unwrap();
+    assert_eq!(data["live"], true);
+    assert_eq!(data["trash"], serde_json::json!([]));
+    assert!(data["run"].as_str().unwrap().starts_with("run-"), "{data}");
     assert!(page.contains(&token));
     assert_eq!(get(port, "/events?token=wrong").0, 403);
 
@@ -501,9 +490,8 @@ fn review_without_run_dir_streams_the_scan() {
 fn spawn_live(home: &Path, bin: &Path) -> (common::Reaped, u16, String) {
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let mut child = common::reaped(
-        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        common::bin(home)
             .arg("review")
-            .env("HOME", home)
             .env("PATH", path)
             .env("DISK_CLEAN_SKIP_MAP", "1")
             .env("DISK_CLEAN_WATCH_START", "1")
@@ -668,9 +656,8 @@ fn finished_review(tag: &str) -> (common::TempDir, common::Reaped, u16, String) 
     )
     .unwrap();
     let mut child = common::reaped(
-        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        common::bin(&home)
             .args(["review", &run.to_string_lossy()])
-            .env("HOME", &home)
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
@@ -818,7 +805,7 @@ fn oversized_slow_and_excess_requests_are_turned_away() {
         "POST /preview HTTP/1.1\r\n{local}Content-Type: application/json\r\nContent-Length: 2000000\r\n\r\n"
     );
     assert_eq!(request(port, huge).0, 413);
-    let mut sender = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut sender = common::connect(port);
     let mut reader = sender.try_clone().unwrap();
     let body = vec![b'x'; 2_000_000];
     let head = format!(
@@ -837,7 +824,7 @@ fn oversized_slow_and_excess_requests_are_turned_away() {
     assert!(String::from_utf8_lossy(&answer).starts_with("HTTP/1.0 413"));
 
     let started = std::time::Instant::now();
-    let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut slow = common::connect(port);
     write!(slow, "GET / HTTP/1.1\r\n{local}").unwrap();
     let mut answer = String::new();
     slow.read_to_string(&mut answer).unwrap();
@@ -885,11 +872,7 @@ fn blocking_docker(bin: &Path, gate: &Path) {
         ),
     )
     .unwrap();
-    Command::new("chmod")
-        .arg("+x")
-        .arg(&docker)
-        .status()
-        .unwrap();
+    common::status(Command::new("chmod").arg("+x").arg(&docker));
 }
 
 fn listed_paths(reader: &mut BufReader<TcpStream>, wanted: &[&Path]) {
@@ -986,7 +969,7 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
     assert_eq!(status, 200, "{body}");
     let plan: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(plan["count"], 1, "{plan}");
-    assert_eq!(plan["hold"][0]["path"], take.to_str().unwrap());
+    assert_eq!(plan["paths"][0]["path"], take.to_str().unwrap());
     assert_eq!(
         post_reply(
             port,
@@ -1047,11 +1030,16 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         .map(|i| i["path"].as_str().unwrap())
         .collect();
     assert_eq!(chosen, [take.to_str().unwrap()]);
+    assert_eq!(sel["mode"], "trash");
+    common::assert_inside_ram_disk(&take);
 
     let dry = common::cli(&["clean", "--dry-run", run.to_str().unwrap()], &home, &[]);
     assert_eq!(dry.status.code(), Some(0));
     let dry = String::from_utf8_lossy(&dry.stdout).into_owned();
-    assert!(dry.contains(&format!("mv -- {} ", take.display())), "{dry}");
+    assert!(
+        dry.contains(&format!("trash -- {}\n", take.display())),
+        "{dry}"
+    );
     assert!(!dry.contains(keep.to_str().unwrap()), "{dry}");
 
     let real = common::cli(&["clean", run.to_str().unwrap()], &home, &[]);
@@ -1066,19 +1054,20 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
     });
     assert!(
         !take.exists(),
-        "the approved, listed path was moved to hold"
+        "the approved, listed path was moved to the Trash"
     );
     assert!(
         keep.join("blob").is_file(),
         "a listed but unapproved path stays"
     );
     assert!(never.join("blob").is_file(), "a path never listed stays");
-    let held: Vec<Value> = common::events_of(run)
+    let trashed: Vec<Value> = common::events_of(run)
         .into_iter()
-        .filter(|e| e["event"] == "held")
+        .filter(|e| e["event"] == "trashed")
         .collect();
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0]["path"], take.to_str().unwrap());
+    assert_eq!(trashed.len(), 1);
+    assert_eq!(trashed[0]["path"], take.to_str().unwrap());
+    common::assert_record_inside_ram_disk(&home);
 }
 
 #[test]
@@ -1099,9 +1088,8 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
         .collect();
     fs::write(run.join("scan.tsv"), rows).unwrap();
     let mut child = common::reaped(
-        Command::new(env!("CARGO_BIN_EXE_disk-clean"))
+        common::bin(&home)
             .args(["review", &run.to_string_lossy()])
-            .env("HOME", &home)
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .env("DISK_CLEAN_WATCH_START", "1")
             .stdout(Stdio::piped())

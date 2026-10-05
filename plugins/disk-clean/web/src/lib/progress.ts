@@ -1,6 +1,7 @@
 import {useLiveQuery} from '@tanstack/react-db'
 import {useMemo} from 'react'
 import type {CleanupEvent, EventRow, Of, OutcomeKind} from './cleanup-feed'
+import type {TrashEntry} from './data'
 import type {Db, Link, Planned} from './db'
 import {useDisk, useSession} from './views'
 
@@ -11,11 +12,12 @@ export interface Outcome extends LogRow {
 }
 
 export interface Job {
-  kind: 'free' | 'undo'
+  kind: 'empty' | 'undo'
   id: string
   count: number
   bytes: number
-  done: Of<'free_done'> | Of<'undo_done'> | null
+  free: number | null
+  done: Of<'empty_done'> | Of<'undo_done'> | null
 }
 
 export interface Cleanup {
@@ -25,6 +27,7 @@ export interface Cleanup {
   free: Of<'free'> | null
   abandoned: Of<'abandoned'> | null
   job: Job | null
+  latestFree: number | null
 }
 
 export interface PlannedSection {
@@ -55,11 +58,10 @@ export interface CleanupProgress {
   byKey: ReadonlyMap<string, Outcome>
   removals: ReadonlyMap<string, Removal>
   freed: number
-  held: number
-  heldCount: number
+  trashed: number
+  inTrash: InTrash
   restored: number
   handled: number
-  holdUntil: number | null
   count: number
   total: number
   free: number | null
@@ -75,17 +77,37 @@ interface Total {
   count: number
 }
 
-const NO_CLEANUP: Cleanup = {waiting: false, started: null, done: null, free: null, abandoned: null, job: null}
+const NO_CLEANUP: Cleanup = {waiting: false, started: null, done: null, free: null, abandoned: null, job: null, latestFree: null}
 
-function withJob(cleanup: Cleanup, event: CleanupEvent): Cleanup {
-  if (event.type === 'free_started' || event.type === 'undo_started') {
-    return {...cleanup, job: {kind: event.type === 'free_started' ? 'free' : 'undo', id: event.data.job, count: event.data.count, bytes: event.data.bytes, done: null}}
-  }
-  const finished = (event.type === 'free_done' || event.type === 'undo_done') && cleanup.job?.id === event.data.job
-  return finished && cleanup.job ? {...cleanup, job: {...cleanup.job, done: event.data}} : cleanup
+function startedJob(event: Extract<CleanupEvent, {type: 'empty_started' | 'undo_started'}>): Job {
+  const {job, count, bytes} = event.data
+  if (event.type === 'empty_started') return {kind: 'empty', id: job, count, bytes, free: event.data.free, done: null}
+  return {kind: 'undo', id: job, count, bytes, free: null, done: null}
 }
 
-function withStatus(cleanup: Cleanup, event: CleanupEvent): Cleanup {
+function finishedJob(job: Job | null, event: Extract<CleanupEvent, {type: 'empty_done' | 'undo_done'}>): Job | null {
+  return job?.id === event.data.job ? {...job, done: event.data} : job
+}
+
+function withJob(cleanup: Cleanup, event: CleanupEvent): Cleanup {
+  if (event.type === 'empty_started' || event.type === 'undo_started') return {...cleanup, job: startedJob(event)}
+  if (event.type === 'empty_done' || event.type === 'undo_done') return {...cleanup, job: finishedJob(cleanup.job, event)}
+  return cleanup
+}
+
+function freeOf(event: CleanupEvent) {
+  const data: object = event.data
+  if (event.type === 'done' || event.type === 'empty_done') return event.data.free_after
+  if (event.type === 'started' || event.type === 'free' || event.type === 'empty_started') return 'free' in data && typeof data.free === 'number' ? data.free : null
+  return null
+}
+
+function withLatestFree(cleanup: Cleanup, event: CleanupEvent): Cleanup {
+  const free = freeOf(event)
+  return free === null ? cleanup : {...cleanup, latestFree: free}
+}
+
+function withStatusOnly(cleanup: Cleanup, event: CleanupEvent): Cleanup {
   switch (event.type) {
     case 'waiting':
       return {...cleanup, waiting: true}
@@ -96,10 +118,14 @@ function withStatus(cleanup: Cleanup, event: CleanupEvent): Cleanup {
     case 'abandoned':
       return {...cleanup, abandoned: event.data}
     case 'free':
-      return event.data.elapsed_ms >= (cleanup.free?.elapsed_ms ?? 0) ? {...cleanup, free: event.data} : cleanup
+      return {...cleanup, free: event.data}
     default:
       return withJob(cleanup, event)
   }
+}
+
+function withStatus(cleanup: Cleanup, event: CleanupEvent): Cleanup {
+  return withLatestFree(withStatusOnly(cleanup, event), event)
 }
 
 export function statusOf(events: readonly {event: CleanupEvent}[]) {
@@ -112,29 +138,27 @@ function sumOf(totals: readonly Total[], wanted: (total: Total) => boolean, fiel
   return totals.reduce((sum, total) => (wanted(total) ? sum + total[field] : sum), 0)
 }
 
-const FREED = new Set<OutcomeKind | null>(['removed', 'freed'])
-const isHeld = (total: Total) => total.kind === 'held' || (total.kind === 'kept' && total.jobId !== '')
+const FREED = new Set<OutcomeKind | null>(['removed', 'emptied'])
 
 function handledOf(cleanup: Cleanup, totals: readonly Total[]) {
   const job = cleanup.job
   if (job && !job.done) return sumOf(totals, t => t.jobId === job.id)
-  return sumOf(totals, t => t.jobId === '' && (t.kind === 'removed' || t.kind === 'held'))
+  return sumOf(totals, t => t.jobId === '' && (t.kind === 'removed' || t.kind === 'trashed'))
 }
 
-function freeNow({job, done, free, started}: Cleanup) {
-  const afterJob = job?.done && 'free_after' in job.done ? job.done.free_after : undefined
-  return [afterJob, done?.free_after, free?.free, started?.free].find(n => n !== undefined) ?? null
+function freeNow({latestFree}: Cleanup) {
+  return latestFree
 }
 
 function totalOf(plan: FilmPlan, {started}: Cleanup) {
-  return started ? started.paths + started.worktrees + (started.frees ?? 0) + started.commands : plan.items.size
+  return started ? started.paths + started.worktrees + started.commands : plan.items.size
 }
 
 function removalsOf(rows: readonly {section: string; kind: OutcomeKind | null; bytes: number; count: number}[]) {
   const removals = new Map<string, Removal>()
   for (const row of rows) {
     const restored = row.kind === 'restored'
-    if (!restored && row.kind !== 'removed' && row.kind !== 'held' && row.kind !== 'freed') continue
+    if (!restored && row.kind !== 'removed' && row.kind !== 'trashed' && row.kind !== 'emptied') continue
     const known = removals.get(row.section) ?? {bytes: 0, count: 0, restored: 0}
     removals.set(row.section, {bytes: known.bytes + row.bytes, count: known.count + (restored ? 0 : row.count), restored: known.restored + (restored ? row.count : 0)})
   }
@@ -171,8 +195,7 @@ export function useLatest(db: Db): readonly Outcome[] {
 function figuresOf(cleanup: Cleanup, totals: readonly Total[], latest: readonly Total[]) {
   return {
     freed: sumOf(latest, t => FREED.has(t.kind)),
-    held: sumOf(latest, isHeld),
-    heldCount: sumOf(latest, isHeld, 'count'),
+    trashed: sumOf(totals, t => t.kind === 'trashed'),
     restored: sumOf(latest, t => t.kind === 'restored'),
     handled: handledOf(cleanup, totals),
     count: sumOf(totals, t => t.jobId === '', 'count'),
@@ -195,8 +218,26 @@ function useByKey(db: Db) {
   return useMemo(() => new Map(latest.map(o => [o.key, o])), [latest])
 }
 
+export interface InTrash {
+  count: number
+  bytes: number
+  ids: string[]
+}
+
+function inTrashOf(entries: readonly TrashEntry[], run: string): InTrash {
+  const mine = entries.filter(e => e.run === run && e.state === 'trashed')
+  return {count: mine.length, bytes: mine.reduce((sum, e) => sum + e.bytes, 0), ids: mine.map(e => e.id)}
+}
+
+function useInTrash(db: Db) {
+  const {data} = useLiveQuery(db.trash.collection)
+  const run = db.loaded.run ?? ''
+  return useMemo(() => inTrashOf(data, run), [data, run])
+}
+
 export function useCleanupProgress(db: Db): CleanupProgress | null {
   const session = useSession(db)
+  const inTrash = useInTrash(db)
   const plan = usePlan(db)
   const cleanup = useCleanup(db)
   const outcomes = useOutcomes(db)
@@ -211,41 +252,39 @@ export function useCleanupProgress(db: Db): CleanupProgress | null {
       outcomes,
       byKey,
       ...figures,
-      holdUntil: done?.hold_until ?? null,
+      inTrash,
       total: totalOf(plan, cleanup),
       free: freeNow(cleanup),
       freeChange: done ? done.free_after - done.free_before : null,
       link: session.cleanupLink,
     }
-  }, [session, plan, cleanup, outcomes, byKey, figures])
+  }, [session, plan, cleanup, outcomes, byKey, figures, inTrash])
 }
-
-export type FreeOffer = 'offered' | 'refused' | 'waiting'
 
 export function jobRunning(progress: CleanupProgress) {
   return progress.cleanup.job !== null && progress.cleanup.job.done === null
 }
 
-export function freeOffer(progress: CleanupProgress | null): FreeOffer {
-  if (progress === null || progress.cleanup.abandoned) return 'refused'
-  if (progress.cleanup.done === null || jobRunning(progress)) return 'waiting'
-  return progress.held > 0 ? 'offered' : 'refused'
+export type Phase = 'scanning' | 'reviewing' | 'waiting' | 'trashing' | 'deleting' | 'trashed' | 'undoing' | 'emptying' | 'finished' | 'stopped'
+
+export function phaseOf(scanning: boolean, progress: CleanupProgress | null): Phase {
+  if (!progress) return scanning ? 'scanning' : 'reviewing'
+  const {job, abandoned, started, done} = progress.cleanup
+  if (job && !job.done) return job.kind === 'empty' ? 'emptying' : 'undoing'
+  if (abandoned) return 'stopped'
+  if (!started) return 'waiting'
+  if (!done) return (started.trash ?? 0) > 0 ? 'trashing' : 'deleting'
+  return progress.inTrash.count > 0 ? 'trashed' : 'finished'
 }
 
-export function resultOf(progress: CleanupProgress): 'held' | 'restored' | 'freed' {
-  if (progress.held > 0) return 'held'
-  return progress.restored > 0 ? 'restored' : 'freed'
-}
+export const isPutBack = (phase: Phase, progress: CleanupProgress) => phase === 'finished' && progress.restored > 0
 
-export function resultBytes(progress: CleanupProgress) {
-  const result = resultOf(progress)
-  if (result === 'held') return progress.held
-  return result === 'restored' ? progress.restored : progress.freed
-}
-
-export function formatUntil(seconds: number | null) {
-  if (seconds === null) return ''
-  return new Date(seconds * 1000).toLocaleString(undefined, {weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'})
+export function heroBytes(phase: Phase, progress: CleanupProgress) {
+  if (phase === 'trashing') return progress.handled
+  if (phase === 'trashed') return progress.inTrash.bytes
+  if (phase === 'undoing' || phase === 'emptying') return progress.handled
+  if (isPutBack(phase, progress)) return progress.restored
+  return progress.freed
 }
 
 export function formatDuration(seconds: number) {
@@ -255,32 +294,32 @@ export function formatDuration(seconds: number) {
 
 export interface Totals {
   removed: Outcome[]
-  held: Outcome[]
+  trashed: Outcome[]
   failed: Outcome[]
   kept: Outcome[]
   sections: number
   biggest: Outcome | null
   reclaimed: number
-  heldBytes: number
+  trashedBytes: number
   seconds: number
 }
 
 const sum = (all: readonly Outcome[]) => all.reduce((total, o) => total + o.bytes, 0)
-const isStillHeld = (o: Outcome) => o.kind === 'held' || (o.kind === 'kept' && o.job)
+const isStillTrashed = (o: Outcome) => o.kind === 'trashed' || (o.kind === 'kept' && o.job)
 
 export function finaleOf(latest: readonly Outcome[], done: Of<'done'> | null, elapsed: number): Totals {
   const removed = latest.filter(o => FREED.has(o.kind))
-  const held = latest.filter(isStillHeld)
-  const cleared = [...removed, ...held]
+  const trashed = latest.filter(isStillTrashed)
+  const cleared = [...removed, ...trashed]
   return {
     removed,
-    held,
+    trashed,
     failed: latest.filter(o => o.kind === 'failed'),
-    kept: latest.filter(o => o.kind === 'kept'),
+    kept: latest.filter(o => o.kind === 'kept' && !o.job),
     sections: new Set(cleared.map(o => o.section)).size,
     biggest: cleared.reduce<Outcome | null>((best, o) => (best && best.bytes >= o.bytes ? best : o), null),
     reclaimed: sum(removed),
-    heldBytes: sum(held),
+    trashedBytes: sum(trashed),
     seconds: Math.round((done?.elapsed_ms ?? elapsed) / 1000),
   }
 }

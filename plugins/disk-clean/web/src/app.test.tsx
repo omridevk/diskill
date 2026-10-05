@@ -209,28 +209,28 @@ describe('other tabs', () => {
 })
 
 describe('confirm dialog', () => {
-  test('lists totals, every held path with its size, the steps that cannot be undone and the rejections', async () => {
+  test('lists totals, every path for the Trash with its size, the steps that cannot be undone and the rejections', async () => {
     const confirmed = vi.fn()
     const screen = await render(<ConfirmDialog plan={PLAN} home="/Users/you" open onClose={() => {}} onClosed={() => {}} onConfirm={confirmed} />)
-    const held = screen.getByRole('list', {name: 'Moved to hold'})
-    await expect.element(screen.getByRole('heading', {name: /^Moved to hold \(undo available\)/})).toBeVisible()
+    const held = screen.getByRole('list', {name: 'Moved to the Trash'})
+    await expect.element(screen.getByRole('heading', {name: /^Moved to the Trash \(undo available\)/})).toBeVisible()
     await expect.poll(() => held.getByRole('listitem').elements().length).toBe(4)
     await expect.element(held.getByRole('listitem').first()).toHaveTextContent('~/Library/Caches/app-a2.0 GB')
     await expect.element(screen.getByRole('list', {name: "Can't be undone"})).toHaveTextContent('git -C ~/code worktree remove ~/code/wtgit -C ~/code worktree prunedocker system prune -f')
     await expect.element(screen.getByRole('list', {name: 'Rejected by the safety checks'})).toHaveTextContent('~/old: already gone')
     await expect.element(screen.getByText('6 items in total')).toBeVisible()
-    await screen.getByRole('button', {name: "Move 4 items to hold + 2 that can't be undone"}).click()
+    await screen.getByRole('button', {name: "Move 4 items to the Trash + 2 that can't be undone"}).click()
     expect(confirmed).toHaveBeenCalledOnce()
   })
 
-  test('says Delete when nothing can be held, and waits for the plan', async () => {
-    const plan = {...PLAN, hold: [], hold_bytes: 0, count: 2}
+  test('says Delete when nothing goes to the Trash, and waits for the plan', async () => {
+    const plan = {...PLAN, paths: [], paths_bytes: 0, count: 2}
     const screen = await render(<ConfirmDialog plan={plan} home="" open onClose={() => {}} onClosed={() => {}} onConfirm={() => {}} />)
     await expect.element(screen.getByRole('button', {name: 'Delete 2 items'})).toBeEnabled()
-    await expect.element(screen.getByRole('list', {name: 'Moved to hold'})).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('list', {name: 'Moved to the Trash'})).not.toBeInTheDocument()
     await screen.rerender(<ConfirmDialog plan={null} home="" open onClose={() => {}} onClosed={() => {}} onConfirm={() => {}} />)
     await expect.element(screen.getByText('Checking the selection…')).toBeVisible()
-    await expect.element(screen.getByRole('button', {name: 'Delete'})).toBeDisabled()
+    await expect.element(screen.getByRole('button', {name: 'Move to the Trash'})).toBeDisabled()
   })
 })
 
@@ -535,7 +535,7 @@ function layoutOf(screen: Screen) {
 
 async function confirmDelete(screen: Screen) {
   await screen.getByRole('button', {name: DELETE}).click()
-  await screen.getByRole('dialog').getByRole('button', {name: /^Move \d+ items to hold/}).click()
+  await screen.getByRole('dialog').getByRole('button', {name: /^Move \d+ items to the Trash/}).click()
 }
 
 function approvedDb() {
@@ -571,13 +571,13 @@ describe('cleanup in the app', () => {
     sendRaw(source, 'done', {reclaimable: 7 * GB, elapsed_ms: 9500})
     sendRaw(source, 'waiting', {})
     for (const name of [DELETE, 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).not.toBeInTheDocument()
-    await expect.element(screen.getByText('Approved: the deletion runs in the background')).toBeVisible()
+    await expect.element(screen.getByText('Approved: the cleanup runs in the background')).toBeVisible()
     await expect.element(screen.getByRole('checkbox', {name: 'Select all in Application caches'})).toBeDisabled()
     await expect.element(screen.getByText('Selected to free')).not.toBeInTheDocument()
     expect(screen.container.querySelectorAll('[data-film]')).toHaveLength(0)
 
     sendAll(source, cleanupEvents.slice(1, 3))
-    await barSays(screen, 'Cleaning up · 2.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-a')
+    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-a')
     expect(fillOf(screen)).toMatch(/^scaleX\(0\.5333/)
     await expect.element(screen.getByText('1 of 4 done')).toBeVisible()
     await expect.element(screen.getByRole('progressbar', {name: 'Application caches done'})).toHaveAttribute('aria-valuenow', '53')
@@ -595,7 +595,7 @@ describe('cleanup in the app', () => {
     await expect
       .element(screen.getByRole('contentinfo'))
       .toMatchTextContent(/^Cleanup finishedFreed 3\.5 GB · 4 items · 3\.8 GB approved · a new cleanup starts with \/disk-clean/)
-    expect(source.readyState).toBe(2)
+    expect(source.readyState, 'stays open: Undo, Empty and the Trash record can still change').toBe(1)
 
     await details(screen).click()
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
@@ -618,7 +618,7 @@ describe('cleanup in the app', () => {
   test('the movie opens on demand, keeps up with the stream and closes back to the app', async () => {
     const {screen, source} = await approveInApp()
     sendAll(source, cleanupEvents.slice(0, 3))
-    await barSays(screen, 'Cleaning up ·')
+    await barSays(screen, 'Deleting ·')
     await details(screen).click()
     await screen.getByRole('button', {name: 'Watch the movie'}).click()
     const movie = screen.getByRole('dialog', {name: 'Cleanup movie'})
@@ -626,7 +626,7 @@ describe('cleanup in the app', () => {
     await userEvent.keyboard('{Escape}')
     await expect.element(movie).not.toBeInTheDocument()
     sendAll(source, cleanupEvents.slice(3, 6))
-    await barSays(screen, 'Cleaning up · 3.5 GB of 3.8 GB · 3 of 5')
+    await barSays(screen, 'Deleting · 3.5 GB of 3.8 GB · 3 of 5')
     await details(screen).click()
     await screen.getByRole('button', {name: 'Watch the movie'}).click()
     sendAll(source, cleanupEvents.slice(6))
@@ -654,13 +654,13 @@ describe('cleanup in the app', () => {
     source.dispatchEvent(new Event('open'))
     await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
     sendAll(source, cleanupEvents.slice(0, 3))
-    await barSays(screen, 'Cleaning up ·')
+    await barSays(screen, 'Deleting ·')
     source.readyState = 0
     source.dispatchEvent(new Event('error'))
     await barSays(screen, 'Reconnecting to disk-clean…')
     source.readyState = 1
     source.dispatchEvent(new Event('open'))
-    await barSays(screen, 'Cleaning up ·')
+    await barSays(screen, 'Deleting ·')
   })
 
   test('a reload during the cleanup lands back in the app with the bar and panel', async () => {
@@ -670,7 +670,7 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByRole('checkbox', {name: /node_modules/})).toBeChecked()
     await expect.element(screen.getByRole('checkbox', {name: /app-b/})).not.toBeChecked()
     sendAll(source, cleanupEvents.slice(0, 3))
-    await barSays(screen, 'Cleaning up · 2.0 GB of 5.0 GB · 1 of 5')
+    await barSays(screen, 'Deleting · 2.0 GB of 5.0 GB · 1 of 5')
     await details(screen).click()
     await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'}).getByText('Removed ~/Library/Caches/app-a')).toBeVisible()
   })
@@ -716,7 +716,7 @@ describe('cleanup in the app', () => {
     if (!status) throw new Error('no status line')
     expect(getComputedStyle(status).color).toBe(getComputedStyle(document.body).color)
     sendAll(source, cleanupEvents.slice(0, 3))
-    await barSays(screen, 'Cleaning up · 2.0 GB of 3.8 GB · 1 of 5')
+    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5')
     expect(layoutOf(screen)).toEqual(before)
     sendAll(source, cleanupEvents.slice(3))
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
@@ -793,10 +793,10 @@ describe('cleanup in the app', () => {
   test('a new run on the same page replaces the previous run instead of mixing with it', async () => {
     const {screen, source} = await approveInApp()
     sendAll(source, cleanupEvents.slice(1, 3))
-    await barSays(screen, 'Cleaning up · 2.0 GB of 3.8 GB · 1 of 5')
+    await barSays(screen, 'Deleting · 2.0 GB of 3.8 GB · 1 of 5')
     sendRaw(source, 'started', {run: 'run-2', free: 52 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 3.75 * GB, elapsed_ms: 0})
     sendRaw(source, 'removed', {path: '/Users/you/Library/Caches/app-b', bytes: GB, secs: 1, elapsed_ms: 300})
-    await barSays(screen, 'Cleaning up · 1.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-b')
+    await barSays(screen, 'Deleting · 1.0 GB of 3.8 GB · 1 of 5 · ~/Library/Caches/app-b')
     await details(screen).click()
     const rows = screen.getByRole('dialog', {name: 'Cleanup progress'}).getByRole('list', {name: 'Cleanup events'}).getByRole('listitem')
     await expect.poll(() => rows.elements().length).toBe(1)

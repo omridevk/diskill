@@ -1,7 +1,137 @@
 #![allow(dead_code)]
 
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
+
+static OPENING_INHERITABLE_FDS: Mutex<()> = Mutex::new(());
+
+pub fn with_fd_lock<T>(open: impl FnOnce() -> T) -> T {
+    let _alone = OPENING_INHERITABLE_FDS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    open()
+}
+
+pub fn spawn(cmd: &mut Command) -> Child {
+    with_fd_lock(|| cmd.spawn()).unwrap()
+}
+
+pub fn output(cmd: &mut Command) -> Output {
+    spawn(
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .wait_with_output()
+    .unwrap()
+}
+
+pub fn status(cmd: &mut Command) -> std::process::ExitStatus {
+    spawn(cmd).wait().unwrap()
+}
+
+pub fn free_port() -> u16 {
+    with_fd_lock(|| TcpListener::bind("127.0.0.1:0"))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+pub fn connect(port: u16) -> TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match with_fd_lock(|| TcpStream::connect(("127.0.0.1", port))) {
+            Ok(stream) => return stream,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => panic!("nothing listened on {port}: {e}"),
+        }
+    }
+}
+
+struct RamDisk {
+    device: String,
+    mount: PathBuf,
+}
+
+static RAM: OnceLock<RamDisk> = OnceLock::new();
+
+extern "C" fn detach_ram_disk() {
+    if let Some(disk) = RAM.get() {
+        let _ = Command::new("hdiutil")
+            .args(["detach", "-force", &disk.device])
+            .output();
+    }
+}
+
+fn attach_ram_disk() -> RamDisk {
+    let attach = output(Command::new("hdiutil").args(["attach", "-nomount", "ram://2097152"]));
+    assert!(attach.status.success(), "hdiutil attach failed");
+    let device = String::from_utf8_lossy(&attach.stdout).trim().to_string();
+    assert!(
+        device.starts_with("/dev/disk"),
+        "unexpected device {device:?}"
+    );
+    let name = format!("dc-test-{}", std::process::id());
+    let erased = output(Command::new("diskutil").args(["erasevolume", "APFS", &name, &device]));
+    if !erased.status.success() {
+        output(Command::new("hdiutil").args(["detach", "-force", &device]));
+        panic!(
+            "diskutil erasevolume failed: {}",
+            String::from_utf8_lossy(&erased.stderr)
+        );
+    }
+    let mount = std::fs::canonicalize(format!("/Volumes/{name}")).unwrap();
+    std::fs::write(mount.join(".metadata_never_index"), b"").unwrap();
+    RamDisk { device, mount }
+}
+
+pub fn ram_root() -> &'static Path {
+    &RAM.get_or_init(|| {
+        let disk = attach_ram_disk();
+        // SAFETY: registers a plain extern "C" function to run at process exit.
+        unsafe { libc::atexit(detach_ram_disk) };
+        disk
+    })
+    .mount
+}
+
+pub fn assert_inside_ram_disk(path: &Path) {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    assert!(
+        real.starts_with(ram_root()),
+        "{} is outside the test RAM disk {}",
+        real.display(),
+        ram_root().display()
+    );
+}
+
+pub fn assert_record_inside_ram_disk(home: &Path) {
+    let record =
+        std::fs::read_to_string(home.join(".cache/disk-clean/trashed.jsonl")).unwrap_or_default();
+    for line in record.lines() {
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        for key in ["original", "trashed"] {
+            let path = entry[key].as_str().unwrap_or("");
+            if !path.is_empty() {
+                assert_inside_ram_disk(Path::new(path));
+            }
+        }
+    }
+}
+
+pub fn bin(home: &Path) -> Command {
+    assert_inside_ram_disk(home);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_disk-clean"));
+    cmd.env("HOME", home)
+        .env("TMPDIR", home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd
+}
 
 pub struct TempDir(pub PathBuf);
 
@@ -34,7 +164,7 @@ impl std::ops::DerefMut for Reaped {
 }
 
 pub fn reaped(cmd: &mut Command) -> Reaped {
-    Reaped(cmd.spawn().unwrap())
+    Reaped(spawn(cmd))
 }
 
 pub fn temp_dir(tag: &str) -> TempDir {
@@ -42,41 +172,29 @@ pub fn temp_dir(tag: &str) -> TempDir {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let out = Command::new("getconf")
-        .arg("DARWIN_USER_TEMP_DIR")
-        .output()
-        .unwrap();
-    let base = String::from_utf8(out.stdout).unwrap().trim().to_string();
-    let dir = PathBuf::from(base).join(format!("disk-clean-{tag}-{}-{nanos}", std::process::id()));
+    let dir = ram_root().join(format!("disk-clean-{tag}-{nanos}"));
     std::fs::create_dir_all(&dir).unwrap();
     TempDir(std::fs::canonicalize(&dir).unwrap())
 }
 
 pub fn sh(cwd: &Path, script: &str) {
-    let status = Command::new("bash")
-        .arg("-ec")
-        .arg(script)
-        .current_dir(cwd)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@t")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@t")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .status()
-        .unwrap();
+    let status = status(
+        Command::new("bash")
+            .arg("-ec")
+            .arg(script)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1"),
+    );
     assert!(status.success(), "script failed: {script}");
 }
 
 pub fn cli(args: &[&str], home: &Path, env: &[(&str, &str)]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(args)
-        .env("HOME", home)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .envs(env.iter().copied())
-        .output()
-        .unwrap()
+    output(bin(home).args(args).envs(env.iter().copied()))
 }
 
 pub fn wait_for(what: &str, limit: std::time::Duration, mut ready: impl FnMut() -> bool) {
@@ -96,4 +214,10 @@ pub fn events_of(run: &Path) -> Vec<serde_json::Value> {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect()
+}
+
+pub fn trash_dir() -> PathBuf {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    ram_root().join(".Trashes").join(uid.to_string())
 }

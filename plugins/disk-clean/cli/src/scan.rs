@@ -1,6 +1,6 @@
-use crate::hold;
 use crate::insights;
 use crate::review;
+use crate::trash;
 use crate::util::{self, tilde};
 use crate::walk::{self, Plan, Walk};
 use crate::worktrees;
@@ -332,7 +332,7 @@ fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
         big_bytes: cfg.bigfile_bytes,
         exact,
         parents,
-        held: hold::root(home),
+        held: trash::legacy_held_root(home),
         repo_tx: None,
         days: insights::midnights(now),
         cancel: Arc::default(),
@@ -645,7 +645,6 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         scan_ios_backups(&fixed, &mut rows, cfg);
         scan_caches(&fixed, &mut rows, cfg);
         scan_logs(&fixed, &mut rows, cfg);
-        scan_held(&fixed, &mut rows);
         preview(&rows, out, sink);
         eprintln!(
             "  sized {} fixed locations in {:.1}s",
@@ -689,7 +688,6 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         scan_user_tmpdir(ctx, &mut rows, cfg, tmp_base.as_deref());
         scan_private_tmp(ctx, &mut rows, cfg);
         scan_big_files(ctx, &mut rows, cfg);
-        scan_held(ctx, &mut rows);
         settle(&rows, out, sink);
         show_worktrees(ctx, &finished_early);
 
@@ -791,46 +789,6 @@ fn scan_trash(ctx: &Ctx, rows: &mut Vec<Row>) {
     };
     let list = children_of(ctx, &h(ctx, ".Trash"));
     sized(ctx, rows, &cat, &list, "Permanently removed.", 1);
-}
-
-fn scan_held(ctx: &Ctx, rows: &mut Vec<Row>) {
-    let desc = format!(
-        "Items an earlier cleanup moved aside so they could be undone. Selecting a run frees its space for good, which can't be undone. Each run is freed automatically {} days after it was held.",
-        hold::hold_days()
-    );
-    let cat = Cat {
-        id: "held",
-        title: "Held by disk-clean",
-        desc: &desc,
-        risk: "review",
-        pre: "0",
-    };
-    for (dir, entries) in hold::runs(&ctx.home) {
-        let Some(s) = dir.to_str() else { continue };
-        let newest = entries.iter().map(|e| e.held_at).max().unwrap_or(ctx.now);
-        let listed: i64 = entries.iter().map(|e| e.bytes).sum();
-        let bytes = size_bytes(ctx, &dir).unwrap_or(listed.max(0) as u64);
-        let first = entries
-            .first()
-            .map(|e| tilde(&e.original, &ctx.home))
-            .unwrap_or_default();
-        let note = format!(
-            "{} items held {}, e.g. {first}. Not freed yet; they can still be put back with disk-clean undo on the run that held them.",
-            entries.len(),
-            hold::date(newest)
-        );
-        rows.push(row(
-            &cat,
-            "free",
-            "-",
-            &format!("{} · {} items", tilde(s, &ctx.home), entries.len()),
-            s,
-            bytes,
-            &note,
-            &((ctx.now - newest).max(0) / 86400).to_string(),
-            "exact",
-        ));
-    }
 }
 
 fn scan_caches(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {

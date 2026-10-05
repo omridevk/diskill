@@ -179,7 +179,7 @@ function sectionPct(film: Film, id: string, gone: number, accounted: number) {
   return section.bytes > 0 ? (gone / section.bytes) * 100 : (accounted / section.count) * 100
 }
 
-const CLEARED = new Set<Outcome['kind']>(['removed', 'held'])
+const CLEARED = new Set<Outcome['kind']>(['removed', 'trashed'])
 const bytesOf = (touched: Outcome[], kinds: ReadonlySet<Outcome['kind']>) => touched.filter(o => kinds.has(o.kind)).reduce((sum, o) => sum + o.bytes, 0)
 const REMOVED = new Set<Outcome['kind']>(['removed'])
 
@@ -529,15 +529,15 @@ function payoffBeat(film: Film, bytes: number) {
   const heading = part(film, 'freed-heading')
   const words = heading ? SplitText.create(heading, {type: 'words'}).words : []
   tl.fromTo(words, {opacity: 0, y: 12, filter: 'blur(3px)'}, {opacity: 1, y: 0, filter: 'blur(0px)', duration: tokens.verySlow, ease: 'smooth-out', stagger: tokens.stagger}, at)
-  tl.fromTo(all(film, '[data-film="held-actions"]'), {autoAlpha: 1}, {autoAlpha: 0, duration: tokens.fast, ease: 'smooth-out'}, at)
+  tl.fromTo(all(film, '[data-film="trash-actions"]'), {autoAlpha: 1}, {autoAlpha: 0, duration: tokens.fast, ease: 'smooth-out'}, at)
   film.gauges.reclaimed = bytes
   const swapped = particleBeat(film, at + tokens.stagger, false)
   tl.call(settle, [film], swapped + tokens.verySlow + tokens.fast)
 }
 
 function afterFinale(film: Film, pending: readonly LogRow[]) {
-  const freed = pending.findLast(e => e.type === 'free_done')?.event
-  if (freed?.type === 'free_done' && freed.data.freed_bytes > 0) payoffBeat(film, freed.data.freed_bytes)
+  const emptied = pending.findLast(e => e.type === 'empty_done')?.event
+  if (emptied?.type === 'empty_done' && emptied.data.emptied_bytes > 0) payoffBeat(film, emptied.data.emptied_bytes)
 }
 
 function sampleFree(film: Film, pending: readonly LogRow[]) {
@@ -545,7 +545,7 @@ function sampleFree(film: Film, pending: readonly LogRow[]) {
   if (sample?.type === 'free') film.gauges.free = sample.data.free
 }
 
-const isHolding = (cleanup: Cleanup) => (cleanup.done?.held ?? 0) > 0
+const isTrashing = (cleanup: Cleanup) => (cleanup.done?.trashed ?? 0) > 0
 
 function build(film: Film, cleanup: Cleanup, pending: readonly LogRow[]) {
   const types = new Set(pending.map(e => e.type))
@@ -558,11 +558,11 @@ function build(film: Film, cleanup: Cleanup, pending: readonly LogRow[]) {
   }
   sampleFree(film, pending)
   workBeats(film, outcomesOf(pending), film.flood || ending)
-  if (ending) finaleBeat(film, abandoned || isHolding(cleanup))
+  if (ending) finaleBeat(film, abandoned || isTrashing(cleanup))
   film.flood = false
 }
 
-const OUTCOMES: ReadonlySet<CleanupEvent['type']> = new Set(['removed', 'held', 'failed', 'kept', 'worktree', 'command'])
+const OUTCOMES: ReadonlySet<CleanupEvent['type']> = new Set(['removed', 'trashed', 'failed', 'kept', 'worktree', 'command'])
 const ENDINGS: ReadonlySet<CleanupEvent['type']> = new Set(['done', 'abandoned'])
 
 function recapSize(film: Film, log: readonly LogRow[]) {

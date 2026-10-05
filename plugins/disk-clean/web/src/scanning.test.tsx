@@ -35,7 +35,7 @@ async function live() {
   return {screen, send, history}
 }
 
-const deleteButton = (screen: Awaited<ReturnType<typeof render>>) => screen.getByRole('contentinfo').getByRole('button', {name: /delete|scanning|scan failed/i})
+const deleteButton = (screen: Awaited<ReturnType<typeof render>>) => screen.getByRole('contentinfo').getByRole('button', {name: /^(Delete \d|Select items|Scanning|Nothing found|The scan failed)/})
 
 const decided = () => {
   const call = vi.mocked(window.fetch).mock.calls.find(([url]) => url === '/decide')
@@ -46,7 +46,7 @@ describe('delete while the scan is running', () => {
   afterEach(() => vi.restoreAllMocks())
 
   test('Delete works for listed items mid-scan, the dialog says the scan still runs, and confirming approves exactly what it showed', async () => {
-    mockServer({...PLAN, hold: PLAN.hold.slice(0, 1), final: [], final_count: 0, rejected: [], count: 1})
+    mockServer({...PLAN, paths: PLAN.paths.slice(0, 1), final: [], final_count: 0, rejected: [], count: 1})
     const {screen, send} = await live()
     send(disk)
     send(listed(CACHES, cacheA))
@@ -57,10 +57,11 @@ describe('delete while the scan is running', () => {
     await expect.element(dialog.getByText(STILL_RUNNING)).toBeVisible()
     send(listed(CACHES, cacheC, 200))
     await expect.element(screen.getByText('2 items selected · 3.0 GB')).toBeInTheDocument()
-    await dialog.getByRole('button', {name: /^Move 1 item to hold/}).click()
+    await dialog.getByRole('button', {name: /^Move 1 item to the Trash/}).click()
     await expect.poll(decided).not.toBeNull()
     expect(decided()).toMatchObject({decision: 'approve', add: '', drop: '', listed: 1, fingerprint: fingerprint([cacheA.path])})
-    await expect.element(screen.getByText('Scan stopped at approval')).toBeVisible()
+    await expect.element(screen.getByText('Waiting to start')).toBeVisible()
+    await expect.element(screen.getByText('Scan stopped at approval')).not.toBeInTheDocument()
   })
 
   test('worktree and command rows say checking… and cannot be ticked until their check answers', async () => {

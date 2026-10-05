@@ -4,6 +4,7 @@ import {memo, useMemo, useRef, type MouseEvent} from 'react'
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table'
 import type {CleanupProgress, Outcome} from '@/lib/progress'
 import {STATE_MOTION} from '@/lib/motion'
+import {useTableDeleteKeys} from './action-bar'
 import {columns, enableRowSelection, toggleRow, type Entry, type EntryRow, features} from './cleanup-columns'
 
 type CleanupTable = ReactTable<typeof features, Entry, null>
@@ -92,6 +93,8 @@ function useCleanupTable(data: Entry[], {progress, rowSelection, onRowSelectionC
 export function DataTable(props: DataTableProps) {
   const {rows: entries, label, progress} = props
   const scroller = useRef<HTMLDivElement>(null)
+  const itemTable = useRef<HTMLTableElement>(null)
+  useTableDeleteKeys(itemTable)
   const plan = progress?.plan.items
   const count = entries.length
   const virtualizer = useVirtualizer({
@@ -113,7 +116,7 @@ export function DataTable(props: DataTableProps) {
   const rowAt = (index: number) => rows[index - first]
   return (
     <div ref={scroller} className="min-h-0 grow overflow-auto px-3 py-1">
-      <Table aria-label={label} aria-rowcount={count + 1} role="table" className="grid">
+      <Table ref={itemTable} aria-label={label} aria-rowcount={count + 1} role="table" className="grid">
         <TableHeader role="rowgroup" className="grid [&_tr]:border-0">
           {table.getHeaderGroups().map(group => (
             <TableRow key={group.id} role="row" aria-rowindex={1} className={`${GRID} hover:bg-transparent`}>

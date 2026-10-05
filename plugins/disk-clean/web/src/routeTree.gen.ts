@@ -14,13 +14,15 @@ import { Route as TabsRouteImport } from './routes/_tabs'
 import { Route as TabsCleanupRouteImport } from './routes/_tabs/cleanup'
 import { Route as TabsInsightsRouteImport } from './routes/_tabs/insights'
 import { Route as TabsStorageRouteImport } from './routes/_tabs/storage'
+import { Route as TabsTrashRouteImport } from './routes/_tabs/trash'
 import { Route as TabsCleanupIndexRouteImport } from './routes/_tabs/cleanup.index'
 import { Route as TabsCleanupSectionRouteImport } from './routes/_tabs/cleanup.$section'
 import { Route as TabsStorageIndexRouteImport } from './routes/_tabs/storage.index'
 import { Route as TabsStorageSplatRouteImport } from './routes/_tabs/storage.$'
 import { Route as TabsStorageFolderRouteImport } from './routes/_tabs/storage.$folder'
+import { Route as TabsTrashEmptyRouteImport } from './routes/_tabs/trash.empty'
 import { Route as TabsCleanupSectionConfirmRouteImport } from './routes/_tabs/cleanup.$section.confirm'
-import { Route as TabsCleanupSectionFreeRouteImport } from './routes/_tabs/cleanup.$section.free'
+import { Route as TabsCleanupSectionEmptyRouteImport } from './routes/_tabs/cleanup.$section.empty'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -44,6 +46,11 @@ const TabsInsightsRoute = TabsInsightsRouteImport.update({
 const TabsStorageRoute = TabsStorageRouteImport.update({
   id: '/storage',
   path: '/storage',
+  getParentRoute: () => TabsRoute,
+} as any)
+const TabsTrashRoute = TabsTrashRouteImport.update({
+  id: '/trash',
+  path: '/trash',
   getParentRoute: () => TabsRoute,
 } as any)
 const TabsCleanupIndexRoute = TabsCleanupIndexRouteImport.update({
@@ -71,15 +78,20 @@ const TabsStorageFolderRoute = TabsStorageFolderRouteImport.update({
   path: '/$folder',
   getParentRoute: () => TabsStorageRoute,
 } as any)
+const TabsTrashEmptyRoute = TabsTrashEmptyRouteImport.update({
+  id: '/empty',
+  path: '/empty',
+  getParentRoute: () => TabsTrashRoute,
+} as any)
 const TabsCleanupSectionConfirmRoute =
   TabsCleanupSectionConfirmRouteImport.update({
     id: '/confirm',
     path: '/confirm',
     getParentRoute: () => TabsCleanupSectionRoute,
   } as any)
-const TabsCleanupSectionFreeRoute = TabsCleanupSectionFreeRouteImport.update({
-  id: '/free',
-  path: '/free',
+const TabsCleanupSectionEmptyRoute = TabsCleanupSectionEmptyRouteImport.update({
+  id: '/empty',
+  path: '/empty',
   getParentRoute: () => TabsCleanupSectionRoute,
 } as any)
 
@@ -88,24 +100,28 @@ export interface FileRoutesByFullPath {
   '/cleanup': typeof TabsCleanupRouteWithChildren
   '/insights': typeof TabsInsightsRoute
   '/storage': typeof TabsStorageRouteWithChildren
+  '/trash': typeof TabsTrashRouteWithChildren
   '/cleanup/$section': typeof TabsCleanupSectionRouteWithChildren
   '/storage/$': typeof TabsStorageSplatRoute
   '/storage/$folder': typeof TabsStorageFolderRoute
+  '/trash/empty': typeof TabsTrashEmptyRoute
   '/cleanup/': typeof TabsCleanupIndexRoute
   '/storage/': typeof TabsStorageIndexRoute
   '/cleanup/$section/confirm': typeof TabsCleanupSectionConfirmRoute
-  '/cleanup/$section/free': typeof TabsCleanupSectionFreeRoute
+  '/cleanup/$section/empty': typeof TabsCleanupSectionEmptyRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/insights': typeof TabsInsightsRoute
+  '/trash': typeof TabsTrashRouteWithChildren
   '/cleanup/$section': typeof TabsCleanupSectionRouteWithChildren
   '/storage/$': typeof TabsStorageSplatRoute
   '/storage/$folder': typeof TabsStorageFolderRoute
+  '/trash/empty': typeof TabsTrashEmptyRoute
   '/cleanup': typeof TabsCleanupIndexRoute
   '/storage': typeof TabsStorageIndexRoute
   '/cleanup/$section/confirm': typeof TabsCleanupSectionConfirmRoute
-  '/cleanup/$section/free': typeof TabsCleanupSectionFreeRoute
+  '/cleanup/$section/empty': typeof TabsCleanupSectionEmptyRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -114,13 +130,15 @@ export interface FileRoutesById {
   '/_tabs/cleanup': typeof TabsCleanupRouteWithChildren
   '/_tabs/insights': typeof TabsInsightsRoute
   '/_tabs/storage': typeof TabsStorageRouteWithChildren
+  '/_tabs/trash': typeof TabsTrashRouteWithChildren
   '/_tabs/cleanup/$section': typeof TabsCleanupSectionRouteWithChildren
   '/_tabs/storage/$': typeof TabsStorageSplatRoute
   '/_tabs/storage/$folder': typeof TabsStorageFolderRoute
+  '/_tabs/trash/empty': typeof TabsTrashEmptyRoute
   '/_tabs/cleanup/': typeof TabsCleanupIndexRoute
   '/_tabs/storage/': typeof TabsStorageIndexRoute
   '/_tabs/cleanup/$section/confirm': typeof TabsCleanupSectionConfirmRoute
-  '/_tabs/cleanup/$section/free': typeof TabsCleanupSectionFreeRoute
+  '/_tabs/cleanup/$section/empty': typeof TabsCleanupSectionEmptyRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -129,24 +147,28 @@ export interface FileRouteTypes {
     | '/cleanup'
     | '/insights'
     | '/storage'
+    | '/trash'
     | '/cleanup/$section'
     | '/storage/$'
     | '/storage/$folder'
+    | '/trash/empty'
     | '/cleanup/'
     | '/storage/'
     | '/cleanup/$section/confirm'
-    | '/cleanup/$section/free'
+    | '/cleanup/$section/empty'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/insights'
+    | '/trash'
     | '/cleanup/$section'
     | '/storage/$'
     | '/storage/$folder'
+    | '/trash/empty'
     | '/cleanup'
     | '/storage'
     | '/cleanup/$section/confirm'
-    | '/cleanup/$section/free'
+    | '/cleanup/$section/empty'
   id:
     | '__root__'
     | '/'
@@ -154,13 +176,15 @@ export interface FileRouteTypes {
     | '/_tabs/cleanup'
     | '/_tabs/insights'
     | '/_tabs/storage'
+    | '/_tabs/trash'
     | '/_tabs/cleanup/$section'
     | '/_tabs/storage/$'
     | '/_tabs/storage/$folder'
+    | '/_tabs/trash/empty'
     | '/_tabs/cleanup/'
     | '/_tabs/storage/'
     | '/_tabs/cleanup/$section/confirm'
-    | '/_tabs/cleanup/$section/free'
+    | '/_tabs/cleanup/$section/empty'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -205,6 +229,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TabsStorageRouteImport
       parentRoute: typeof TabsRoute
     }
+    '/_tabs/trash': {
+      id: '/_tabs/trash'
+      path: '/trash'
+      fullPath: '/trash'
+      preLoaderRoute: typeof TabsTrashRouteImport
+      parentRoute: typeof TabsRoute
+    }
     '/_tabs/cleanup/': {
       id: '/_tabs/cleanup/'
       path: '/'
@@ -240,6 +271,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TabsStorageFolderRouteImport
       parentRoute: typeof TabsStorageRoute
     }
+    '/_tabs/trash/empty': {
+      id: '/_tabs/trash/empty'
+      path: '/empty'
+      fullPath: '/trash/empty'
+      preLoaderRoute: typeof TabsTrashEmptyRouteImport
+      parentRoute: typeof TabsTrashRoute
+    }
     '/_tabs/cleanup/$section/confirm': {
       id: '/_tabs/cleanup/$section/confirm'
       path: '/confirm'
@@ -247,11 +285,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TabsCleanupSectionConfirmRouteImport
       parentRoute: typeof TabsCleanupSectionRoute
     }
-    '/_tabs/cleanup/$section/free': {
-      id: '/_tabs/cleanup/$section/free'
-      path: '/free'
-      fullPath: '/cleanup/$section/free'
-      preLoaderRoute: typeof TabsCleanupSectionFreeRouteImport
+    '/_tabs/cleanup/$section/empty': {
+      id: '/_tabs/cleanup/$section/empty'
+      path: '/empty'
+      fullPath: '/cleanup/$section/empty'
+      preLoaderRoute: typeof TabsCleanupSectionEmptyRouteImport
       parentRoute: typeof TabsCleanupSectionRoute
     }
   }
@@ -259,12 +297,12 @@ declare module '@tanstack/react-router' {
 
 interface TabsCleanupSectionRouteChildren {
   TabsCleanupSectionConfirmRoute: typeof TabsCleanupSectionConfirmRoute
-  TabsCleanupSectionFreeRoute: typeof TabsCleanupSectionFreeRoute
+  TabsCleanupSectionEmptyRoute: typeof TabsCleanupSectionEmptyRoute
 }
 
 const TabsCleanupSectionRouteChildren: TabsCleanupSectionRouteChildren = {
   TabsCleanupSectionConfirmRoute: TabsCleanupSectionConfirmRoute,
-  TabsCleanupSectionFreeRoute: TabsCleanupSectionFreeRoute,
+  TabsCleanupSectionEmptyRoute: TabsCleanupSectionEmptyRoute,
 }
 
 const TabsCleanupSectionRouteWithChildren =
@@ -300,16 +338,30 @@ const TabsStorageRouteWithChildren = TabsStorageRoute._addFileChildren(
   TabsStorageRouteChildren,
 )
 
+interface TabsTrashRouteChildren {
+  TabsTrashEmptyRoute: typeof TabsTrashEmptyRoute
+}
+
+const TabsTrashRouteChildren: TabsTrashRouteChildren = {
+  TabsTrashEmptyRoute: TabsTrashEmptyRoute,
+}
+
+const TabsTrashRouteWithChildren = TabsTrashRoute._addFileChildren(
+  TabsTrashRouteChildren,
+)
+
 interface TabsRouteChildren {
   TabsCleanupRoute: typeof TabsCleanupRouteWithChildren
   TabsInsightsRoute: typeof TabsInsightsRoute
   TabsStorageRoute: typeof TabsStorageRouteWithChildren
+  TabsTrashRoute: typeof TabsTrashRouteWithChildren
 }
 
 const TabsRouteChildren: TabsRouteChildren = {
   TabsCleanupRoute: TabsCleanupRouteWithChildren,
   TabsInsightsRoute: TabsInsightsRoute,
   TabsStorageRoute: TabsStorageRouteWithChildren,
+  TabsTrashRoute: TabsTrashRouteWithChildren,
 }
 
 const TabsRouteWithChildren = TabsRoute._addFileChildren(TabsRouteChildren)

@@ -2,45 +2,25 @@ mod common;
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::Child;
 use std::time::{Duration, Instant};
 
 const TOKEN: &str = "tok-123";
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 fn watch(run: &Path, port: u16, env: &[(&str, &str)]) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["watch", &run.to_string_lossy()])
-        .env("HOME", run.parent().unwrap())
-        .env("DISK_CLEAN_WATCH_TOKEN", TOKEN)
-        .env("DISK_CLEAN_WATCH_PORT", port.to_string())
-        .envs(env.iter().copied())
-        .spawn()
-        .unwrap()
-}
-
-fn connect(port: u16) -> TcpStream {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => return s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Err(e) => panic!("watcher never listened: {e}"),
-        }
-    }
+    common::spawn(
+        common::bin(run.parent().unwrap())
+            .args(["watch", &run.to_string_lossy()])
+            .env("DISK_CLEAN_WATCH_TOKEN", TOKEN)
+            .env("DISK_CLEAN_WATCH_PORT", port.to_string())
+            .envs(env.iter().copied()),
+    )
 }
 
 fn request(port: u16, raw: &str) -> u16 {
-    let mut s = connect(port);
+    let mut s = common::connect(port);
     s.write_all(raw.as_bytes()).unwrap();
     let mut out = String::new();
     s.read_to_string(&mut out).unwrap();
@@ -52,7 +32,7 @@ fn host(port: u16) -> String {
 }
 
 fn open_events(port: u16) -> BufReader<TcpStream> {
-    let mut s = connect(port);
+    let mut s = common::connect(port);
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     write!(
         s,
@@ -110,7 +90,7 @@ fn watch_replays_and_tails_the_worker_events_read_only() {
     let t = common::temp_dir("watch");
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
-    let port = free_port();
+    let port = common::free_port();
     let mut child = watch(&run, port, &[("DISK_CLEAN_WATCH_IDLE", "0.5")]);
 
     let mut first = open_events(port);
@@ -199,7 +179,7 @@ fn watch_gives_up_when_clean_never_starts_or_runs_too_long() {
     let t = common::temp_dir("watch-limits");
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
-    let port = free_port();
+    let port = common::free_port();
     let mut never = watch(&run, port, &[("DISK_CLEAN_WATCH_START", "0.5")]);
     let mut stream = open_events(port);
     assert_eq!(
@@ -215,7 +195,7 @@ fn watch_gives_up_when_clean_never_starts_or_runs_too_long() {
     fs::remove_file(run.join("clean.events")).unwrap();
 
     append(&run, &[r#"{"event":"started","elapsed_ms":0}"#]);
-    let port = free_port();
+    let port = common::free_port();
     let mut long = watch(
         &run,
         port,
@@ -232,12 +212,11 @@ fn watch_gives_up_when_clean_never_starts_or_runs_too_long() {
 #[test]
 fn watch_needs_its_token_and_port() {
     let t = common::temp_dir("watch-usage");
-    let out = Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-        .args(["watch", "/nonexistent"])
-        .env("HOME", &t.0)
-        .env_remove("DISK_CLEAN_WATCH_TOKEN")
-        .output()
-        .unwrap();
+    let out = common::output(
+        common::bin(&t.0)
+            .args(["watch", "/nonexistent"])
+            .env_remove("DISK_CLEAN_WATCH_TOKEN"),
+    );
     assert_eq!(out.status.code(), Some(2));
 }
 
@@ -256,10 +235,10 @@ fn watch_serves_the_approved_page_for_a_reload() {
         r#"{"items":[{"path":"/h/Library/Caches/b","bytes":4096}],"total_bytes":4096}"#,
     )
     .unwrap();
-    let port = free_port();
+    let port = common::free_port();
     let mut child = watch(&run, port, &[("DISK_CLEAN_WATCH_START", "5")]);
 
-    let mut s = connect(port);
+    let mut s = common::connect(port);
     write!(s, "GET / HTTP/1.1\r\n{}\r\n", host(port)).unwrap();
     let mut out = String::new();
     s.read_to_string(&mut out).unwrap();
@@ -285,7 +264,7 @@ fn watch_serves_the_approved_page_for_a_reload() {
         "/cleanup?overlay=movie&take=2",
         "/no/such/page",
     ] {
-        let mut deep = connect(port);
+        let mut deep = common::connect(port);
         write!(deep, "GET {target} HTTP/1.1\r\n{}\r\n", host(port)).unwrap();
         let mut body = String::new();
         deep.read_to_string(&mut body).unwrap();
@@ -319,9 +298,9 @@ fn watch_refuses_a_foreign_host() {
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
     fs::write(run.join("selection.json"), r#"{"items":[]}"#).unwrap();
-    let port = free_port();
+    let port = common::free_port();
     let mut child = watch(&run, port, &[]);
-    connect(port);
+    common::connect(port);
     for target in [
         "/".to_string(),
         "/cleanup/caches".to_string(),
@@ -347,7 +326,7 @@ fn watch_notices_a_closed_page_within_a_second() {
     let t = common::temp_dir("watch-closed");
     let run = t.0.join("run");
     fs::create_dir_all(&run).unwrap();
-    let port = free_port();
+    let port = common::free_port();
     let mut child = watch(&run, port, &[("DISK_CLEAN_WATCH_IDLE", "0.3")]);
     let mut stream = open_events(port);
     assert_eq!(read_until(&mut stream, "waiting"), ["waiting"]);
@@ -374,7 +353,7 @@ fn watch_follows_a_fresh_event_file_for_a_new_run() {
             r#"{"event":"removed","path":"/x/another-long-path-from-the-first-run","bytes":4,"secs":0.1,"elapsed_ms":6}"#,
         ],
     );
-    let port = free_port();
+    let port = common::free_port();
     let mut child = watch(&run, port, &[]);
     let mut stream = open_events(port);
     assert_eq!(read_until(&mut stream, "removed"), ["started", "removed"]);
