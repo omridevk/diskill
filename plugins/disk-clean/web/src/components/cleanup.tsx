@@ -1,6 +1,6 @@
 import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
 import {useDebouncer} from '@tanstack/react-pacer/debouncer'
-import {Link, useNavigate} from '@tanstack/react-router'
+import {Link, useNavigate, useParams} from '@tanstack/react-router'
 import type {RowSelectionState, Updater} from '@tanstack/react-table'
 import {LayoutGrid, List, Search} from 'lucide-react'
 import {createContext, use, useMemo, useRef, useState, type ReactNode, type RefObject} from 'react'
@@ -18,7 +18,7 @@ import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
 import {useProgress, useSelection, type Selection} from '@/lib/page-data'
-import {isFiltering, predicateOf, useSectionRows, useTotals, type SectionTotal} from '@/lib/shaping'
+import {isFiltering, predicateOf, useShaped, type SectionTotal} from '@/lib/shaping'
 import {useScanState, useSections} from '@/lib/views'
 import {DataTable} from './data-table'
 
@@ -224,9 +224,7 @@ function ListView({groups, progressed, choose, children}: {groups: Group[]; prog
 
 function SectionPanel({group, view}: {group: Group; view: ListState}) {
   const {category, shown} = group
-  const db = useDb()
   const replay = useReveal(category.id)
-  const rows = useSectionRows(db, category, view.list, view.on)
   return (
     <main key={category.id} data-replay={replay || undefined} data-open="true" className="t-panel-slide flex min-w-0 grow flex-col">
       <div className="flex flex-col gap-2.5 border-b px-6 pt-4 pb-3">
@@ -243,7 +241,7 @@ function SectionPanel({group, view}: {group: Group; view: ListState}) {
       </div>
       <DataTable
         key={category.id}
-        rows={rows}
+        rows={view.rows}
         label={category.title}
         progress={view.progressed?.progress ?? null}
         rowSelection={view.on}
@@ -430,13 +428,6 @@ function shadowOf(db: Db, keep: Keep) {
   return bySection
 }
 
-function pickedOf(selection: Selection, keep: Keep, filtering: boolean): ReadonlyMap<string, number> {
-  if (!filtering) return selection.picked
-  const counts = new Map<string, number>()
-  for (const entry of selection.selected) if (keep(entry)) counts.set(entry.section, (counts.get(entry.section) ?? 0) + 1)
-  return counts
-}
-
 function sectionsOf(heads: readonly CategoryHead[], totals: readonly {id: string; count: number; bytes: number}[]): Section[] {
   const byId = new Map(totals.map(total => [total.id, total]))
   return heads
@@ -450,7 +441,7 @@ function sectionsOf(heads: readonly CategoryHead[], totals: readonly {id: string
 interface Shaping {
   totals: readonly SectionTotal[]
   shadow: ReadonlyMap<string, number>
-  picked: ReadonlyMap<string, number>
+  picked: ReadonlyMap<string, number> | null
 }
 
 function groupsOf(sections: readonly Section[], {totals, shadow, picked}: Shaping): Group[] {
@@ -460,7 +451,7 @@ function groupsOf(sections: readonly Section[], {totals, shadow, picked}: Shapin
       const total = byId.get(category.id)
       if (!total || total.count === 0) return []
       const bytes = total.bytes - (shadow.get(category.id) ?? 0)
-      return [{category, shown: {count: total.count, bytes, selectable: total.selectable, aged: total.aged, picked: picked.get(category.id) ?? 0}}]
+      return [{category, shown: {count: total.count, bytes, selectable: total.selectable, aged: total.aged, picked: picked === null ? total.picked : (picked.get(category.id) ?? 0)}}]
     }),
   )
 }
@@ -476,6 +467,7 @@ interface ListState {
   list: CleanupSearch
   onList: ChangeList
   listed: ReadonlySet<string>
+  rows: readonly Item[]
   selected: number
   on: RowSelectionState
   setRowSelection: (update: Updater<RowSelectionState>) => void
@@ -487,15 +479,16 @@ const ListContext = createContext<ListState | null>(null)
 function useGroups(db: Db, list: CleanupSearch, selection: Selection, keep: Keep) {
   const on = selection.rowSelection
   const heads = useSections(db)
-  const {all, shown: totals} = useTotals(db, list, on)
+  const section = useParams({strict: false, select: params => params.section})
+  const open = useMemo(() => heads.find(head => head.id === section) ?? null, [heads, section])
+  const {all, shown: totals, rows} = useShaped(db, open, list, on)
   const sections = useMemo(() => sectionsOf(heads, all), [heads, all])
   const filtering = isFiltering(list)
   const items = db.scan.items.version()
   const nests = db.scan.nests.version()
   const shadow = useMemo(() => shadowOf(db, keep), [db, keep, items, nests])
-  const picked = useMemo(() => pickedOf(selection, keep, filtering), [selection, keep, filtering])
   const listed = useMemo(() => new Set(sections.filter(section => section.count > 0).map(section => section.id)), [sections])
-  return {groups: groupsOf(sections, {totals, shadow, picked}), listed}
+  return {groups: groupsOf(sections, {totals, shadow, picked: filtering ? null : selection.picked}), listed, rows}
 }
 
 const LAYER = '[role="dialog"], [role="listbox"], [role="menu"]'
@@ -544,7 +537,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   const replay = useReveal(list.view)
   const on = selection.rowSelection
   const keep = useMemo(() => predicateOf(list, on), [list, on])
-  const {groups, listed} = useGroups(db, list, selection, keep)
+  const {groups, listed, rows} = useGroups(db, list, selection, keep)
   const progressed = progress && {progress, removals: progress.removals}
   const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
   const open = !progress
@@ -558,7 +551,7 @@ export function Cleanup({list, children}: {list: CleanupSearch; children: ReactN
   ])
 
   return (
-    <ListContext value={{groups, progressed, list, onList, listed, selected: selection.selected.length, on, setRowSelection: selection.setRowSelection, choose}}>
+    <ListContext value={{groups, progressed, list, onList, listed, rows, selected: selection.selected.length, on, setRowSelection: selection.setRowSelection, choose}}>
       <div className="flex min-h-0 grow flex-col">
         <Toolbar
           list={list}
