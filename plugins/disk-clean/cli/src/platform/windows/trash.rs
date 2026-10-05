@@ -1,4 +1,4 @@
-use super::disk::is_fixed_drive;
+use super::disk::{is_fixed_drive, is_local_disk};
 use super::path::{from_wide, same_text, wide};
 use super::protected::{RECYCLE_BIN, user_sid};
 use crate::platform::path_text;
@@ -11,8 +11,8 @@ use windows::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, 
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES, GetDiskFreeSpaceExW,
-    GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, MOVE_FILE_FLAGS,
-    MoveFileExW, SetFileAttributesW,
+    GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, MOVE_FILE_FLAGS, MoveFileExW,
+    SetFileAttributesW,
 };
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance, CoInitializeEx,
@@ -110,16 +110,10 @@ fn recycle_bin(path: &Path) -> Option<HSTRING> {
     let root = root.strip_prefix(r"\\?\").unwrap_or(&root);
     let drive_root =
         matches!(root.as_bytes(), [letter, b':', b'\\'] if letter.is_ascii_alphabetic());
-    if !drive_root || !is_fixed_drive(root) {
+    if !drive_root || !is_local_disk(root) {
         return None;
     }
     let root = HSTRING::from(root);
-    let mut fs_name = [0u16; 261];
-    // SAFETY: GetVolumeInformationW reads the NUL-terminated root and writes into fs_name only.
-    unsafe { GetVolumeInformationW(&root, None, None, None, None, Some(&mut fs_name)) }.ok()?;
-    if !["NTFS", "ReFS"].contains(&from_wide(&fs_name).to_string_lossy().as_ref()) {
-        return None;
-    }
     let mut info = SHQUERYRBINFO {
         cbSize: size_of::<SHQUERYRBINFO>() as u32,
         ..Default::default()

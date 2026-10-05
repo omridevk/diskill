@@ -3,8 +3,11 @@ use crate::platform::{VolumeStats, path_text, split_root};
 use std::fs;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetTempPath2W};
+use windows::Win32::Storage::FileSystem::{
+    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetTempPath2W, GetVolumeInformationW,
+};
 use windows::Win32::UI::Shell::FOLDERID_Windows;
 use windows::core::{HSTRING, PCWSTR};
 
@@ -40,6 +43,59 @@ pub(super) fn is_fixed_drive(root: &str) -> bool {
     let name = HSTRING::from(root.replace('/', "\\"));
     // SAFETY: GetDriveTypeW only reads the NUL-terminated root name.
     unsafe { GetDriveTypeW(&name) == DRIVE_FIXED }
+}
+
+pub(super) fn drive_roots() -> impl Iterator<Item = String> {
+    // SAFETY: GetLogicalDrives has no preconditions and only returns a bitmask.
+    let drives = unsafe { GetLogicalDrives() };
+    (0..26u8)
+        .filter(move |i| drives & (1 << i) != 0)
+        .map(|i| format!("{}:/", char::from(b'A' + i)))
+}
+
+pub(super) fn is_local_disk(root: &str) -> bool {
+    static CONFIRMED: AtomicU32 = AtomicU32::new(0);
+    let Some(letter) = root
+        .bytes()
+        .next()
+        .filter(u8::is_ascii_alphabetic)
+        .map(|l| l.to_ascii_uppercase())
+    else {
+        return false;
+    };
+    let bit = 1u32 << (letter - b'A');
+    if CONFIRMED.load(Ordering::Relaxed) & bit != 0 {
+        return true;
+    }
+    let root = format!("{}:\\", char::from(letter));
+    let mut fs_name = [0u16; 261];
+    let local = is_fixed_drive(&root)
+        // SAFETY: GetVolumeInformationW reads the NUL-terminated root and writes into fs_name only.
+        && unsafe {
+            GetVolumeInformationW(&HSTRING::from(&root), None, None, None, None, Some(&mut fs_name))
+        }
+        .is_ok()
+        && ["NTFS", "ReFS"].contains(&super::path::from_wide(&fs_name).to_string_lossy().as_ref());
+    if local {
+        CONFIRMED.fetch_or(bit, Ordering::Relaxed);
+    }
+    local
+}
+
+pub(super) fn local_disks() -> Vec<String> {
+    let chosen = std::env::var("DISK_CLEAN_DRIVES").ok();
+    drive_roots()
+        .filter(|root| {
+            chosen.as_deref().is_none_or(|list| {
+                list.split(',').any(|d| {
+                    d.trim()
+                        .get(..1)
+                        .is_some_and(|l| root.starts_with(&l.to_ascii_uppercase()))
+                })
+            })
+        })
+        .filter(|root| is_local_disk(root))
+        .collect()
 }
 
 pub fn user_tmp_base() -> Option<String> {
