@@ -112,15 +112,11 @@ jobs:
           TARGET: ${{ matrix.target }}
 
   disk-clean-windows:
-    name: disk-clean cli (Windows, ${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
+    name: disk-clean cli (Windows, x86_64)
+    runs-on: windows-latest
     timeout-minutes: 40
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [windows-latest, windows-11-arm]
     defaults:
       run:
         shell: bash
@@ -150,6 +146,39 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
           jq . "$SFW_JSON_REPORT_PATH"
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
+      - run: cargo fmt --check
+      - run: cargo clippy --frozen --all-targets -- -D warnings
+      - run: cargo test --frozen
+      - name: PSScriptAnalyzer run.ps1
+        shell: pwsh
+        working-directory: .
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $findings = Invoke-ScriptAnalyzer -Path plugins/disk-clean/skills/disk-clean/scripts/run.ps1
+          $findings | Format-Table -AutoSize
+          if ($findings) { exit 1 }
+
+  disk-clean-windows-arm:
+    name: disk-clean cli (Windows, arm64)
+    needs: disk-clean-windows
+    runs-on: windows-11-arm
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: plugins/disk-clean/cli
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: "1.93"
+          components: rustfmt, clippy
+      - name: fetch crates (Cargo.lock checksums match what the x86_64 job fetched through Socket Firewall)
+        run: cargo fetch --locked
       - run: cargo fmt --check
       - run: cargo clippy --frozen --all-targets -- -D warnings
       - run: cargo test --frozen
