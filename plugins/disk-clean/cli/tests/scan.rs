@@ -67,7 +67,10 @@ fn folders_nested_too_deep_to_read_are_reported() {
     fs::create_dir_all(home.join("deep")).unwrap();
     common::sh(
         &home.join("deep"),
-        "n=$(printf 'd%.0s' $(seq 1 120)); for i in $(seq 1 12); do mkdir \"$n\"; cd \"$n\"; done; echo hi >f",
+        &format!(
+            "n=$(printf 'd%.0s' $(seq 1 120)); for i in $(seq 1 {}); do mkdir \"$n\"; cd \"$n\"; done; echo hi >f",
+            common::levels_past_path_max()
+        ),
     );
     let run = t.0.join("run");
     let err = scan(&home, &run);

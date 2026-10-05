@@ -256,6 +256,10 @@ pub fn temp_dir(tag: &str) -> TempDir {
     TempDir(std::fs::canonicalize(&dir).unwrap())
 }
 
+pub fn levels_past_path_max() -> usize {
+    if cfg!(target_os = "macos") { 12 } else { 36 }
+}
+
 pub fn sh(cwd: &Path, script: &str) {
     let status = status(
         Command::new("bash")
