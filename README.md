@@ -1,13 +1,13 @@
 # mopper
 
-A [Claude Code](https://code.claude.com) plugin marketplace for keeping a Mac disk in check.
+A [Claude Code](https://code.claude.com) plugin marketplace for keeping a disk in check.
 
 ## Plugins
 
 ### disk-clean
 
-Finds reclaimable disk space on macOS, opens a local review page listing exactly what would be
-deleted, and deletes only what you approve.
+Finds reclaimable disk space on macOS, Linux and Windows, opens a local review page listing
+exactly what would be deleted, and deletes only what you approve.
 
 - **Scan**: caches, logs, package-manager caches, Xcode data, every `node_modules`, stale build
   output, temp folders, Docker, app code-signing clones, and git worktrees with no leftover work.
@@ -31,10 +31,10 @@ Safety:
   - no ignored files except known build output
 - The branch and all its commits always stay.
 
-Requirements: macOS or Linux, and `git`. Rust only if building from source.
+Requirements: macOS, Linux or Windows, and `git`. Rust only if building from source.
 
-The skill runs a single `disk-clean` binary through `scripts/run.sh`. On first use it downloads
-the release built for the installed plugin version from
+The skill runs a single `disk-clean` binary through `scripts/run.sh` (`scripts/run.ps1` on
+Windows). On first use it downloads the release built for the installed plugin version from
 [GitHub releases](https://github.com/omridevk/mopper/releases), checks its sha256, and caches it
 in the plugin data folder. If no release exists for that version, it builds the bundled source
 with `cargo build --release --locked` instead (needs [Rust](https://rustup.rs)).
@@ -99,10 +99,11 @@ Set `DISK_CLEAN_REVIEW_URL` to a running `disk-clean review` server to proxy `/p
    Installed copies only update when that string changes, and `run.sh` fetches the binary for it.
 2. Tag with `claude plugin tag ./plugins/disk-clean` (creates `disk-clean--v<version>`) and push the tag.
 3. The `release` workflow checks the tag matches `plugin.json`, builds an arm64 + x86_64 universal
-   macOS binary and static musl Linux binaries for x86_64 and arm64, and publishes
-   `disk-clean-macos-universal.tar.gz`, `disk-clean-linux-x86_64.tar.gz` and
-   `disk-clean-linux-arm64.tar.gz`, each with its `.sha256` and a signed build provenance
-   attestation. Crates are fetched through Socket Firewall Free, then built offline.
+   macOS binary, static musl Linux binaries for x86_64 and arm64, and Windows binaries with the
+   static C runtime for x86_64 and arm64, and publishes `disk-clean-macos-universal.tar.gz`,
+   `disk-clean-linux-x86_64.tar.gz`, `disk-clean-linux-arm64.tar.gz`,
+   `disk-clean-windows-x86_64.zip` and `disk-clean-windows-arm64.zip`, each with its `.sha256`
+   and a signed build provenance attestation. Crates are fetched through Socket Firewall Free, then built offline.
 
 To verify a downloaded release came from this repo's workflow:
 
@@ -110,6 +111,8 @@ To verify a downloaded release came from this repo's workflow:
 gh attestation verify disk-clean-macos-universal.tar.gz --repo omridevk/mopper
 gh attestation verify disk-clean-linux-x86_64.tar.gz --repo omridevk/mopper
 gh attestation verify disk-clean-linux-arm64.tar.gz --repo omridevk/mopper
+gh attestation verify disk-clean-windows-x86_64.zip --repo omridevk/mopper
+gh attestation verify disk-clean-windows-arm64.zip --repo omridevk/mopper
 ```
 
 ## License
