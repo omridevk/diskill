@@ -6,32 +6,39 @@ import {Kbd} from '@/components/ui/kbd'
 import {GROUPS, hotkeysOf, inOverlay, useCommandList, useCommands, type Command as Action, type Group} from '@/lib/commands'
 import {usePlatform} from '@/lib/platform'
 
+function PaletteItem({command, onRun}: {command: Action; onRun: (command: Action) => void}) {
+  const {label} = usePlatform()
+  const [hotkey] = hotkeysOf(command)
+  return (
+    <CommandItem value={command.id} keywords={[command.name, ...(command.keywords ?? [])]} data-checked={command.checked} onSelect={() => onRun(command)}>
+      {command.name}
+      {hotkey && <CommandShortcut>{label(hotkey)}</CommandShortcut>}
+    </CommandItem>
+  )
+}
+
 function Palette({onRun}: {onRun: (command: Action) => void}) {
   const list = useCommandList()
   const enabled = useSyncExternalStore(list.subscribe, list.owners).flatMap(owner => owner.commands.filter(command => command.enabled))
-  const {label} = usePlatform()
+  const [search, setSearch] = useState('')
+  const item = (command: Action) => <PaletteItem key={command.id} command={command} onRun={onRun} />
   return (
     <Command>
-      <CommandInput placeholder="Type a command…" aria-label="Command" />
+      <CommandInput value={search} onValueChange={setSearch} placeholder="Type a command…" aria-label="Command" />
       <CommandList>
         <CommandEmpty>No matching command.</CommandEmpty>
-        {GROUPS.map(group => {
-          const inGroup = enabled.filter(command => command.group === group)
-          if (inGroup.length === 0) return null
-          return (
-            <CommandGroup key={group} heading={group}>
-              {inGroup.map(command => {
-                const [hotkey] = hotkeysOf(command)
-                return (
-                  <CommandItem key={command.id} value={command.id} keywords={[command.name, ...(command.keywords ?? [])]} data-checked={command.checked} onSelect={() => onRun(command)}>
-                    {command.name}
-                    {hotkey && <CommandShortcut>{label(hotkey)}</CommandShortcut>}
-                  </CommandItem>
+        {search
+          ? enabled.map(item)
+          : GROUPS.map(group => {
+              const inGroup = enabled.filter(command => command.group === group)
+              return (
+                inGroup.length > 0 && (
+                  <CommandGroup key={group} heading={group}>
+                    {inGroup.map(item)}
+                  </CommandGroup>
                 )
-              })}
-            </CommandGroup>
-          )
-        })}
+              )
+            })}
       </CommandList>
     </Command>
   )

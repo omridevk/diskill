@@ -142,7 +142,9 @@ describe('the command palette', () => {
   test('Delete… opens the confirm and deletes nothing', async () => {
     const {screen} = await openApp()
     await userEvent.keyboard(MOD_K.macos)
-    await option(screen, /^Delete…/).click()
+    await userEvent.keyboard('del')
+    await expect.element(palette(screen).getByRole('option').first()).toHaveAccessibleName(/^Delete… /)
+    await userEvent.keyboard('{Enter}')
     const confirm = screen.getByRole('dialog', {name: 'Move to the Trash'})
     await expect.element(confirm).toBeVisible()
     expect(posted('/decide')).toHaveLength(0)
