@@ -41,11 +41,12 @@ function useMode() {
 }
 
 function Checking() {
+  const db = useDb()
   const home = useHome()
   const scanning = useScanning()
   const mode = useMode()
   const {dialog} = useExit()
-  return <ConfirmDialog plan={null} mode={mode} home={home} scanning={scanning} {...dialog} onConfirm={dialog.onClose} />
+  return <ConfirmDialog plan={null} mode={mode} home={home} platform={db.loaded.platform} scanning={scanning} {...dialog} onConfirm={dialog.onClose} />
 }
 
 function Failed({error}: ErrorComponentProps) {
@@ -69,5 +70,5 @@ function Confirm() {
     approve(preview, mode)
     leave(() => navigate({to: '/cleanup/$section', params: true, search: prev => ({...prev, now: false}), replace: true}))
   }
-  return <ConfirmDialog plan={data[0] ?? null} mode={mode} home={home} selected={preview.items.length} scanning={scanning} warnings={warnings} {...dialog} onConfirm={confirm} />
+  return <ConfirmDialog plan={data[0] ?? null} mode={mode} home={home} platform={db.loaded.platform} selected={preview.items.length} scanning={scanning} warnings={warnings} {...dialog} onConfirm={confirm} />
 }

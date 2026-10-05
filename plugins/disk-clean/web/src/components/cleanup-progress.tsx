@@ -7,6 +7,7 @@ import {Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle} from '@/
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {counted, formatBytes, plural, tilde} from '@/lib/data'
 import {useHome} from '@/lib/page-data'
+import {usePlatform} from '@/lib/platform'
 import type {Db} from '@/lib/db'
 import {formatDuration, heroBytes, isPutBack, jobRunning, useMovie, type CleanupProgress, type Outcome, type Phase} from '@/lib/progress'
 import {useBack} from '@/lib/navigation'
@@ -61,9 +62,10 @@ function Problems({progress}: {progress: CleanupProgress}) {
 }
 
 function TrashedText({progress}: {progress: CleanupProgress}) {
+  const {bin} = usePlatform()
   return (
     <>
-      Moved to Trash {formatBytes(progress.inTrash.bytes)} · undo available
+      {bin('Moved to Trash')} {formatBytes(progress.inTrash.bytes)} · undo available
       {progress.freed > 0 && ` · freed ${formatBytes(progress.freed)}`}
       <Problems progress={progress} />
     </>
@@ -71,11 +73,12 @@ function TrashedText({progress}: {progress: CleanupProgress}) {
 }
 
 function FinishedText({progress}: {progress: CleanupProgress}) {
+  const {bin} = usePlatform()
   const latest = [...progress.byKey.values()]
   if (progress.restored > 0) {
     return (
       <>
-        Put back {formatBytes(progress.restored)} · nothing left in the Trash
+        Put back {formatBytes(progress.restored)} · {bin('nothing left in the Trash')}
         {progress.freed > 0 && ` · freed ${formatBytes(progress.freed)}`}
         <Problems progress={progress} />
       </>
@@ -94,10 +97,11 @@ const JOB_VERB = {empty: 'Emptying from the Trash', undo: 'Putting back'}
 
 function JobText({progress}: {progress: CleanupProgress}) {
   const job = progress.cleanup.job
+  const {bin} = usePlatform()
   if (!job) return null
   return (
     <>
-      {JOB_VERB[job.kind]} · {formatBytes(progress.handled)} of {formatBytes(job.bytes)} · {plural(job.count, 'item', 'items')}
+      {bin(JOB_VERB[job.kind])} · {formatBytes(progress.handled)} of {formatBytes(job.bytes)} · {plural(job.count, 'item', 'items')}
     </>
   )
 }
@@ -119,10 +123,11 @@ const WORKING = {trashing: 'Moving to the Trash', deleting: 'Deleting'}
 
 function WorkingText({progress, verb}: {progress: CleanupProgress; verb: string}) {
   const last = progress.outcomes.at(-1)
+  const {path, bin} = usePlatform()
   return (
     <>
-      {verb} · {formatBytes(progress.handled)} of {formatBytes(progress.plan.approved)} · {counted(progress.count)} of {counted(progress.total)}
-      {last && <span className="text-muted-foreground"> · {last.label}</span>}
+      {bin(verb)} · {formatBytes(progress.handled)} of {formatBytes(progress.plan.approved)} · {counted(progress.count)} of {counted(progress.total)}
+      {last && <span className="text-muted-foreground"> · {path(last.label)}</span>}
     </>
   )
 }
@@ -170,7 +175,7 @@ function cleanupStatusOf(phase: Phase) {
 }
 
 export function CleanupStatus({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
-  const label = STATUS_LABEL[phase]
+  const label = usePlatform().bin(STATUS_LABEL[phase])
   if (phase === 'waiting') return <span className="t-pulse text-[13px] text-muted-foreground">{label}</span>
   return (
     <LatticeLoader
@@ -190,7 +195,8 @@ export function CleanupStatus({progress, phase}: {progress: CleanupProgress; pha
 export function CleanupCounter({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
   const job = progress.cleanup.job
   const working = phase === 'trashing' || phase === 'deleting'
-  const last = working ? progress.outcomes.at(-1)?.label : ''
+  const {path} = usePlatform()
+  const last = working ? path(progress.outcomes.at(-1)?.label ?? '') : ''
   const figures =
     job && (phase === 'undoing' || phase === 'emptying')
       ? `${plural(job.count, 'item', 'items')} · ${formatBytes(progress.handled)} of ${formatBytes(job.bytes)}`
@@ -250,7 +256,10 @@ function headlineOf(phase: Phase, progress: CleanupProgress) {
 }
 
 function Stats({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
-  const {label, note} = headlineOf(phase, progress)
+  const {bin} = usePlatform()
+  const headline = headlineOf(phase, progress)
+  const label = bin(headline.label)
+  const note = bin(headline.note)
   return (
     <div className="flex flex-col gap-4 px-4">
       <div className="flex flex-col gap-1">
@@ -306,6 +315,7 @@ interface RowProps {
 }
 
 const Row = memo(function Row({outcome, index, count, start, ref}: RowProps) {
+  const {path, bin} = usePlatform()
   return (
     <li
       ref={ref}
@@ -318,7 +328,7 @@ const Row = memo(function Row({outcome, index, count, start, ref}: RowProps) {
       <span className="text-muted-foreground tabular-nums">{(outcome.at / 1000).toFixed(1)}s</span>
       <span className="flex min-w-0 flex-col gap-0.5">
         <span className={`font-medium ${KIND_TONE[outcome.kind]}`}>
-          {KIND_TEXT[outcome.kind]} <span className="font-mono font-normal">{outcome.label}</span>
+          {bin(KIND_TEXT[outcome.kind])} <span className="font-mono font-normal">{path(outcome.label)}</span>
         </span>
         <span className={QUIET.has(outcome.kind) ? 'text-muted-foreground' : KIND_TONE[outcome.kind]}>{detailOf(outcome)}</span>
       </span>
@@ -385,13 +395,14 @@ function ProgressPanel({
   actions: ReactNode
 }) {
   const reduced = useReducedMotion()
+  const {bin} = usePlatform()
   const shown = useMemo(() => progress.outcomes.filter(FILTERS[log]), [progress.outcomes, log])
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="gap-4 data-[side=right]:sm:max-w-md">
         <SheetHeader className="pb-0">
           <SheetTitle>Cleanup progress</SheetTitle>
-          <SheetDescription>{progress.cleanup.abandoned && !progress.cleanup.started ? 'The cleanup did not start' : PANEL_STATE[phase]}</SheetDescription>
+          <SheetDescription>{progress.cleanup.abandoned && !progress.cleanup.started ? 'The cleanup did not start' : bin(PANEL_STATE[phase])}</SheetDescription>
         </SheetHeader>
         <Stats progress={progress} phase={phase} />
         {actions && <div className="px-4">{actions}</div>}
@@ -446,6 +457,7 @@ const NOT_DONE_SHOWN = 3
 
 function NotDone({progress}: {progress: CleanupProgress}) {
   const home = useHome()
+  const {path} = usePlatform()
   const problems = [...progress.byKey.values()].filter(o => o.kind === 'failed' || o.kind === 'kept')
   if (problems.length === 0) return null
   const shown = problems.slice(0, NOT_DONE_SHOWN)
@@ -453,7 +465,7 @@ function NotDone({progress}: {progress: CleanupProgress}) {
     <ul aria-label="Not done" className="flex flex-col gap-0.5 text-xs">
       {shown.map(o => (
         <li key={o.key} className={`truncate ${o.kind === 'failed' ? 'text-red-300' : 'text-amber-300'}`}>
-          {o.kind === 'failed' ? 'Not removed' : 'Kept'} <span className="font-mono">{tilde(o.label, home)}</span>
+          {o.kind === 'failed' ? 'Not removed' : 'Kept'} <span className="font-mono">{path(tilde(o.label, home))}</span>
           {o.reason && `: ${o.reason}`}
         </li>
       ))}
@@ -463,15 +475,17 @@ function NotDone({progress}: {progress: CleanupProgress}) {
 }
 
 function TrashNote({phase}: {phase: Phase}) {
+  const {bin} = usePlatform()
   if (phase !== 'trashed') return null
-  return <>in your Trash until you empty it; space comes back then · </>
+  return <>{bin('in your Trash until you empty it; space comes back then · ')}</>
 }
 
 export function ProgressFooter({progress, phase, actions}: {progress: CleanupProgress; phase: Phase; actions?: ReactNode}) {
+  const {bin} = usePlatform()
   return (
     <footer className="flex items-center gap-2.5 border-t bg-card px-7 py-3.5">
       <div className="flex grow flex-col gap-0.5">
-        <div className="flex h-6 items-center text-sm font-semibold tabular-nums">{footerTitle(phase, progress)}</div>
+        <div className="flex h-6 items-center text-sm font-semibold tabular-nums">{bin(footerTitle(phase, progress))}</div>
         <div className="flex h-5 items-center text-xs whitespace-nowrap text-muted-foreground tabular-nums">
           <FooterFigures progress={progress} />
           <TrashNote phase={phase} />
@@ -505,6 +519,7 @@ export function TrashActions({
   onEmpty: () => void
 }) {
   const {offered, away, waiting} = trashOffer(progress, phase, busy)
+  const {bin} = usePlatform()
   if (!offered && !error) return null
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -516,7 +531,7 @@ export function TrashActions({
             <Undo2 /> Undo
           </Button>
           <Button variant="destructive" disabled={waiting} aria-haspopup="dialog" onClick={onEmpty}>
-            <Trash2 /> Empty these from Trash
+            <Trash2 /> {bin('Empty these from Trash')}
           </Button>
         </>
       )}
