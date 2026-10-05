@@ -4,7 +4,7 @@ use super::protected::{RECYCLE_BIN, owned_by_user, user_sid};
 use super::walk::find_one;
 use crate::platform::{self, path_text};
 use crate::scan::{
-    Cat, Config, Ctx, Row, age_of, children_of, existing, h, row, size_bytes, sized,
+    Cat, Config, Ctx, Row, SIMS_KEY, age_of, children_of, existing, h, row, size_bytes, sized,
 };
 use crate::util::tilde;
 use std::collections::HashSet;
@@ -19,7 +19,6 @@ pub const HOME_SYSTEM_DIRS: &[&str] = &["AppData", "scoop", ".vscode-shared"];
 pub const SYSTEM_TMP: &str = "";
 pub const PNPM_STORE_NOTE: &str = " Size is apparent: pnpm hard-links package files from %LOCALAPPDATA%\\pnpm\\store, so deleting frees only files no other project or the store still links.";
 pub const SIMS_COMMAND: &str = "";
-pub const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
 pub const THIS_COMPUTER: &str = "this PC";
 pub const DOCKER_NOTE: &str = "Frees space inside Docker Desktop's disk image, which does not shrink on its own: Windows gets the space back only after Docker Desktop's purge or with a sparse disk. Named volumes are never touched.";
 

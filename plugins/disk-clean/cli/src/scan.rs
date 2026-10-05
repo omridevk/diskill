@@ -533,7 +533,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             let mut rows = Vec::new();
             platform::scan_sims(&early(home, now, true), &mut rows, sims);
             preview(&rows, out, sink);
-            unpend([platform::SIMS_KEY.to_string()], out, sink);
+            unpend([SIMS_KEY.to_string()], out, sink);
             sims
         });
         let (on_listed, on_checked) = (&on_listed, &on_checked);
@@ -679,6 +679,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
 }
 
 const DOCKER_KEY: &str = "cmd:docker-prune";
+pub(crate) const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
 
 fn scan_dev_artifacts(ctx: &Ctx, rows: &mut Vec<Row>, cfg: &Config) {
     let list: Vec<PathBuf> = ctx
