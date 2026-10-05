@@ -214,6 +214,20 @@ Answered by the user on 2026-10-05:
 - **Linux without a desktop: use the Trash folders anyway** ("probably trash"). Undo keeps working
   and behaviour is the same on every machine.
 - **Architectures: x86_64 and arm64 for both Linux and Windows.**
+- **Scanning is best effort on every system; only the default tick differs** ("ok so the logic for
+  cache for windows and mac need to behave different", "can't we scan it at best effort?"). On
+  macOS, Linux and Windows the scan lists every folder it finds in a cache area, with its size. What
+  differs per system is which rows are ticked by default:
+  - A known cache (a location in that system's reviewed list) is ticked by default.
+  - An unknown folder inside a cache area is shown but not ticked on Linux and Windows. On macOS,
+    every child of `~/Library/Caches` stays ticked as today.
+  - A folder known to hold real data (login tokens, browser profiles, mail) is never offered.
+
+  Proposed with this decision, not yet confirmed by the user: when unsure, a location is not ticked
+  by default; on Windows, unknown folders under `%LOCALAPPDATA%` are size-only (shown, not
+  deletable), because that folder is not a cache folder by Microsoft's definition; on Linux, unknown
+  children of `~/.cache` can be ticked by hand but are not ticked by default. This replaces the Linux
+  research's proposal that every child of `~/.cache` is Safe with a denylist.
 
 Still open, the user's to answer:
 
@@ -221,7 +235,8 @@ Still open, the user's to answer:
    known yet ("we need to figure this out"). This is the first task of each platform step, before
    any scan code for that platform: a list per platform with, for every location, what writes it,
    what breaks or has to be re-downloaded when it is removed, and the proposed group (Safe / Review
-   first / Report only), each line with its source. The user reviews the list before anything ships
+   first / Report only), each line with its source. The user reviews it as one short "ticked by
+   default" list per system and strikes entries, not as per-folder questions, before anything ships
    preselected.
 2. **Order against one-session.md.** Step 1 (the boundary) touches the same files as the
    one-session work. Which lands first?
