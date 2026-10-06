@@ -95,11 +95,14 @@ fn ascii16(s: &[u16]) -> bool {
 }
 
 pub(super) fn same16(a: &[u16], b: &[u16]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
     if ascii16(a) && ascii16(b) {
-        return a.len() == b.len()
-            && a.iter()
-                .zip(b)
-                .all(|(x, y)| (*x as u8).eq_ignore_ascii_case(&(*y as u8)));
+        return a
+            .iter()
+            .zip(b)
+            .all(|(x, y)| (*x as u8).eq_ignore_ascii_case(&(*y as u8)));
     }
     // SAFETY: CompareStringOrdinal only reads the two slices.
     unsafe { CompareStringOrdinal(a, b, true) == CSTR_EQUAL }
